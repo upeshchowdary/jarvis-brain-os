@@ -20,9 +20,36 @@ class IntentEngine:
         """Classify intent using heuristic patterns and entity extraction."""
         q_lower = query.lower().strip()
 
-        # 1. Open Application Intent
+        # 1. Real-Time Internet Knowledge Search Intent
+        if any(w in q_lower for w in ["today", "latest news", "current", "recent", "search internet", "search web", "who won", "weather", "live price", "right now"]):
+            return StructuredIntent(
+                intent="REALTIME_KNOWLEDGE_SEARCH",
+                confidence=0.95,
+                arguments={"search_query": query},
+                summary="User requested real-time live internet information or current web search.",
+            )
+
+        # 2. System Info / Telemetry Intent
+        if any(w in q_lower for w in ["cpu", "ram", "memory usage", "system info", "os version", "disk space", "hardware status"]):
+            return StructuredIntent(
+                intent="SYSTEM_TELEMETRY",
+                confidence=0.95,
+                arguments={"query": query},
+                summary="User requested system metrics or OS telemetry.",
+            )
+
+        # 3. File System Operation Intent
+        if any(w in q_lower for w in ["read file", "write file", "list directory", "list files", "save to file"]):
+            return StructuredIntent(
+                intent="FILESYSTEM_OPERATION",
+                confidence=0.92,
+                arguments={"query": query},
+                summary="User requested file or directory operation.",
+            )
+
+        # 4. Open Application Intent
         open_app_match = re.search(r"\b(?:open|launch|start|run)\s+([a-zA-Z0-9_\-\s]+)", q_lower)
-        if open_app_match and not any(w in q_lower for w in ["code", "script", "file", "url"]):
+        if open_app_match and not any(w in q_lower for w in ["code", "script", "file", "url", "browser"]):
             app_name = open_app_match.group(1).strip()
             return StructuredIntent(
                 intent="OPEN_APPLICATION",
@@ -31,18 +58,18 @@ class IntentEngine:
                 summary=f"User requested to launch application: '{app_name}'",
             )
 
-        # 2. Open Web / Browser Intent
-        if any(w in q_lower for w in ["browser", "website", "http", "www.", ".com", ".org", "search web"]):
+        # 5. Open Web / Browser Intent
+        if any(w in q_lower for w in ["browser", "website", "http", "www.", ".com", ".org"]):
             url_match = re.search(r"https?://[^\s]+", query)
             target_url = url_match.group(0) if url_match else query
             return StructuredIntent(
                 intent="BROWSER_NAVIGATION",
                 confidence=0.90,
                 arguments={"target": target_url},
-                summary="User requested browser navigation or internet search",
+                summary="User requested browser navigation or web page scraping",
             )
 
-        # 3. Coding Request Intent
+        # 6. Coding Request Intent
         if any(w in q_lower for w in ["def ", "class ", "write code", "fix bug", "function", "refactor", "python", "script"]):
             return StructuredIntent(
                 intent="CODE_GENERATION",
@@ -51,7 +78,7 @@ class IntentEngine:
                 summary="User requested software development or code generation",
             )
 
-        # 4. Planning Request Intent
+        # 7. Planning Request Intent
         if any(w in q_lower for w in ["plan", "roadmap", "steps", "how to build", "architecture", "workflow"]):
             return StructuredIntent(
                 intent="TASK_PLANNING",
@@ -60,7 +87,7 @@ class IntentEngine:
                 summary="User requested multi-step execution plan or roadmap",
             )
 
-        # 5. Knowledge Explanation Request
+        # 8. Knowledge Explanation Request
         if any(w in q_lower for w in ["explain", "what is", "why does", "how does", "compare", "define", "describe"]):
             return StructuredIntent(
                 intent="KNOWLEDGE_REQUEST",
