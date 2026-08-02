@@ -20,8 +20,14 @@ class IntentEngine:
         """Classify intent using heuristic patterns and entity extraction."""
         q_lower = query.lower().strip()
 
-        # 1. Real-Time Internet Knowledge Search Intent
-        if any(w in q_lower for w in ["today", "latest news", "current", "recent", "search internet", "search web", "who won", "weather", "live price", "right now"]):
+        # 1. Real-Time / Internet Knowledge Search Intent
+        realtime_triggers = [
+            "today", "present", "right now", "latest", "recent", "news",
+            "current", "search internet", "search web", "live", "price",
+            "weather", "who won", "score", "update", "2026", "2025", "2024",
+            "what is happening", "what happened"
+        ]
+        if any(w in q_lower for w in realtime_triggers):
             return StructuredIntent(
                 intent="REALTIME_KNOWLEDGE_SEARCH",
                 confidence=0.95,

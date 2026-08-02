@@ -72,7 +72,7 @@ class BrainManager:
         personality: Optional[str] = None,
         model_override: Optional[str] = None,
     ) -> BrainExecutionOutput:
-        """Lightweight coordination pipeline across all cognitive managers and tool execution."""
+        """Lightweight coordination pipeline across all cognitive managers and real-time tool execution."""
         start_time = time.perf_counter()
         logger.info(f"BrainManager processing user input: '{user_query[:60]}...'")
 
@@ -92,21 +92,32 @@ class BrainManager:
         # 3. Intent Detection
         detected_intent = self.intent_engine.detect_intent(user_query)
 
-        # 4. Tool Dispatching based on Intent (Phase 2 Active Tool Routing)
+        # 4. Tool Dispatching & Real-Time Live Web Knowledge Injection
         tool_execution_data: Optional[Dict[str, Any]] = None
         tool_context_injection = ""
 
         if detected_intent.intent == "REALTIME_KNOWLEDGE_SEARCH":
             search_spec = ToolCallSpec(
                 tool="internet_search",
-                arguments={"query": user_query, "max_results": 4},
+                arguments={"query": user_query, "max_results": 5},
             )
             tool_res = await self.tool_router.route_and_execute(search_spec)
             tool_execution_data = tool_res
+            snippets_list = []
             if tool_res.get("success"):
-                snippets = tool_res.get("data", {}).get("results", [])
-                formatted_snippets = "\n".join([f"- [{item.get('title')}]: {item.get('snippet')} ({item.get('url')})" for item in snippets])
-                tool_context_injection = f"\n\n[LIVE INTERNET SEARCH RESULTS]:\n{formatted_snippets}\nUse the live search results above to answer accurately."
+                results = tool_res.get("data", {}).get("results", [])
+                for item in results:
+                    snippets_list.append(f"- [{item.get('title')}]: {item.get('snippet')} (URL: {item.get('url')})")
+            
+            snippets_str = "\n".join(snippets_list) if snippets_list else "Live web search query completed."
+            
+            tool_context_injection = (
+                f"\n\n[LIVE REAL-TIME INTERNET ACCESS: ACTIVE]\n"
+                f"Current Date: {context['current_date']}\n"
+                f"You have active live internet web search capabilities. Below are live search results fetched from the internet right now for the user's query.\n"
+                f"MANDATE: You MUST use these real-time web search results to answer the user. NEVER say you lack internet access, cannot browse the web, or have a knowledge cutoff.\n\n"
+                f"[LIVE INTERNET SEARCH RESULTS]:\n{snippets_str}\n"
+            )
 
         elif detected_intent.intent == "SYSTEM_TELEMETRY":
             telemetry_spec = ToolCallSpec(tool="system_info", arguments={})
@@ -114,7 +125,10 @@ class BrainManager:
             tool_execution_data = tool_res
             if tool_res.get("success"):
                 sys_data = tool_res.get("data", {})
-                tool_context_injection = f"\n\n[REAL-TIME SYSTEM METRICS]:\n{sys_data}\nUse the system metrics above to answer accurately."
+                tool_context_injection = (
+                    f"\n\n[REAL-TIME SYSTEM METRICS]:\n{sys_data}\n"
+                    "Use the live system metrics above to provide precise hardware and OS information to the user."
+                )
 
         # 5. Reasoning & Multi-step Planning
         reasoning_steps = await self.reasoning_engine.generate_reasoning(user_query)
