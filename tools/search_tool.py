@@ -1,15 +1,14 @@
-"""Live Internet Search Tool for real-time web knowledge retrieval."""
+"""Live Internet Search Tool powered by DDGS engine for real-time web knowledge retrieval."""
 
-import urllib.parse
-import httpx
-import re
+import asyncio
 from typing import Dict, Any, List
+from ddgs import DDGS
 from brain.tool_router import BaseBrainTool
 from brain.logger import logger
 
 
 class InternetSearchTool(BaseBrainTool):
-    """Tool for fetching real-time search engine results from the web."""
+    """Tool for fetching real-time search engine results from the live web using DDGS."""
 
     name: str = "internet_search"
     description: str = "Perform real-time live internet web search to retrieve current news, recent facts, weather, and up-to-date web information."
@@ -39,51 +38,36 @@ class InternetSearchTool(BaseBrainTool):
         if not query:
             return {"success": False, "results": [], "error": "Search query cannot be empty."}
 
-        clean_query = self._extract_search_keywords(query)
-        logger.info(f"InternetSearchTool executing search: raw='{query}' -> cleaned='{clean_query}'")
+        logger.info(f"InternetSearchTool executing live web search for: '{query}'")
 
         try:
-            results = []
-            headers = {
-                "User-Agent": "JarvisAI/1.0 (https://github.com/upeshchowdary/jarvis-brain-os)",
+            # Run blocking DDGS text search in an async executor thread
+            loop = asyncio.get_running_loop()
+            raw_results = await loop.run_in_executor(
+                None,
+                lambda: list(DDGS().text(query, max_results=max_results))
+            )
+
+            formatted_results: List[Dict[str, str]] = []
+            for item in raw_results:
+                title = item.get("title", "").strip()
+                snippet = item.get("body", "").strip()
+                url = item.get("href", "").strip()
+                if title and snippet:
+                    formatted_results.append({
+                        "title": title,
+                        "snippet": snippet,
+                        "url": url,
+                    })
+
+            logger.info(f"InternetSearchTool successfully retrieved {len(formatted_results)} live web search result snippets.")
+            return {
+                "success": True,
+                "query": query,
+                "count": len(formatted_results),
+                "results": formatted_results,
             }
-
-            async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
-                wiki_url = f"https://en.wikipedia.org/w/api.php?action=opensearch&search={urllib.parse.quote(clean_query)}&limit={max_results}&namespace=0&format=json"
-                wiki_res = await client.get(wiki_url, headers=headers)
-                if wiki_res.status_code == 200:
-                    wiki_data = wiki_res.json()
-                    if isinstance(wiki_data, list) and len(wiki_data) >= 4:
-                        titles = wiki_data[1]
-                        snippets = wiki_data[2]
-                        urls = wiki_data[3]
-                        for idx in range(min(len(titles), max_results)):
-                            if titles[idx]:
-                                snippet_text = snippets[idx] if idx < len(snippets) and snippets[idx] else f"Information regarding {titles[idx]}"
-                                page_url = urls[idx] if idx < len(urls) and urls[idx] else f"https://en.wikipedia.org/wiki/{urllib.parse.quote(titles[idx])}"
-                                results.append({
-                                    "title": titles[idx],
-                                    "snippet": snippet_text,
-                                    "url": page_url,
-                                })
-
-                logger.info(f"InternetSearchTool retrieved {len(results)} live web search result snippets.")
-                return {
-                    "success": True,
-                    "query": query,
-                    "count": len(results),
-                    "results": results,
-                }
 
         except Exception as exc:
             logger.error(f"InternetSearchTool execution error: {exc}")
             return {"success": False, "results": [], "error": str(exc)}
-
-    @staticmethod
-    def _extract_search_keywords(raw: str) -> str:
-        """Clean conversational words from search query."""
-        words = raw.split()
-        stopwords = {"what", "is", "the", "latest", "news", "on", "about", "today", "current", "tell", "me", "find", "search", "can", "you", "show", "recent"}
-        filtered = [w for w in words if w.lower().strip("?,.!") not in stopwords]
-        result = " ".join(filtered).strip("?,.!")
-        return result if len(result) > 2 else raw
