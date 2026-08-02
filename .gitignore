@@ -1,0 +1,34 @@
+# Environment & Secrets (NEVER COMMIT API KEYS)
+.env
+*.env
+.env.*
+
+# Python Cache & Bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local SQLite & Databases
+data/
+*.db
+*.sqlite3
+
+# Logs & Metrics
+logs/
+*.log
+
+# Virtual Environments
+venv/
+env/
+ENV/
+.venv/
+.uv/
+
+# Antigravity & IDE scratch/artifacts
+scratch/
+.idea/
+.vscode/
+*.swp

@@ -1,0 +1,11 @@
+Below are the available tools registered in the JARVIS Operating System:
+
+{% for tool in available_tools %}
+- Tool Name: {{ tool.name }}
+  Description: {{ tool.description }}
+  Parameters: {{ tool.parameters_schema }}
+{% else %}
+No active tools currently registered.
+{% endfor %}
+
+Select and populate 'required_tools' and 'plan' steps if external execution is necessary for query: {{ user_query }}

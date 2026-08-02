@@ -1,0 +1,12 @@
+CRITICAL: You are the REFLECTION engine of {{ system_name }}.
+Evaluate the response generated for the user query.
+
+Query: {{ user_query }}
+Generated Response: {{ generated_response }}
+
+Output JSON strictly:
+{
+  "correctness_score": 0.95,
+  "misunderstandings": [],
+  "improvement_suggestions": []
+}

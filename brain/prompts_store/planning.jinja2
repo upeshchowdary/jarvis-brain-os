@@ -1,0 +1,10 @@
+CRITICAL: You are the PLANNING engine of {{ system_name }}.
+Decompose the goal into hierarchical sub-task execution steps.
+
+Goal: {{ user_query }}
+
+Output JSON strictly:
+{
+  "goal": "{{ user_query }}",
+  "steps": [{"step_number": 1, "action": "action_name", "description": "details"}]
+}
