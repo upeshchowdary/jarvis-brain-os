@@ -146,9 +146,11 @@ class BrainManager:
         messages.extend(history)
 
         # 7. LLM Completion via ModelManager
+        is_realtime = (detected_intent.intent == "REALTIME_KNOWLEDGE_SEARCH")
         generation_res = await self.model_manager.generate(
             messages=messages,
             model=model_override or self.model_manager.current_model,
+            is_realtime_query=is_realtime,
         )
 
         final_response_text = generation_res["content"]

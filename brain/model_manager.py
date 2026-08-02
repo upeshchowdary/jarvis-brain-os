@@ -1,25 +1,32 @@
-"""Model Manager for Groq API interaction, model switching, streaming, fallback, and health checks."""
+"""Model Manager for Groq, Gemini, and Ollama local LLM interaction with intelligent local vs. cloud fallback."""
 
 import time
 import httpx
-from typing import List, Dict, Any, Optional, AsyncGenerator
+from typing import List, Dict, Any, Optional, AsyncGenerator, Tuple
 from brain.brain_config import brain_config
 from brain.logger import logger
 
 
 class ModelManager:
-    """Manages LLM connectivity via Groq Cloud API with model switching, fallback, and streaming support."""
+    """Manages LLM connectivity across Ollama (Local), Groq, and Gemini Cloud APIs."""
 
     def __init__(self, api_key: Optional[str] = None, current_model: Optional[str] = None) -> None:
-        self.api_key = api_key or brain_config.GROQ_API_KEY
+        self.groq_api_key = api_key or brain_config.GROQ_API_KEY
+        self.gemini_api_key = brain_config.GEMINI_API_KEY
+        self.ollama_base_url = brain_config.OLLAMA_BASE_URL.rstrip('/')
+        self.ollama_model = brain_config.OLLAMA_MODEL
         self.current_model = current_model or brain_config.DEFAULT_MODEL
-        self.endpoint = f"{brain_config.GROQ_BASE_URL.rstrip('/')}/chat/completions"
+        self.groq_endpoint = f"{brain_config.GROQ_BASE_URL.rstrip('/')}/chat/completions"
+        self.gemini_endpoint = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+
         self.available_models = [
             "llama-3.3-70b-versatile",
             "llama-3.1-8b-instant",
             "mixtral-8x7b-32768",
             "gemma2-9b-it",
-            "deepseek-r1-distill-llama-70b",
+            "gemini-1.5-flash",
+            "gemini-1.5-pro",
+            f"ollama/{self.ollama_model}",
         ]
 
     def switch_model(self, new_model: str) -> bool:
@@ -31,14 +38,11 @@ class ModelManager:
         return True
 
     def list_models(self) -> List[str]:
-        """Return list of supported Groq models."""
+        """Return list of supported models."""
         return self.available_models.copy()
 
     async def health_check(self) -> bool:
-        """Verify API key and Groq endpoint availability."""
-        if not self.api_key:
-            logger.warning("Groq API Key is not set in environment or configuration.")
-            return False
+        """Verify API keys and endpoint availability."""
         try:
             test_messages = [{"role": "user", "content": "ping"}]
             res = await self.generate(messages=test_messages, max_tokens=5)
@@ -47,101 +51,226 @@ class ModelManager:
             logger.error(f"ModelManager health check failed: {exc}")
             return False
 
+    async def _call_ollama(
+        self,
+        messages: List[Dict[str, str]],
+        model: str,
+        temperature: float,
+        max_tokens: int,
+    ) -> Dict[str, Any]:
+        """Execute request against local Ollama LLM endpoint."""
+        endpoint = f"{self.ollama_base_url}/api/chat"
+        headers = {"Content-Type": "application/json"}
+        # Clean model name if passed with prefix
+        clean_model = model.replace("ollama/", "")
+        payload = {
+            "model": clean_model,
+            "messages": messages,
+            "stream": False,
+            "options": {
+                "temperature": temperature,
+                "num_predict": max_tokens,
+            },
+        }
+
+        start_time = time.perf_counter()
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(endpoint, headers=headers, json=payload)
+            elapsed_ms = (time.perf_counter() - start_time) * 1000
+
+            if response.status_code != 200:
+                raise RuntimeError(f"Ollama local API error [{response.status_code}]: {response.text}")
+
+            data = response.json()
+            content = data.get("message", {}).get("content", "")
+            eval_count = data.get("eval_count", 0)
+            prompt_eval_count = data.get("prompt_eval_count", 0)
+
+            return {
+                "content": content,
+                "model": clean_model,
+                "provider": "ollama",
+                "latency_ms": round(elapsed_ms, 2),
+                "finish_reason": "stop" if data.get("done") else None,
+                "usage": {
+                    "prompt_tokens": prompt_eval_count,
+                    "completion_tokens": eval_count,
+                    "total_tokens": prompt_eval_count + eval_count,
+                },
+            }
+
+    async def _call_groq(
+        self,
+        messages: List[Dict[str, str]],
+        model: str,
+        temperature: float,
+        max_tokens: int,
+    ) -> Dict[str, Any]:
+        """Execute request against Groq Cloud API endpoint."""
+        if not self.groq_api_key:
+            raise ValueError("GROQ_API_KEY is not configured.")
+
+        headers = {
+            "Authorization": f"Bearer {self.groq_api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+
+        start_time = time.perf_counter()
+        async with httpx.AsyncClient(timeout=brain_config.TIMEOUT_SECONDS) as client:
+            response = await client.post(self.groq_endpoint, headers=headers, json=payload)
+            elapsed_ms = (time.perf_counter() - start_time) * 1000
+
+            if response.status_code == 429:
+                raise RuntimeError(f"Groq API rate limit exceeded (429): {response.text}")
+            if response.status_code != 200:
+                raise RuntimeError(f"Groq API call error [{response.status_code}]: {response.text}")
+
+            data = response.json()
+            choice = data["choices"][0]
+            content = choice["message"]["content"] or ""
+            usage = data.get("usage", {})
+
+            return {
+                "content": content,
+                "model": model,
+                "provider": "groq",
+                "latency_ms": round(elapsed_ms, 2),
+                "finish_reason": choice.get("finish_reason"),
+                "usage": {
+                    "prompt_tokens": usage.get("prompt_tokens", 0),
+                    "completion_tokens": usage.get("completion_tokens", 0),
+                    "total_tokens": usage.get("total_tokens", 0),
+                },
+            }
+
+    async def _call_gemini(
+        self,
+        messages: List[Dict[str, str]],
+        model: str,
+        temperature: float,
+        max_tokens: int,
+    ) -> Dict[str, Any]:
+        """Execute request against Google Gemini OpenAI-compatible API endpoint."""
+        if not self.gemini_api_key:
+            raise ValueError("GEMINI_API_KEY is not configured.")
+
+        headers = {
+            "Authorization": f"Bearer {self.gemini_api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+
+        start_time = time.perf_counter()
+        async with httpx.AsyncClient(timeout=brain_config.TIMEOUT_SECONDS) as client:
+            response = await client.post(self.gemini_endpoint, headers=headers, json=payload)
+            elapsed_ms = (time.perf_counter() - start_time) * 1000
+
+            if response.status_code == 429:
+                raise RuntimeError(f"Gemini API rate limit exceeded (429): {response.text}")
+            if response.status_code != 200:
+                raise RuntimeError(f"Gemini API call error [{response.status_code}]: {response.text}")
+
+            data = response.json()
+            choice = data["choices"][0]
+            content = choice["message"]["content"] or ""
+            usage = data.get("usage", {})
+
+            return {
+                "content": content,
+                "model": model,
+                "provider": "gemini",
+                "latency_ms": round(elapsed_ms, 2),
+                "finish_reason": choice.get("finish_reason"),
+                "usage": {
+                    "prompt_tokens": usage.get("prompt_tokens", 0),
+                    "completion_tokens": usage.get("completion_tokens", 0),
+                    "total_tokens": usage.get("total_tokens", 0),
+                },
+            }
+
     async def generate(
         self,
         messages: List[Dict[str, str]],
         model: Optional[str] = None,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
+        is_realtime_query: bool = False,
     ) -> Dict[str, Any]:
-        """Execute async completion request against Groq API with automatic fallback on rate limit (429)."""
-        if not self.api_key:
-            raise ValueError("GROQ_API_KEY is not configured in .env file.")
-
-        models_to_try = [
-            model or self.current_model,
-            "llama-3.1-8b-instant",
-            "mixtral-8x7b-32768",
-            "gemma2-9b-it",
-        ]
-        # Remove duplicates preserving order
-        unique_models = []
-        for m in models_to_try:
-            if m and m not in unique_models:
-                unique_models.append(m)
-
+        """Execute completion request with intelligent local (Ollama) vs cloud (Groq/Gemini) fallback."""
+        target_model = model or self.current_model
         temp = temperature if temperature is not None else brain_config.TEMPERATURE
         tokens = max_tokens or brain_config.MAX_TOKENS
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
 
-        last_exception = None
+        # Candidate Queue: List of (provider_name, model_name)
+        candidates: List[Tuple[str, str]] = []
 
-        for target_model in unique_models:
-            payload = {
-                "model": target_model,
-                "messages": messages,
-                "temperature": temp,
-                "max_tokens": tokens,
-            }
+        # If query does NOT need internet/real-time data, prefer local Ollama model first
+        if not is_realtime_query:
+            candidates.append(("ollama", self.ollama_model))
 
-            start_time = time.perf_counter()
+        # Add requested primary model
+        if "gemini" in target_model.lower():
+            candidates.append(("gemini", target_model))
+        elif "ollama" in target_model.lower():
+            candidates.append(("ollama", target_model.replace("ollama/", "")))
+        else:
+            candidates.append(("groq", target_model))
+
+        # Fallback cloud model queue
+        fallback_queue = [
+            ("groq", "llama-3.1-8b-instant"),
+            ("groq", "mixtral-8x7b-32768"),
+            ("gemini", "gemini-1.5-flash"),
+            ("gemini", "gemini-1.5-pro"),
+            ("groq", "gemma2-9b-it"),
+            ("ollama", self.ollama_model),
+        ]
+
+        for prov, mod in fallback_queue:
+            if (prov, mod) not in candidates:
+                candidates.append((prov, mod))
+
+        last_error = None
+        for prov, mod in candidates:
             try:
-                async with httpx.AsyncClient(timeout=brain_config.TIMEOUT_SECONDS) as client:
-                    response = await client.post(self.endpoint, headers=headers, json=payload)
-                    elapsed_ms = (time.perf_counter() - start_time) * 1000
-
-                    if response.status_code == 429:
-                        logger.warning(
-                            f"Model '{target_model}' hit Groq rate limit (429 TPD limit). "
-                            f"Attempting automatic fallback to next model in queue..."
-                        )
-                        last_exception = RuntimeError(f"Rate limit exceeded for model {target_model}")
-                        continue
-
-                    if response.status_code != 200:
-                        logger.error(f"Groq API error ({response.status_code}) for model {target_model}: {response.text}")
-                        last_exception = RuntimeError(f"Groq API error [{response.status_code}]: {response.text}")
-                        continue
-
-                    data = response.json()
-                    choice = data["choices"][0]
-                    content = choice["message"]["content"] or ""
-                    usage = data.get("usage", {})
-
-                    logger.info(
-                        f"ModelManager generation succeeded | Model: {target_model} | "
-                        f"Tokens: {usage.get('total_tokens', 0)} | Latency: {elapsed_ms:.1f}ms"
-                    )
-
-                    return {
-                        "content": content,
-                        "model": target_model,
-                        "provider": "groq",
-                        "latency_ms": round(elapsed_ms, 2),
-                        "finish_reason": choice.get("finish_reason"),
-                        "usage": {
-                            "prompt_tokens": usage.get("prompt_tokens", 0),
-                            "completion_tokens": usage.get("completion_tokens", 0),
-                            "total_tokens": usage.get("total_tokens", 0),
-                        },
-                    }
-
+                if prov == "ollama":
+                    res = await self._call_ollama(messages, mod, temp, tokens)
+                    logger.info(f"ModelManager generated response using local [{prov} : {mod}]")
+                    return res
+                elif prov == "groq" and self.groq_api_key:
+                    res = await self._call_groq(messages, mod, temp, tokens)
+                    logger.info(f"ModelManager generated response using cloud [{prov} : {mod}]")
+                    return res
+                elif prov == "gemini" and self.gemini_api_key:
+                    res = await self._call_gemini(messages, mod, temp, tokens)
+                    logger.info(f"ModelManager generated response using cloud [{prov} : {mod}]")
+                    return res
             except Exception as exc:
-                logger.error(f"Exception calling Groq API for model {target_model}: {exc}")
-                last_exception = exc
+                logger.warning(
+                    f"Model candidate [{prov} : {mod}] unavailable or hit limit ({exc}). "
+                    f"Switching automatically to next candidate..."
+                )
+                last_error = exc
                 continue
 
-        # If all models failed or hit rate limit
-        logger.error(f"All Groq models failed. Last exception: {last_exception}")
+        logger.error(f"All model candidates failed. Last error: {last_error}")
         return {
-            "content": "I apologize, but all LLM models currently reached their daily free quota limit on Groq API. Please wait a short while or provide an additional API key.",
-            "model": "fallback_exhausted",
-            "provider": "groq",
+            "content": "All configured LLMs and local engines were unavailable. Please check your network or start Ollama.",
+            "model": "all_models_exceeded",
+            "provider": "fallback",
             "latency_ms": 0.0,
-            "finish_reason": "rate_limit_fallback_exhausted",
+            "finish_reason": "quota_exhausted",
             "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
         }
 
@@ -152,8 +281,8 @@ class ModelManager:
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
     ) -> AsyncGenerator[str, None]:
-        """Stream completion tokens asynchronously from Groq API."""
-        if not self.api_key:
+        """Stream completion tokens asynchronously from active provider API."""
+        if not self.groq_api_key:
             raise ValueError("GROQ_API_KEY is not configured.")
 
         target_model = model or self.current_model
@@ -161,7 +290,7 @@ class ModelManager:
         tokens = max_tokens or brain_config.MAX_TOKENS
 
         headers = {
-            "Authorization": f"Bearer {self.api_key}",
+            "Authorization": f"Bearer {self.groq_api_key}",
             "Content-Type": "application/json",
         }
 
@@ -174,7 +303,7 @@ class ModelManager:
         }
 
         async with httpx.AsyncClient(timeout=brain_config.TIMEOUT_SECONDS) as client:
-            async with client.stream("POST", self.endpoint, headers=headers, json=payload) as response:
+            async with client.stream("POST", self.groq_endpoint, headers=headers, json=payload) as response:
                 if response.status_code != 200:
                     error_body = await response.aread()
                     raise RuntimeError(f"Groq API stream failed [{response.status_code}]: {error_body.decode('utf-8')}")

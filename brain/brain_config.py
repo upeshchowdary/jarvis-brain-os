@@ -34,9 +34,12 @@ class BrainConfig(BaseSettings):
 
     # Groq API Configuration
     GROQ_API_KEY: Optional[str] = None
+    GEMINI_API_KEY: Optional[str] = None
     DEFAULT_MODEL: str = "llama-3.3-70b-versatile"
     FAST_MODEL: str = "llama-3.1-8b-instant"
     GROQ_BASE_URL: str = "https://api.groq.com/openai/v1"
+    OLLAMA_BASE_URL: str = "http://localhost:11434"
+    OLLAMA_MODEL: str = "qwen2.5"
 
     # LLM Hyperparameters
     TEMPERATURE: float = Field(default=0.2, ge=0.0, le=2.0)
