@@ -1,4 +1,4 @@
-"""Model Manager for Groq API interaction, model switching, streaming, and health checks."""
+"""Model Manager for Groq API interaction, model switching, streaming, fallback, and health checks."""
 
 import time
 import httpx
@@ -8,7 +8,7 @@ from brain.logger import logger
 
 
 class ModelManager:
-    """Manages LLM connectivity via Groq Cloud API with model switching and streaming support."""
+    """Manages LLM connectivity via Groq Cloud API with model switching, fallback, and streaming support."""
 
     def __init__(self, api_key: Optional[str] = None, current_model: Optional[str] = None) -> None:
         self.api_key = api_key or brain_config.GROQ_API_KEY
@@ -16,7 +16,6 @@ class ModelManager:
         self.endpoint = f"{brain_config.GROQ_BASE_URL.rstrip('/')}/chat/completions"
         self.available_models = [
             "llama-3.3-70b-versatile",
-            "llama-3.1-70b-versatile",
             "llama-3.1-8b-instant",
             "mixtral-8x7b-32768",
             "gemma2-9b-it",
@@ -55,57 +54,96 @@ class ModelManager:
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
     ) -> Dict[str, Any]:
-        """Execute async completion request against Groq API."""
+        """Execute async completion request against Groq API with automatic fallback on rate limit (429)."""
         if not self.api_key:
-            raise ValueError("GROQ_API_KEY is not configured.")
+            raise ValueError("GROQ_API_KEY is not configured in .env file.")
 
-        target_model = model or self.current_model
+        models_to_try = [
+            model or self.current_model,
+            "llama-3.1-8b-instant",
+            "mixtral-8x7b-32768",
+            "gemma2-9b-it",
+        ]
+        # Remove duplicates preserving order
+        unique_models = []
+        for m in models_to_try:
+            if m and m not in unique_models:
+                unique_models.append(m)
+
         temp = temperature if temperature is not None else brain_config.TEMPERATURE
         tokens = max_tokens or brain_config.MAX_TOKENS
-
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
 
-        payload = {
-            "model": target_model,
-            "messages": messages,
-            "temperature": temp,
-            "max_tokens": tokens,
-        }
+        last_exception = None
 
-        start_time = time.perf_counter()
-        async with httpx.AsyncClient(timeout=brain_config.TIMEOUT_SECONDS) as client:
-            response = await client.post(self.endpoint, headers=headers, json=payload)
-            elapsed_ms = (time.perf_counter() - start_time) * 1000
-
-            if response.status_code != 200:
-                logger.error(f"Groq API call error ({response.status_code}): {response.text}")
-                raise RuntimeError(f"Groq API call failed [{response.status_code}]: {response.text}")
-
-            data = response.json()
-            choice = data["choices"][0]
-            content = choice["message"]["content"] or ""
-            usage = data.get("usage", {})
-
-            logger.info(
-                f"ModelManager generation complete | Model: {target_model} | "
-                f"Tokens: {usage.get('total_tokens', 0)} | Latency: {elapsed_ms:.1f}ms"
-            )
-
-            return {
-                "content": content,
+        for target_model in unique_models:
+            payload = {
                 "model": target_model,
-                "provider": "groq",
-                "latency_ms": round(elapsed_ms, 2),
-                "finish_reason": choice.get("finish_reason"),
-                "usage": {
-                    "prompt_tokens": usage.get("prompt_tokens", 0),
-                    "completion_tokens": usage.get("completion_tokens", 0),
-                    "total_tokens": usage.get("total_tokens", 0),
-                },
+                "messages": messages,
+                "temperature": temp,
+                "max_tokens": tokens,
             }
+
+            start_time = time.perf_counter()
+            try:
+                async with httpx.AsyncClient(timeout=brain_config.TIMEOUT_SECONDS) as client:
+                    response = await client.post(self.endpoint, headers=headers, json=payload)
+                    elapsed_ms = (time.perf_counter() - start_time) * 1000
+
+                    if response.status_code == 429:
+                        logger.warning(
+                            f"Model '{target_model}' hit Groq rate limit (429 TPD limit). "
+                            f"Attempting automatic fallback to next model in queue..."
+                        )
+                        last_exception = RuntimeError(f"Rate limit exceeded for model {target_model}")
+                        continue
+
+                    if response.status_code != 200:
+                        logger.error(f"Groq API error ({response.status_code}) for model {target_model}: {response.text}")
+                        last_exception = RuntimeError(f"Groq API error [{response.status_code}]: {response.text}")
+                        continue
+
+                    data = response.json()
+                    choice = data["choices"][0]
+                    content = choice["message"]["content"] or ""
+                    usage = data.get("usage", {})
+
+                    logger.info(
+                        f"ModelManager generation succeeded | Model: {target_model} | "
+                        f"Tokens: {usage.get('total_tokens', 0)} | Latency: {elapsed_ms:.1f}ms"
+                    )
+
+                    return {
+                        "content": content,
+                        "model": target_model,
+                        "provider": "groq",
+                        "latency_ms": round(elapsed_ms, 2),
+                        "finish_reason": choice.get("finish_reason"),
+                        "usage": {
+                            "prompt_tokens": usage.get("prompt_tokens", 0),
+                            "completion_tokens": usage.get("completion_tokens", 0),
+                            "total_tokens": usage.get("total_tokens", 0),
+                        },
+                    }
+
+            except Exception as exc:
+                logger.error(f"Exception calling Groq API for model {target_model}: {exc}")
+                last_exception = exc
+                continue
+
+        # If all models failed or hit rate limit
+        logger.error(f"All Groq models failed. Last exception: {last_exception}")
+        return {
+            "content": "I apologize, but all LLM models currently reached their daily free quota limit on Groq API. Please wait a short while or provide an additional API key.",
+            "model": "fallback_exhausted",
+            "provider": "groq",
+            "latency_ms": 0.0,
+            "finish_reason": "rate_limit_fallback_exhausted",
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        }
 
     async def stream(
         self,
