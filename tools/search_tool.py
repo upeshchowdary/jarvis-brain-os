@@ -5,6 +5,7 @@ from typing import Dict, Any, List
 from ddgs import DDGS
 from brain.tool_router import BaseBrainTool
 from brain.logger import logger
+from brain.utils import is_internet_available
 
 
 class InternetSearchTool(BaseBrainTool):
@@ -37,6 +38,10 @@ class InternetSearchTool(BaseBrainTool):
 
         if not query:
             return {"success": False, "results": [], "error": "Search query cannot be empty."}
+
+        if not is_internet_available():
+            logger.warning("InternetSearchTool: No active internet connection. Web search skipped.")
+            return {"success": False, "results": [], "error": "No active internet connection."}
 
         logger.info(f"InternetSearchTool executing live web search for: '{query}'")
 

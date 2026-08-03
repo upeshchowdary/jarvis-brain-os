@@ -18,6 +18,7 @@ from brain.reflection_engine import reflection_engine, ReflectionEngine, Reflect
 from brain.tool_router import tool_router, ToolRouter, ToolCallSpec
 from brain.knowledge_manager import knowledge_manager, KnowledgeManager
 from memory.long_term import long_term_memory, LongTermMemoryManager
+from app.database.connection import db_manager
 
 # Ensure active tools module is imported and registered
 import tools  # noqa: F401
@@ -76,21 +77,36 @@ class BrainManager:
         start_time = time.perf_counter()
         logger.info(f"BrainManager processing user input: '{user_query[:60]}...'")
 
-        # 1. Session & History Retrieval
-        session = self.conversation_manager.get_or_create_session(session_id)
+        # 1. Session & History Retrieval & Persistent Database Restoration
+        session = await self.conversation_manager.get_or_create_session_async(session_id)
         self.conversation_manager.add_user_message(session.session_id, user_query)
         history = self.conversation_manager.get_history(session.session_id)
 
-        # 2. Context Building & Long-term Memory Facts Lookup
+        # 2. Context Building, Fact Extraction, Vector Search, & Cross-Session Memory Lookup
+        await self.long_term_memory.auto_extract_facts(user_query)
         user_facts = await self.long_term_memory.get_all_facts()
+        past_conversations = await db_manager.search_past_conversations(user_query, limit=5)
+        
+        # Semantic Vector Search across past stored memories & notes
+        from memory.vector_memory import vector_memory
+        vector_docs = vector_memory.search_similar(user_query, top_k=3)
+
         context = self.context_manager.build_context(
             user_query=user_query,
             conversation_history=history,
             extra_context={"user_facts": user_facts},
         )
 
+
         # 3. Intent Detection
         detected_intent = self.intent_engine.detect_intent(user_query)
+
+        if detected_intent.intent == "MODEL_SWITCH":
+            target_m = detected_intent.arguments.get("target_model")
+            if target_m:
+                logger.info(f"MODEL_SWITCH intent triggered. Switching active model to '{target_m}'")
+                self.model_manager.switch_model(target_m)
+                model_override = target_m
 
         # 4. Tool Dispatching & Real-Time Live Web Knowledge Injection
         tool_execution_data: Optional[Dict[str, Any]] = None
@@ -134,12 +150,32 @@ class BrainManager:
         reasoning_steps = await self.reasoning_engine.generate_reasoning(user_query)
         hierarchical_plan = self.planner.create_plan(user_query, intent_code=detected_intent.intent)
 
-        # 6. System Persona & Prompt Construction
+        # 6. System Persona & Persistent Memory Prompt Construction
         system_persona = self.personality_manager.get_system_prompt(personality_override=personality)
+        
+        memory_block = []
         if user_facts:
             facts_str = ", ".join([f"{k}: {v}" for k, v in user_facts.items()])
-            system_persona += f"\nKnown User Facts: [{facts_str}]"
-        
+            memory_block.append(f"[STORED USER FACTS & PREFERENCES]: {facts_str}")
+
+        if vector_docs:
+            v_str_list = [f"- {d.content}" for d in vector_docs]
+            v_summary = "\n".join(v_str_list)
+            memory_block.append(f"[RELEVANT SEMANTIC MEMORIES & DOCUMENTS]:\n{v_summary}")
+
+        if past_conversations:
+            past_str_list = []
+            for p in past_conversations:
+                dt_str = str(p.get("created_at", ""))[:10]
+                q_text = str(p.get("user_query", ""))
+                r_text = str(p.get("response_text", ""))[:200]
+                past_str_list.append(f"- [{dt_str}]: User asked: '{q_text}' -> JARVIS answered: '{r_text}'")
+            past_summary = "\n".join(past_str_list)
+            memory_block.append(f"[HISTORICAL MEMORIES & PAST CONVERSATION LOGS (DAYS/WEEKS/MONTHS AGO)]:\n{past_summary}")
+
+        if memory_block:
+            system_persona += "\n\n" + "\n\n".join(memory_block) + "\n\nINSTRUCTION: You have full access to the stored long-term memory and historical conversations above. Use these memories to recognize past context, user intent, previous facts, and recall information discussed in earlier chats or days/weeks ago whenever relevant!"
+
         system_persona += tool_context_injection
 
         messages = [{"role": "system", "content": system_persona}]
@@ -151,13 +187,21 @@ class BrainManager:
             messages=messages,
             model=model_override or self.model_manager.current_model,
             is_realtime_query=is_realtime,
+            intent_code=detected_intent.intent,
         )
 
         final_response_text = generation_res["content"]
         self.conversation_manager.add_assistant_message(session.session_id, final_response_text)
 
+        # Auto-index turn into persistent vector memory for semantic search
+        import uuid
+        doc_id = f"chat_{session.session_id}_{uuid.uuid4().hex[:6]}"
+        chat_turn_summary = f"User asked: {user_query} | JARVIS answered: {final_response_text[:300]}"
+        await vector_memory.add_document_async(doc_id=doc_id, content=chat_turn_summary, metadata={"session_id": session.session_id})
+
         # 8. Post-Response Reflection Engine Self-Evaluation
         reflection_res = self.reflection_engine.evaluate_response(user_query, final_response_text)
+
 
         elapsed_ms = (time.perf_counter() - start_time) * 1000
 

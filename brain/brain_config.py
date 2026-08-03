@@ -38,8 +38,9 @@ class BrainConfig(BaseSettings):
     DEFAULT_MODEL: str = "llama-3.3-70b-versatile"
     FAST_MODEL: str = "llama-3.1-8b-instant"
     GROQ_BASE_URL: str = "https://api.groq.com/openai/v1"
-    OLLAMA_BASE_URL: str = "http://localhost:11434"
+    OLLAMA_BASE_URL: str = "http://127.0.0.1:11434"
     OLLAMA_MODEL: str = "qwen2.5"
+    ENABLE_HYBRID_ROUTING: bool = True
 
     # LLM Hyperparameters
     TEMPERATURE: float = Field(default=0.2, ge=0.0, le=2.0)

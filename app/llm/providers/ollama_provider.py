@@ -34,6 +34,7 @@ class OllamaProvider(AbstractHTTPLLMProvider):
             "options": {
                 "temperature": temperature,
                 "num_predict": max_tokens,
+                "num_ctx": 8192,
             },
         }
 

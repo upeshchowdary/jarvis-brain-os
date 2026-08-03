@@ -55,8 +55,8 @@ class Settings(BaseSettings):
     DEEPSEEK_API_KEY: Optional[str] = None
 
     # Local LLM Endpoints
-    OLLAMA_BASE_URL: str = "http://localhost:11434"
-    LM_STUDIO_BASE_URL: str = "http://localhost:1234/v1"
+    OLLAMA_BASE_URL: str = "http://127.0.0.1:11434"
+    LM_STUDIO_BASE_URL: str = "http://127.0.0.1:1234/v1"
 
     # Paths & Persistence
     LOG_LEVEL: str = "INFO"

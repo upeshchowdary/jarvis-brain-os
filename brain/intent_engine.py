@@ -3,6 +3,7 @@
 import re
 from typing import Dict, Any, List, Optional
 from pydantic import BaseModel, Field
+from brain.brain_config import brain_config
 
 
 class StructuredIntent(BaseModel):
@@ -19,6 +20,28 @@ class IntentEngine:
     def detect_intent(query: str) -> StructuredIntent:
         """Classify intent using heuristic patterns and entity extraction."""
         q_lower = query.lower().strip()
+
+        # 0. Model Switch / Provider Change Intent
+        switch_match = re.search(
+            r"\b(?:switch|change|set|use|select)\s+(?:model\s+|provider\s+)?(?:to\s+)?(ollama|gemini|groq|llama[a-zA-Z0-9_\-\.]*|qwen[a-zA-Z0-9_\-\.]*|mixtral[a-zA-Z0-9_\-\.]*|gemma[a-zA-Z0-9_\-\.]*)",
+            q_lower,
+        )
+        if switch_match:
+            target_raw = switch_match.group(1).strip()
+            target_model = target_raw
+            if target_raw == "ollama":
+                target_model = f"ollama/{brain_config.OLLAMA_MODEL}"
+            elif target_raw == "gemini":
+                target_model = "gemini-1.5-flash"
+            elif target_raw == "groq":
+                target_model = "llama-3.3-70b-versatile"
+
+            return StructuredIntent(
+                intent="MODEL_SWITCH",
+                confidence=0.98,
+                arguments={"target_model": target_model, "raw_query": query},
+                summary=f"User requested switching active model to '{target_model}'",
+            )
 
         # 1. Real-Time / Internet Knowledge Search Intent
         realtime_triggers = [

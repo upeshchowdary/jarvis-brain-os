@@ -82,6 +82,37 @@ class LongTermMemoryManager:
             logger.error(f"Error retrieving all long term facts: {exc}")
             return {}
 
+    async def auto_extract_facts(self, text: str) -> List[str]:
+        """Automatically detect and extract key user facts from dialogue text."""
+        import re
+        extracted = []
+        t_clean = text.strip()
+
+        # 1. Name extraction
+        name_match = re.search(r"\b(?:my name is|i am|call me)\s+([a-zA-Z0-9_\s]{2,30})", t_clean, re.IGNORECASE)
+        if name_match:
+            name = name_match.group(1).strip()
+            if not any(w in name.lower() for w in ["a", "the", "looking", "trying", "here", "asking", "thinking", "testing"]):
+                await self.set_fact("user_name", name, category="identity")
+                extracted.append(f"user_name: {name}")
+
+        # 2. Project / Work extraction
+        proj_match = re.search(r"\b(?:i am working on|my project is)\s+([a-zA-Z0-9_\-\s]{2,50})", t_clean, re.IGNORECASE)
+        if proj_match:
+            proj = proj_match.group(1).strip()
+            await self.set_fact("current_project", proj, category="work")
+            extracted.append(f"current_project: {proj}")
+
+        # 3. Explicit "remember that ..." or "remember ..."
+        rem_match = re.search(r"\bremember\s+(?:that\s+)?(.+)", t_clean, re.IGNORECASE)
+        if rem_match:
+            note = rem_match.group(1).strip()
+            fact_key = f"note_{hash(note) % 10000}"
+            await self.set_fact(fact_key, note, category="user_notes")
+            extracted.append(f"note: {note}")
+
+        return extracted
+
 
 # Global long term memory singleton
 long_term_memory = LongTermMemoryManager()

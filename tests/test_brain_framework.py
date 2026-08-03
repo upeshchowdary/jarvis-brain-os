@@ -65,6 +65,10 @@ def test_intent_engine():
     assert intent.intent == "OPEN_APPLICATION"
     assert intent.arguments.get("application_name") == "chrome"
 
+    intent_switch = intent_engine.detect_intent("switch to ollama")
+    assert intent_switch.intent == "MODEL_SWITCH"
+    assert "ollama" in intent_switch.arguments.get("target_model")
+
 
 def test_planner():
     plan = planner.create_plan("Build a website")
@@ -92,3 +96,52 @@ async def test_brain_manager_execution():
     assert output.intent.intent == "GENERAL_CONVERSATION"
     assert len(output.response) > 0
     assert output.reflection.correctness_score > 0.0
+
+
+def test_hybrid_router_complexity_classification():
+    from brain.model_manager import ModelManager, QueryComplexity
+    c1 = ModelManager.classify_query_complexity("hello how are you", is_realtime=False, intent_code="GENERAL_CONVERSATION")
+    assert c1 == QueryComplexity.SIMPLE
+
+    c2 = ModelManager.classify_query_complexity("explain architecture and design pattern differences", is_realtime=False, intent_code="KNOWLEDGE_REQUEST")
+    assert c2 == QueryComplexity.COMPLEX
+
+    c3 = ModelManager.classify_query_complexity("latest news today", is_realtime=True, intent_code="REALTIME_KNOWLEDGE_SEARCH")
+    assert c3 == QueryComplexity.REALTIME
+
+
+@pytest.mark.asyncio
+async def test_model_manager_offline_switching(monkeypatch):
+    import sys
+    mod = sys.modules["brain.model_manager"]
+    monkeypatch.setattr(mod, "is_internet_available", lambda: False)
+    
+    async def mock_call_ollama(messages, model, temp, tokens):
+        return {
+            "content": "Offline response from local Ollama",
+            "model": model,
+            "provider": "ollama",
+            "latency_ms": 5.0,
+            "finish_reason": "stop",
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+        }
+    
+    monkeypatch.setattr(model_manager, "_call_ollama", mock_call_ollama)
+    res = await model_manager.generate(messages=[{"role": "user", "content": "ping"}])
+    assert res["provider"] == "ollama"
+    assert "Offline response" in res["content"]
+
+
+@pytest.mark.asyncio
+async def test_past_conversations_search_and_fact_extraction():
+    from app.database.connection import db_manager
+    from memory.long_term import long_term_memory
+
+    extracted = await long_term_memory.auto_extract_facts("My name is Upesh and I am working on project JARVIS")
+    assert len(extracted) >= 1
+    fact_name = await long_term_memory.get_fact("user_name")
+    assert fact_name.lower() == "upesh"
+
+    past = await db_manager.search_past_conversations("JARVIS", limit=5)
+    assert isinstance(past, list)
+

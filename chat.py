@@ -59,9 +59,11 @@ async def chat_loop():
                     intent_code = intent_obj.get("intent") if isinstance(intent_obj, dict) else str(intent_obj)
                     resp_text = data.get("response", "")
                     meta = data.get("metadata", {})
+                    provider = meta.get("provider", "groq").upper()
+                    model_name = meta.get("model", "llama-3.3-70b-versatile")
                     latency = meta.get("total_latency_ms", meta.get("latency_ms", 0))
 
-                    print(f"\nJARVIS [{intent_code} | {latency:.0f}ms] >")
+                    print(f"\nJARVIS [{provider} : {model_name} | {intent_code} | {latency:.0f}ms] >")
                     print(resp_text)
                     print("-" * 60 + "\n")
                 else:

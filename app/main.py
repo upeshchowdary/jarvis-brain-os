@@ -12,15 +12,22 @@ from app.utils.exceptions import JarvisError
 from app.utils.logger import logger
 
 
+from memory.long_term import long_term_memory
+from memory.vector_memory import vector_memory
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Startup and shutdown lifecycle context manager."""
     logger.info("Initializing JARVIS Brain Engine resources...")
-    # Initialize SQLite tables asynchronously
+    # Initialize SQLite database tables asynchronously
     await db_manager.init_db()
-    logger.info("JARVIS Brain Engine startup complete.")
+    await long_term_memory.init_db()
+    await vector_memory.load_from_db()
+    logger.info("JARVIS Brain Engine startup & memory persistence initialization complete.")
     yield
     logger.info("Shutting down JARVIS Brain Engine resources...")
+
 
 
 def create_app() -> FastAPI:

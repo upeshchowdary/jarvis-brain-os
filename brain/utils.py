@@ -2,8 +2,24 @@
 
 import re
 import json
+import socket
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional
+
+
+def is_internet_available(host: str = "8.8.8.8", port: int = 53, timeout: float = 1.0) -> bool:
+    """Fast check if active internet connection is reachable (1s timeout)."""
+    try:
+        s = socket.create_connection((host, port), timeout=timeout)
+        s.close()
+        return True
+    except Exception:
+        try:
+            s = socket.create_connection(("1.1.1.1", port), timeout=timeout)
+            s.close()
+            return True
+        except Exception:
+            return False
 
 
 def get_current_datetime_utc() -> str:
