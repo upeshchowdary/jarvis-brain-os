@@ -28,14 +28,19 @@ class ContextManager:
         extra_context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Assemble comprehensive, extensible context dictionary."""
+        from brain.utils import get_current_datetime_local
         current_dt = get_current_datetime_utc()
-        date_str, time_str = current_dt.split("T")
+        local_dt = get_current_datetime_local()
 
         context = {
             "user_query": user_query,
             "current_datetime": current_dt,
-            "current_date": date_str,
-            "current_time": time_str.split(".")[0],
+            "current_date": local_dt["date"],
+            "current_time": local_dt["time_12h_short"],
+            "current_time_full": local_dt["time_12h"],
+            "current_time_24h": local_dt["time_24h"],
+            "current_full_date": local_dt["full_date"],
+            "current_formatted_local": local_dt["formatted_full"],
             "active_model": model_manager.current_model,
             "active_task": self._active_task or "General Assistance",
             "conversation_history": conversation_history or [],

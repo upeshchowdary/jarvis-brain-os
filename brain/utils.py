@@ -27,6 +27,21 @@ def get_current_datetime_utc() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def get_current_datetime_local() -> Dict[str, str]:
+    """Return local system date and time in human-readable 12-hour, 24-hour, and ISO formats."""
+    now = datetime.now().astimezone()
+    return {
+        "iso": now.isoformat(),
+        "date": now.strftime("%Y-%m-%d"),
+        "full_date": now.strftime("%A, %B %d, %Y"),
+        "time_12h": now.strftime("%I:%M:%S %p"),
+        "time_12h_short": now.strftime("%I:%M %p"),
+        "time_24h": now.strftime("%H:%M:%S"),
+        "timezone": now.strftime("%Z (%z)"),
+        "formatted_full": now.strftime("%A, %B %d, %Y at %I:%M:%S %p"),
+    }
+
+
 def estimate_token_count(text: str) -> int:
     """Estimate token length of a given text (approx. 4 chars per token)."""
     if not text:

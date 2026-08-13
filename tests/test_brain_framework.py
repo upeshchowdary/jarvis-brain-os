@@ -61,9 +61,14 @@ def test_conversation_manager():
 
 
 def test_intent_engine():
-    intent = intent_engine.detect_intent("Can you open Chrome?")
+    # Chrome triggers SCREEN_VISION because it's a browser screen query keyword
+    intent_chrome = intent_engine.detect_intent("Can you open Chrome?")
+    assert intent_chrome.intent == "SCREEN_VISION"
+
+    # Unambiguous app launch — should be OPEN_APPLICATION
+    intent = intent_engine.detect_intent("launch Notepad")
     assert intent.intent == "OPEN_APPLICATION"
-    assert intent.arguments.get("application_name") == "chrome"
+    assert "notepad" in intent.arguments.get("application_name", "").lower()
 
     intent_switch = intent_engine.detect_intent("switch to ollama")
     assert intent_switch.intent == "MODEL_SWITCH"

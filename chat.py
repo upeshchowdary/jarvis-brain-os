@@ -24,17 +24,17 @@ async def check_server_connection() -> bool:
 
 
 async def chat_loop():
-    print("=" * 60)
-    print("  JARVIS AI OPERATING SYSTEM — INTERACTIVE TERMINAL CHAT")
-    print("=" * 60)
+    # print("=" * 60)
+    # print("  JARVIS AI OPERATING SYSTEM — INTERACTIVE TERMINAL CHAT")
+    # print("=" * 60)
     
     if not await check_server_connection():
         return
 
-    print("Type your message and press Enter. Type 'exit' or 'quit' to quit.\n")
+    print("Type your message and press Enter\n")
     session_id = "cli_session_001"
 
-    async with httpx.AsyncClient(timeout=60.0) as client:
+    async with httpx.AsyncClient(timeout=180.0) as client:
         while True:
             try:
                 user_input = input("You > ").strip()
@@ -61,9 +61,16 @@ async def chat_loop():
                     meta = data.get("metadata", {})
                     provider = meta.get("provider", "groq").upper()
                     model_name = meta.get("model", "llama-3.3-70b-versatile")
+                    req_model = meta.get("requested_model", "")
+                    fallback_used = meta.get("fallback_used", False)
                     latency = meta.get("total_latency_ms", meta.get("latency_ms", 0))
 
-                    print(f"\nJARVIS [{provider} : {model_name} | {intent_code} | {latency:.0f}ms] >")
+                    if fallback_used and req_model and req_model != model_name:
+                        model_tag = f"{provider} : {model_name} (Fallback from {req_model})"
+                    else:
+                        model_tag = f"{provider} : {model_name}"
+
+                    print(f"\nJARVIS [{model_tag} | {intent_code} | {latency:.0f}ms] >")
                     print(resp_text)
                     print("-" * 60 + "\n")
                 else:
@@ -77,4 +84,7 @@ async def chat_loop():
 
 
 if __name__ == "__main__":
-    asyncio.run(chat_loop())
+    try:
+        asyncio.run(chat_loop())
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        print("\nGoodbye!")

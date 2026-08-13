@@ -17,13 +17,33 @@ class IntentEngine:
     """Analyzes user inputs to determine structured intent and arguments."""
 
     @staticmethod
+    def classify_visual_query_type(query: str) -> str:
+        """Classify visual query into sub-categories."""
+        q = query.lower().strip()
+        if any(w in q for w in ["read text", "read the text", "visible text", "extract text", "read paragraph"]):
+            return "OCR"
+        if any(w in q for w in ["error", "exception", "traceback", "crash", "warning message", "stack trace"]):
+            return "ERROR_ANALYSIS"
+        if any(w in q for w in ["button", "submit", "checkbox", "menu", "where is", "click", "text box", "input field"]):
+            return "UI_ANALYSIS"
+        if any(w in q for w in ["image", "photo", "picture", "dog", "cat", "animal", "object", "item in picture"]):
+            return "IMAGE_DESCRIPTION"
+        if any(w in q for w in ["what animal", "what object", "who is in", "recognize object"]):
+            return "OBJECT_RECOGNITION"
+        if any(w in q for w in ["document", "pdf", "table", "chart", "graph"]):
+            return "DOCUMENT_ANALYSIS"
+        if any(w in q for w in ["what is on my screen", "describe my screen", "see my screen", "whats on screen", "entire screen"]):
+            return "SCREEN_DESCRIPTION"
+        return "VISUAL_QUESTION"
+
+    @staticmethod
     def detect_intent(query: str) -> StructuredIntent:
         """Classify intent using heuristic patterns and entity extraction."""
         q_lower = query.lower().strip()
 
         # 0. Model Switch / Provider Change Intent
         switch_match = re.search(
-            r"\b(?:switch|change|set|use|select)\s+(?:model\s+|provider\s+)?(?:to\s+)?(ollama|gemini|groq|llama[a-zA-Z0-9_\-\.]*|qwen[a-zA-Z0-9_\-\.]*|mixtral[a-zA-Z0-9_\-\.]*|gemma[a-zA-Z0-9_\-\.]*)",
+            r"\b(?:switch|change|set|use|select)\s+(?:model\s+|provider\s+)?(?:to\s+)?(ollama|gemini|groq|openai|gpt[a-zA-Z0-9_\-\.]*|llama[a-zA-Z0-9_\-\.]*|qwen[a-zA-Z0-9_\-\.]*|mixtral[a-zA-Z0-9_\-\.]*|gemma[a-zA-Z0-9_\-\.]*)",
             q_lower,
         )
         if switch_match:
@@ -32,9 +52,11 @@ class IntentEngine:
             if target_raw == "ollama":
                 target_model = f"ollama/{brain_config.OLLAMA_MODEL}"
             elif target_raw == "gemini":
-                target_model = "gemini-1.5-flash"
+                target_model = "gemini-2.5-flash"
             elif target_raw == "groq":
                 target_model = "llama-3.3-70b-versatile"
+            elif target_raw in ("openai", "gpt"):
+                target_model = "gpt-4o-mini"
 
             return StructuredIntent(
                 intent="MODEL_SWITCH",
@@ -43,12 +65,67 @@ class IntentEngine:
                 summary=f"User requested switching active model to '{target_model}'",
             )
 
-        # 1. Real-Time / Internet Knowledge Search Intent
+        # 1. Refresh Vision Intent
+        refresh_triggers = [
+            "look again", "refresh vision", "analyze again", "analyze the screen again",
+            "re-analyze screen", "reanalyze screen", "check screen again", "look at screen again",
+            "what is on my screen right now", "take another look", "refresh screen"
+        ]
+        if any(w in q_lower for w in refresh_triggers):
+            v_type = IntentEngine.classify_visual_query_type(query)
+            return StructuredIntent(
+                intent="SCREEN_VISION",
+                confidence=0.99,
+                arguments={"query": query, "visual_query_type": v_type, "force_refresh": True},
+                summary=f"User explicitly requested fresh screen analysis ({v_type}).",
+            )
+
+        # 1b. Screen Vision & Visual Perception Intent
+        vision_triggers = [
+            # Direct screen/display references
+            "screen", "display", "monitor", "desktop",
+            # What-do-you-see patterns
+            "can you see", "what do you see", "what can you see", "see my", "look at my",
+            "whats on my", "what is on my", "what's on my", "what is on screen",
+            "on my screen", "in my screen", "on the screen",
+            # Image/visual content on screen
+            "image on screen", "picture on screen", "photo on screen", "image on my screen",
+            "picture on my screen", "what is the image", "what's the image", "what image",
+            "what animal", "what object", "what is in the image", "whats in the image",
+            "describe the image", "describe what you see", "describe my screen",
+            # App / window detection
+            "active window", "focused window", "apps opened", "open windows", "open apps",
+            "taskbar", "task bar", "which app", "which application", "which window",
+            "what app", "what application", "what window", "apps in taskbar",
+            "apps are open", "what's open", "whats open",
+            # Specific screen content
+            "background colour", "background color", "background color of",
+            "colour of the screen", "color of the screen",
+            "what text", "text on screen", "visible text",
+            "whatsapp", "chrome", "vs code", "vscode", "code editor", "terminal window",
+            # Cursor / position
+            "cursor position", "where is the cursor", "where is my cursor",
+            # Change detection
+            "what changed", "what's different", "screenshot", "screen capture",
+            # General visual queries (removed 'visual'/'visually' — too broad, triggers on non-vision queries)
+            "see the", "see it", "look at",
+        ]
+        if any(w in q_lower for w in vision_triggers):
+            v_type = IntentEngine.classify_visual_query_type(query)
+            return StructuredIntent(
+                intent="SCREEN_VISION",
+                confidence=0.98,
+                arguments={"query": query, "visual_query_type": v_type, "force_refresh": False},
+                summary=f"User requested visual perception ({v_type}) of active desktop.",
+            )
+
+        # 2. Real-Time / Internet Knowledge Search Intent
         realtime_triggers = [
-            "today", "present", "right now", "latest", "recent", "news",
-            "current", "search internet", "search web", "live", "price",
-            "weather", "who won", "score", "update", "2026", "2025", "2024",
-            "what is happening", "what happened"
+            "today's", "right now", "latest news", "recent news",
+            "search internet", "search the web", "search web", "look up online",
+            "live price", "current price", "price of", "stock price",
+            "weather", "who won", "score", "live update", "breaking news",
+            "what is happening", "what happened today", "news today",
         ]
         if any(w in q_lower for w in realtime_triggers):
             return StructuredIntent(
@@ -58,7 +135,7 @@ class IntentEngine:
                 summary="User requested real-time live internet information or current web search.",
             )
 
-        # 2. System Info / Telemetry Intent
+        # 3. System Info / Telemetry Intent
         if any(w in q_lower for w in ["cpu", "ram", "memory usage", "system info", "os version", "disk space", "hardware status"]):
             return StructuredIntent(
                 intent="SYSTEM_TELEMETRY",
@@ -67,7 +144,7 @@ class IntentEngine:
                 summary="User requested system metrics or OS telemetry.",
             )
 
-        # 3. File System Operation Intent
+        # 4. File System Operation Intent
         if any(w in q_lower for w in ["read file", "write file", "list directory", "list files", "save to file"]):
             return StructuredIntent(
                 intent="FILESYSTEM_OPERATION",
@@ -76,9 +153,11 @@ class IntentEngine:
                 summary="User requested file or directory operation.",
             )
 
-        # 4. Open Application Intent
+        # 5. Open Application Intent — ONLY for explicit launch commands, NOT screen queries
         open_app_match = re.search(r"\b(?:open|launch|start|run)\s+([a-zA-Z0-9_\-\s]+)", q_lower)
-        if open_app_match and not any(w in q_lower for w in ["code", "script", "file", "url", "browser"]):
+        if open_app_match and not any(w in q_lower for w in [
+            "code", "script", "file", "url", "browser", "screen", "taskbar", "window", "app", "image"
+        ]):
             app_name = open_app_match.group(1).strip()
             return StructuredIntent(
                 intent="OPEN_APPLICATION",

@@ -8,6 +8,20 @@ from brain.brain_config import brain_config
 from brain.logger import logger
 from brain.utils import is_internet_available
 
+# ─── Internet connectivity cache (avoids repeated DNS checks on every request) ───
+_inet_cache: Tuple[Optional[bool], float] = (None, 0.0)  # (result, timestamp)
+_INET_CACHE_TTL = 10.0  # seconds
+
+
+def _cached_is_internet_available() -> bool:
+    """Return cached internet status, refreshing every 10 seconds."""
+    global _inet_cache
+    result, ts = _inet_cache
+    if result is None or (time.monotonic() - ts) > _INET_CACHE_TTL:
+        result = is_internet_available()
+        _inet_cache = (result, time.monotonic())
+    return result
+
 
 class QueryComplexity(str, Enum):
     SIMPLE = "simple"       # Route to Local Ollama to save API tokens
@@ -21,13 +35,18 @@ class ModelManager:
     def __init__(self, api_key: Optional[str] = None, current_model: Optional[str] = None) -> None:
         self.groq_api_key = api_key or brain_config.GROQ_API_KEY
         self.gemini_api_key = brain_config.GEMINI_API_KEY
+        self.openai_api_key = brain_config.OPENAI_API_KEY
         self.ollama_base_url = brain_config.OLLAMA_BASE_URL.rstrip('/').replace("localhost", "127.0.0.1")
         self.ollama_model = brain_config.OLLAMA_MODEL
+        self.ollama_vision_model = brain_config.OLLAMA_VISION_MODEL
         self.current_model = current_model or brain_config.DEFAULT_MODEL
         self.groq_endpoint = f"{brain_config.GROQ_BASE_URL.rstrip('/')}/chat/completions"
         self.gemini_endpoint = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+        self.openai_endpoint = "https://api.openai.com/v1/chat/completions"
 
         self.available_models = [
+            "gpt-4o-mini",
+            "gpt-4o",
             "llama-3.3-70b-versatile",
             "llama-3.1-8b-instant",
             "mixtral-8x7b-32768",
@@ -35,7 +54,32 @@ class ModelManager:
             "gemini-1.5-flash",
             "gemini-1.5-pro",
             f"ollama/{self.ollama_model}",
+            f"ollama/{self.ollama_vision_model}",
         ]
+
+        self.model_capabilities: Dict[str, Dict[str, bool]] = {
+            "llama-3.3-70b-versatile": {"text": True, "vision": False},
+            "llama-3.1-8b-instant": {"text": True, "vision": False},
+            "mixtral-8x7b-32768": {"text": True, "vision": False},
+            "gemma2-9b-it": {"text": True, "vision": False},
+            "qwen2.5": {"text": True, "vision": False},
+            "qwen3-vl:8b": {"text": True, "vision": True},
+            "gemini-1.5-flash": {"text": True, "vision": True},
+            "gemini-2.0-flash": {"text": True, "vision": True},
+            "gemini-1.5-pro": {"text": True, "vision": True},
+            "gpt-4o-mini": {"text": True, "vision": True},
+            "gpt-4o": {"text": True, "vision": True},
+            "llava": {"text": True, "vision": True},
+        }
+
+    def supports_vision(self, model_name: str) -> bool:
+        """Check if a model name explicitly supports visual image inputs."""
+        clean_name = model_name.replace("ollama/", "")
+        caps = self.model_capabilities.get(clean_name, {})
+        if caps.get("vision") is not None:
+            return caps["vision"]
+        # Default heuristic based on model name tags
+        return any(v in clean_name.lower() for v in ["vision", "vl", "4o", "llava"])
 
     def switch_model(self, new_model: str) -> bool:
         """Switch active LLM model dynamically."""
@@ -82,12 +126,12 @@ class ModelManager:
         if any(kw in q_clean for kw in complex_keywords):
             return QueryComplexity.COMPLEX
 
-        if intent_code in ("TASK_PLANNING", "CODE_GENERATION") or query_len > 250:
+        if intent_code in ("SCREEN_VISION", "TASK_PLANNING", "CODE_GENERATION") or query_len > 250:
             return QueryComplexity.COMPLEX
 
         # Simple casual / direct queries -> route to Ollama to save tokens
         simple_intents = ("GENERAL_CONVERSATION", "OPEN_APPLICATION", "SYSTEM_TELEMETRY", "FILESYSTEM_OPERATION")
-        if intent_code in simple_intents or query_len < 80:
+        if intent_code in simple_intents and query_len < 80:
             return QueryComplexity.SIMPLE
 
         return QueryComplexity.SIMPLE
@@ -297,6 +341,56 @@ class ModelManager:
                 },
             }
 
+    async def _call_openai(
+        self,
+        messages: List[Dict[str, str]],
+        model: str,
+        temperature: float,
+        max_tokens: int,
+    ) -> Dict[str, Any]:
+        """Execute request against OpenAI API endpoint."""
+        if not self.openai_api_key:
+            raise ValueError("OPENAI_API_KEY is not configured.")
+
+        headers = {
+            "Authorization": f"Bearer {self.openai_api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+
+        start_time = time.perf_counter()
+        async with httpx.AsyncClient(timeout=brain_config.TIMEOUT_SECONDS) as client:
+            response = await client.post(self.openai_endpoint, headers=headers, json=payload)
+            elapsed_ms = (time.perf_counter() - start_time) * 1000
+
+            if response.status_code == 429:
+                raise RuntimeError(f"OpenAI API rate limit exceeded (429): {response.text}")
+            if response.status_code != 200:
+                raise RuntimeError(f"OpenAI API call error [{response.status_code}]: {response.text}")
+
+            data = response.json()
+            choice = data["choices"][0]
+            content = choice["message"]["content"] or ""
+            usage = data.get("usage", {})
+
+            return {
+                "content": content,
+                "model": model,
+                "provider": "openai",
+                "latency_ms": round(elapsed_ms, 2),
+                "finish_reason": choice.get("finish_reason"),
+                "usage": {
+                    "prompt_tokens": usage.get("prompt_tokens", 0),
+                    "completion_tokens": usage.get("completion_tokens", 0),
+                    "total_tokens": usage.get("total_tokens", 0),
+                },
+            }
+
     async def generate(
         self,
         messages: List[Dict[str, str]],
@@ -311,8 +405,8 @@ class ModelManager:
         temp = temperature if temperature is not None else brain_config.TEMPERATURE
         tokens = max_tokens or brain_config.MAX_TOKENS
 
-        # 1. Fast Internet Availability Check
-        online = is_internet_available()
+        # 1. Fast Internet Availability Check (cached for 10s)
+        online = _cached_is_internet_available()
 
         # Extract last user query string for complexity classification
         user_query = ""
@@ -353,25 +447,32 @@ class ModelManager:
                     )
 
             # Add primary target model
-            if "gemini" in target_model.lower():
-                if ("gemini", target_model) not in candidates:
-                    candidates.append(("gemini", target_model))
-            elif "ollama" in target_model.lower():
+            if "ollama" in target_model.lower():
                 clean_m = target_model.replace("ollama/", "")
                 if ("ollama", clean_m) not in candidates:
                     candidates.append(("ollama", clean_m))
+            elif "gpt" in target_model.lower() or "openai" in target_model.lower():
+                if ("openai", target_model) not in candidates:
+                    candidates.append(("openai", target_model))
+            elif intent_code == "SCREEN_VISION":
+                # SCREEN_VISION uses the dedicated vision pipeline (screen_analyzer.py).
+                # Text LLM here is only for summarising the vision result — route to Groq.
+                if ("groq", "llama-3.3-70b-versatile") not in candidates:
+                    candidates.append(("groq", "llama-3.3-70b-versatile"))
+            elif "gemini" in target_model.lower():
+                if ("gemini", target_model) not in candidates:
+                    candidates.append(("gemini", target_model))
             else:
                 if ("groq", target_model) not in candidates:
                     candidates.append(("groq", target_model))
 
-            # Fallback queue
+            # Fallback queue — Groq → Gemini → local Ollama (OpenAI removed: invalid key)
             fallback_queue = [
+                ("groq", "llama-3.3-70b-versatile"),
                 ("groq", "llama-3.1-8b-instant"),
-                ("groq", "mixtral-8x7b-32768"),
-                ("gemini", "gemini-1.5-flash"),
-                ("gemini", "gemini-1.5-pro"),
-                ("groq", "gemma2-9b-it"),
+                ("gemini", "gemini-2.5-flash"),
                 ("ollama", self.ollama_model),
+                ("ollama", "qwen3.5:latest"),
             ]
 
             for prov, mod in fallback_queue:
@@ -380,12 +481,16 @@ class ModelManager:
 
         last_error = None
         for prov, mod in candidates:
-            if not online and prov in ("groq", "gemini"):
+            if not online and prov in ("groq", "gemini", "openai"):
                 logger.info(f"Skipping cloud provider [{prov} : {mod}] because internet is disconnected.")
                 continue
 
             try:
-                if prov == "ollama":
+                if prov == "openai" and self.openai_api_key:
+                    res = await self._call_openai(messages, mod, temp, tokens)
+                    logger.info(f"ModelManager generated response using cloud [{prov} : {mod}]")
+                    return res
+                elif prov == "ollama":
                     res = await self._call_ollama(messages, mod, temp, tokens)
                     logger.info(f"ModelManager generated response using local [{prov} : {mod}]")
                     return res
