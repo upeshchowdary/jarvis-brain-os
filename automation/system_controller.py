@@ -1,4 +1,4 @@
-﻿"""JARVIS System Controller — Safe file system and command execution.
+"""JARVIS System Controller — Safe file system and command execution.
 
 Wraps the existing FileSystemTool and adds:
 - Full file operations (create, read, rename, move, copy, delete, search)
@@ -19,6 +19,71 @@ from automation.automation_logger import log_action
 from automation.safety_manager import safety_manager
 
 
+import re
+
+
+def resolve_user_system_path(path_str: str) -> Path:
+    """
+    Resolve user-friendly path names like 'desktop', 'downloads', 'documents',
+    or expressions like '123 in desktop' or 'desktop/123'.
+    """
+    raw = path_str.strip().strip("'\"")
+    location_hint = ""
+
+    # Check for expressions like "123 in desktop" or "notes on desktop"
+    loc_match = re.search(
+        r"^(.*?)\s+(?:in|on|at|inside)\s+(?:my\s+)?(desktop|downloads|documents|docs|pictures|music|videos)(?:\s+folder|\s+directory)?$",
+        raw,
+        re.IGNORECASE,
+    )
+    if loc_match:
+        raw = loc_match.group(1).strip()
+        location_hint = loc_match.group(2).lower().strip()
+
+    # Check for prefixes like "desktop/123" or "desktop\123"
+    if raw.lower().startswith("desktop/") or raw.lower().startswith("desktop\\"):
+        location_hint = "desktop"
+        raw = raw[8:].strip()
+    elif raw.lower().startswith("downloads/") or raw.lower().startswith("downloads\\"):
+        location_hint = "downloads"
+        raw = raw[10:].strip()
+    elif raw.lower().startswith("documents/") or raw.lower().startswith("documents\\"):
+        location_hint = "documents"
+        raw = raw[10:].strip()
+
+    # If no file extension provided, default to .txt
+    if raw and "." not in Path(raw).name:
+        raw = f"{raw}.txt"
+
+    user_home = Path.home()
+    onedrive_desktop = user_home / "OneDrive" / "Desktop"
+    onedrive_docs = user_home / "OneDrive" / "Documents"
+    onedrive_pics = user_home / "OneDrive" / "Pictures"
+
+    target_dir = Path.cwd()
+    if location_hint == "desktop":
+        target_dir = onedrive_desktop if onedrive_desktop.exists() else (user_home / "Desktop")
+    elif location_hint in ("downloads", "download"):
+        target_dir = user_home / "Downloads"
+    elif location_hint in ("documents", "docs"):
+        target_dir = onedrive_docs if onedrive_docs.exists() else (user_home / "Documents")
+    elif location_hint in ("pictures", "pics"):
+        target_dir = onedrive_pics if onedrive_pics.exists() else (user_home / "Pictures")
+    elif location_hint == "music":
+        target_dir = user_home / "Music"
+    elif location_hint == "videos":
+        target_dir = user_home / "Videos"
+
+    if location_hint:
+        return target_dir / Path(raw).name
+
+    # If an absolute path or relative path without hint
+    p = Path(raw)
+    if not p.is_absolute():
+        p = Path.cwd() / p
+    return p
+
+
 class SystemController:
     """Safe file system and terminal command controller."""
 
@@ -35,9 +100,10 @@ class SystemController:
         if self.dry_run:
             return {"success": True, "dry_run": True, "path": path}
         try:
-            p = Path(path)
+            p = resolve_user_system_path(path)
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(content, encoding="utf-8")
+            log_action("system", "create_file", str(p), result="CREATED")
             return {"success": True, "action": "create_file", "path": str(p), "size": len(content)}
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -47,11 +113,16 @@ class SystemController:
         if self.dry_run:
             return {"success": True, "dry_run": True, "content": "[DRY RUN]"}
         try:
-            p = Path(path)
+            p = resolve_user_system_path(path)
             if not p.exists():
-                return {"success": False, "error": f"File not found: {path}"}
+                # Try relative to cwd
+                p_cwd = Path(path)
+                if p_cwd.exists():
+                    p = p_cwd
+                else:
+                    return {"success": False, "error": f"File not found: {path} (checked {p})"}
             content = p.read_bytes()[:max_bytes].decode("utf-8", errors="replace")
-            return {"success": True, "path": path, "content": content, "size": p.stat().st_size}
+            return {"success": True, "path": str(p), "content": content, "size": p.stat().st_size}
         except Exception as e:
             return {"success": False, "error": str(e)}
 

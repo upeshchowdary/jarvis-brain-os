@@ -163,22 +163,41 @@ def _fast_rule_planner(command: str) -> Optional[List[TaskStep]]:
         return [TaskStep(index=0, action="press", value=key, description=f"Press {key}")]
 
     # 11. File Operations (Create, Write, Read)
+    # Match patterns like:
+    # "create a file named 123 in desktop"
+    # "create file test.txt with content hello"
+    # "make a file on desktop called notes"
     m = re.search(
-        r"^(?:create|make|write)\s+(?:a\s+)?file\s+(?:named\s+|called\s+)?['\"]?([a-zA-Z0-9_\-\./\\]+?)['\"]?(?:\s+with\s+(?:content\s+|text\s+)?['\"]?(.+?)['\"]?)?$",
+        r"^(?:create|make|write)\s+(?:a\s+)?file\s+(?:named\s+|called\s+)?['\"]?([a-zA-Z0-9_\-\./\\]+?)['\"]?(?:\s+(?:in|on|at|inside)\s+(?:my\s+)?(desktop|downloads|documents|docs|pictures|music|videos)(?:\s+folder|\s+directory)?)?(?:\s+with\s+(?:content\s+|text\s+)?['\"]?(.+?)['\"]?)?$",
         cmd,
     )
     if m:
-        file_path = m.group(1).strip()
-        file_content = m.group(2).strip() if m.group(2) else ""
-        return [TaskStep(index=0, action="create_file", target=file_path, value=file_content, description=f"Create file '{file_path}'")]
+        filename = m.group(1).strip()
+        loc = m.group(2)
+        content = m.group(3).strip() if m.group(3) else ""
+        target_path = f"{loc}/{filename}" if loc else filename
+        return [TaskStep(index=0, action="create_file", target=target_path, value=content, description=f"Create file '{target_path}'")]
 
     m = re.search(
-        r"^(?:read|view|show|cat|display)\s+(?:the\s+)?(?:content\s+of\s+)?(?:file\s+)?['\"]?([a-zA-Z0-9_\-\./\\]+\.[a-zA-Z0-9]+)['\"]?$",
+        r"^(?:create|make|write)\s+(?:a\s+)?file\s+(?:in|on|at|inside)\s+(?:my\s+)?(desktop|downloads|documents|docs|pictures|music|videos)(?:\s+folder|\s+directory)?\s+(?:named\s+|called\s+)?['\"]?([a-zA-Z0-9_\-\./\\]+?)['\"]?(?:\s+with\s+(?:content\s+|text\s+)?['\"]?(.+?)['\"]?)?$",
         cmd,
     )
     if m:
-        file_path = m.group(1).strip()
-        return [TaskStep(index=0, action="read_file", target=file_path, description=f"Read file '{file_path}'")]
+        loc = m.group(1).strip()
+        filename = m.group(2).strip()
+        content = m.group(3).strip() if m.group(3) else ""
+        target_path = f"{loc}/{filename}"
+        return [TaskStep(index=0, action="create_file", target=target_path, value=content, description=f"Create file '{target_path}'")]
+
+    m = re.search(
+        r"^(?:read|view|show|cat|display)\s+(?:the\s+)?(?:content\s+of\s+)?(?:file\s+)?['\"]?([a-zA-Z0-9_\-\./\\]+?)['\"]?(?:\s+(?:in|on|at)\s+(?:my\s+)?(desktop|downloads|documents|docs))?$",
+        cmd,
+    )
+    if m:
+        filename = m.group(1).strip()
+        loc = m.group(2)
+        target_path = f"{loc}/{filename}" if loc else filename
+        return [TaskStep(index=0, action="read_file", target=target_path, description=f"Read file '{target_path}'")]
 
     # 12. Run terminal command
     m = re.search(r"^(?:run|execute)\s+(?:terminal\s+|powershell\s+|cmd\s+)?command\s+['\"]?(.+?)['\"]?$", cmd)
@@ -209,7 +228,7 @@ class TaskManager:
         """
         Convert a natural language automation command into a structured task plan.
         Uses fast deterministic rules for instant execution (<1ms),
-        falling back to LLM-powered planning for complex workflows.
+        falling back to direct LLM JSON planning for complex workflows.
         """
         task = AutomationTask(goal=command, session_id=session_id)
 
@@ -223,8 +242,8 @@ class TaskManager:
             )
             return task
 
-        # ── Step 1: Fallback to LLM Planning for complex multi-step tasks ──
-        from brain.brain_manager import brain_manager
+        # ── Step 1: Fallback to Direct LLM Planning ───────────────────
+        from brain.model_manager import model_manager
 
         planning_prompt = f"""You are a computer automation planner. 
 Convert this user command into a structured JSON automation plan.
@@ -252,15 +271,14 @@ Be specific. Use exact app names and URLs when possible."""
         task = AutomationTask(goal=command, session_id=session_id)
 
         try:
-            # Use existing brain for planning
-            output = await brain_manager.execute_cognitive_pipeline(
-                user_query=planning_prompt,
-                session_id=f"automation_plan_{session_id}",
-                personality="minimal",
+            llm_res = await model_manager.generate(
+                prompt=planning_prompt,
+                system_instruction="You are an automation planner that outputs ONLY valid JSON.",
+                temperature=0.0,
             )
 
             from brain.utils import extract_and_clean_json
-            plan_data = extract_and_clean_json(output.response)
+            plan_data = extract_and_clean_json(llm_res.content)
 
             if plan_data and "steps" in plan_data:
                 task.goal = plan_data.get("goal", command)
