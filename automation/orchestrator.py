@@ -45,6 +45,7 @@ _STATUS_TRIGGERS = {"status", "what are you doing", "automation status"}
 _DRY_RUN_TRIGGERS = {"dry run", "test run", "simulate", "don't actually do it"}
 _REPLAY_TRIGGERS = {"replay", "run workflow", "play workflow", "repeat", "do again"}
 _LIST_TRIGGERS = {"list workflows", "show workflows", "what workflows", "saved workflows"}
+_LIST_APPS_TRIGGERS = {"list apps", "show apps", "installed apps", "what apps are installed", "what apps do you see", "list installed apps", "all apps"}
 
 
 class AutomationOrchestrator:
@@ -59,7 +60,7 @@ class AutomationOrchestrator:
     async def execute(self, command: str, session_id: str = "") -> AutomationResult:
         """
         Main entry point called by BrainManager.
-        Parses intent → routes → returns AutomationResult.
+        Parses intent -> routes -> returns AutomationResult.
         """
         cmd = command.lower().strip()
         start = time.perf_counter()
@@ -88,6 +89,17 @@ class AutomationOrchestrator:
                 success=True,
                 summary=f"[TEST] Dry-run mode {status}. Actions will {'be simulated' if self._dry_run_mode else 'execute for real'}.",
                 dry_run=self._dry_run_mode,
+            )
+
+        # ── List installed applications ───────────────────────────────
+        if any(t in cmd for t in _LIST_APPS_TRIGGERS):
+            from automation.application_controller import application_controller
+            apps = application_controller.list_installed_apps()
+            sample = ", ".join(apps[:30])
+            return AutomationResult(
+                success=True,
+                summary=f"[APPS] Discovered {len(apps)} installed applications on this PC:\n{sample} ...",
+                details={"total_apps": len(apps), "apps": apps},
             )
 
         # ── Screenshot ────────────────────────────────────────────────

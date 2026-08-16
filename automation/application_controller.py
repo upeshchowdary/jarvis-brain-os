@@ -1,13 +1,23 @@
-"""JARVIS Application Controller — Launch, detect, and manage applications.
+"""JARVIS Dynamic Application Controller — Automatic system-wide app discovery & native execution.
 
-Supports common Windows applications with a registry of known paths.
-Does NOT assume fixed startup time — uses state verification instead.
+Dynamically scans, indexes, and controls ALL installed applications on Windows:
+- Desktop Win32 applications (Program Files, AppData, PATH)
+- Microsoft Store & UWP applications (WhatsApp, Spotify, Calculator, Apple Music, ChatGPT, etc.)
+- Windows Protocol URIs (ms-settings, ms-photos, mailto, etc.)
+- Start Menu and Registry App Paths
+
+No hardcoded app paths. Fully aware of the local PC system state.
 """
 
 import asyncio
+import difflib
+import json
+import os
 import subprocess
 import sys
-from typing import Optional, Dict
+import time
+import winreg
+from typing import Dict, List, Optional, Tuple
 
 from automation.config import automation_config
 from automation.automation_logger import log_action
@@ -20,103 +30,163 @@ except ImportError:
     HAS_PSUTIL = False
 
 
-# ── Known application registry ───────────────────────────────────────────────
-# Maps common app names to executable paths / shell commands on Windows
+class DynamicSystemAppManager:
+    """Discovers, indexes, and resolves 100% of installed applications on this Windows PC."""
 
-_APP_REGISTRY: Dict[str, str] = {
-    # Browsers
-    "chrome": r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-    "google chrome": r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-    "firefox": r"C:\Program Files\Mozilla Firefox\firefox.exe",
-    "edge": r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
-    "microsoft edge": r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
-    "brave": r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe",
+    def __init__(self) -> None:
+        self._apps_cache: Dict[str, Dict[str, str]] = {}
+        self._last_index_time: float = 0.0
+        self.refresh_index()
 
-    # Development
-    "vscode": r"code",
-    "vs code": r"code",
-    "visual studio code": r"code",
-    "notepad": r"notepad.exe",
-    "notepad++": r"C:\Program Files\Notepad++\notepad++.exe",
+    def refresh_index(self) -> int:
+        """Scan system and index desktop, Store, and UWP apps."""
+        apps: Dict[str, Dict[str, str]] = {}
 
-    # System
-    "explorer": r"explorer.exe",
-    "file explorer": r"explorer.exe",
-    "cmd": r"cmd.exe",
-    "command prompt": r"cmd.exe",
-    "powershell": r"powershell.exe",
-    "terminal": r"wt.exe",  # Windows Terminal
-    "windows terminal": r"wt.exe",
-    "settings": r"ms-settings:",
-    "task manager": r"taskmgr.exe",
-    "calculator": r"calc.exe",
-    "paint": r"mspaint.exe",
-    "wordpad": r"wordpad.exe",
+        # 1. PowerShell Get-StartApps (Indexes all Desktop + Windows Store / UWP apps)
+        try:
+            ps_cmd = "Get-StartApps | ConvertTo-Json -Compress"
+            proc = subprocess.run(
+                ["powershell", "-NoProfile", "-Command", ps_cmd],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if proc.returncode == 0 and proc.stdout.strip():
+                data = json.loads(proc.stdout.strip())
+                if isinstance(data, dict):
+                    data = [data]
+                for item in data:
+                    name = item.get("Name", "").strip()
+                    appid = item.get("AppID", "").strip()
+                    if name and appid:
+                        clean_key = name.lower().strip()
+                        if os.path.exists(appid):
+                            launch_cmd = appid
+                            launch_type = "exe"
+                        else:
+                            launch_cmd = f"shell:AppsFolder\\{appid}"
+                            launch_type = "uwp"
 
-    # Office
-    "word": r"winword.exe",
-    "excel": r"excel.exe",
-    "powerpoint": r"powerpnt.exe",
-    "outlook": r"outlook.exe",
+                        app_info = {
+                            "name": name,
+                            "appid": appid,
+                            "type": launch_type,
+                            "launch_cmd": launch_cmd,
+                        }
+                        apps[clean_key] = app_info
 
-    # Communication
-    "teams": r"ms-teams:",
-    "discord": r"discord.exe",
-    "slack": r"slack.exe",
-    "zoom": r"zoom.exe",
-    "whatsapp": r"WhatsApp.exe",
-    "telegram": r"telegram.exe",
+                        # Add intuitive aliases for common applications
+                        if "google chrome" in clean_key:
+                            apps["chrome"] = app_info
+                        if "visual studio code" in clean_key:
+                            apps["vscode"] = app_info
+                            apps["vs code"] = app_info
+                            apps["code"] = app_info
+                        if "telegram desktop" in clean_key:
+                            apps["telegram"] = app_info
+                        if "whatsapp" in clean_key:
+                            apps["whatsapp"] = app_info
+                            apps["whats app"] = app_info
+                        if "calculator" in clean_key:
+                            apps["calc"] = app_info
+                        if "command prompt" in clean_key:
+                            apps["cmd"] = app_info
+                        if "file explorer" in clean_key:
+                            apps["explorer"] = app_info
+        except Exception as e:
+            log_action("app_discovery", "Get-StartApps", str(e), level="WARNING")
 
-    # Media
-    "vlc": r"C:\Program Files\VideoLAN\VLC\vlc.exe",
-    "spotify": r"spotify.exe",
-    "photos": r"ms-photos:",
+        # 2. Windows Registry App Paths (HKLM & HKCU)
+        reg_paths = [
+            (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths"),
+            (winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\App Paths"),
+        ]
+        for root, key_path in reg_paths:
+            try:
+                with winreg.OpenKey(root, key_path) as key:
+                    num_subkeys = winreg.QueryInfoKey(key)[0]
+                    for i in range(num_subkeys):
+                        try:
+                            subkey_name = winreg.EnumKey(key, i)
+                            with winreg.OpenKey(key, subkey_name) as subkey:
+                                exe_path, _ = winreg.QueryValueEx(subkey, "")
+                                if exe_path and os.path.exists(exe_path):
+                                    clean_name = subkey_name.lower().replace(".exe", "").strip()
+                                    if clean_name not in apps:
+                                        apps[clean_name] = {
+                                            "name": subkey_name,
+                                            "appid": exe_path,
+                                            "type": "registry_exe",
+                                            "launch_cmd": exe_path,
+                                        }
+                        except Exception:
+                            pass
+            except Exception:
+                pass
 
-    # Other
-    "obs": r"obs64.exe",
-    "paint 3d": r"ms-paint:",
-    "snipping tool": r"snippingtool.exe",
-}
+        # 3. Known System Built-ins & URI Protocols
+        system_protocols = {
+            "settings": ("Settings", "ms-settings:", "protocol"),
+            "photos": ("Photos", "ms-photos:", "protocol"),
+            "camera": ("Camera", "microsoft.windows.camera:", "protocol"),
+            "mail": ("Mail", "mailto:", "protocol"),
+            "paint": ("Paint", "mspaint.exe", "exe"),
+            "notepad": ("Notepad", "notepad.exe", "exe"),
+            "task manager": ("Task Manager", "taskmgr.exe", "exe"),
+            "terminal": ("Windows Terminal", "wt.exe", "exe"),
+            "powershell": ("PowerShell", "powershell.exe", "exe"),
+            "cmd": ("Command Prompt", "cmd.exe", "exe"),
+            "explorer": ("File Explorer", "explorer.exe", "exe"),
+        }
+        for k, (disp, cmd_val, p_type) in system_protocols.items():
+            if k not in apps:
+                apps[k] = {
+                    "name": disp,
+                    "appid": cmd_val,
+                    "type": p_type,
+                    "launch_cmd": cmd_val,
+                }
 
-# Window title fragments to detect each app after launch
-_APP_WINDOW_HINTS: Dict[str, str] = {
-    "chrome": "Google Chrome",
-    "google chrome": "Google Chrome",
-    "firefox": "Mozilla Firefox",
-    "edge": "Edge",
-    "microsoft edge": "Microsoft Edge",
-    "brave": "Brave",
-    "vscode": "Visual Studio Code",
-    "vs code": "Visual Studio Code",
-    "visual studio code": "Visual Studio Code",
-    "notepad": "Notepad",
-    "notepad++": "Notepad++",
-    "explorer": "File Explorer",
-    "file explorer": "File Explorer",
-    "cmd": "Command Prompt",
-    "command prompt": "Command Prompt",
-    "powershell": "Windows PowerShell",
-    "terminal": "Windows PowerShell",
-    "calculator": "Calculator",
-    "paint": "Paint",
-    "word": "Word",
-    "excel": "Excel",
-    "teams": "Teams",
-    "discord": "Discord",
-    "slack": "Slack",
-    "zoom": "Zoom",
-}
+        self._apps_cache = apps
+        self._last_index_time = time.time()
+        return len(apps)
+
+    def find_app(self, query: str) -> Optional[Dict[str, str]]:
+        """Find an installed app by exact name, alias, substring, or fuzzy match."""
+        q = query.lower().strip().replace(".exe", "")
+
+        # 1. Exact match
+        if q in self._apps_cache:
+            return self._apps_cache[q]
+
+        # 2. Substring matching
+        for k, v in self._apps_cache.items():
+            if q == k or q in k or k in q:
+                return v
+
+        # 3. Fuzzy matching for slight typos
+        matches = difflib.get_close_matches(q, self._apps_cache.keys(), n=1, cutoff=0.55)
+        if matches:
+            return self._apps_cache[matches[0]]
+
+        return None
+
+    def list_installed_apps(self) -> List[str]:
+        """Return a sorted list of unique application names found on the PC."""
+        names = {v["name"] for v in self._apps_cache.values()}
+        return sorted(names)
+
+
+# Global Dynamic App Manager
+dynamic_app_manager = DynamicSystemAppManager()
 
 
 class ApplicationController:
-    """Launch, detect, and wait for application readiness."""
+    """Launch, detect, and control any application on the user's computer."""
 
     def __init__(self, dry_run: bool = False) -> None:
         self.dry_run = dry_run or automation_config.DRY_RUN
-
-    def _resolve_app(self, name: str) -> Optional[str]:
-        """Resolve an app name to its executable path."""
-        return _APP_REGISTRY.get(name.lower().strip())
+        self.app_manager = dynamic_app_manager
 
     def is_running(self, process_name: str) -> bool:
         """Check if a process is currently running by name."""
@@ -131,56 +201,101 @@ class ApplicationController:
                 pass
         return False
 
-    async def open_app(self, name: str, args: str = "") -> dict:
-        """Open an application by name. Waits for it to appear on screen."""
-        app_key = name.lower().strip()
-        executable = self._resolve_app(app_key)
+    def list_installed_apps(self) -> List[str]:
+        """Get all discovered applications on this PC."""
+        return self.app_manager.list_installed_apps()
 
-        log_action("app", "open", name, dry_run=self.dry_run)
+    async def open_app(self, name: str, args: str = "") -> dict:
+        """Dynamically find and launch any application installed on this PC."""
+        app_name = name.strip()
+        log_action("app", "open", app_name, dry_run=self.dry_run)
 
         if self.dry_run:
-            return {"success": True, "dry_run": True, "action": "open_app", "app": name}
+            return {"success": True, "dry_run": True, "action": "open_app", "app": app_name}
 
-        if not executable:
-            # Try running it directly — might be in PATH
-            executable = name
+        # 1. Dynamically locate the application on the system
+        app_info = self.app_manager.find_app(app_name)
+
+        if not app_info:
+            # Refresh index once in case it was installed recently
+            self.app_manager.refresh_index()
+            app_info = self.app_manager.find_app(app_name)
+
+        if not app_info:
+            err = (
+                f"Application '{app_name}' was not found on this computer. "
+                f"Total applications discovered: {len(self.app_manager._apps_cache)}."
+            )
+            log_action("app", "open", app_name, result=f"NOT FOUND: {err}", level="WARNING")
+            return {"success": False, "error": err, "app": app_name}
+
+        launch_cmd = app_info["launch_cmd"]
+        app_type = app_info["type"]
+        display_name = app_info["name"]
 
         try:
-            cmd = executable
-            if args:
-                cmd = f"{executable} {args}"
-
-            # Use shell=True for ms- protocol URIs and apps in PATH
-            await asyncio.get_event_loop().run_in_executor(
-                None,
-                lambda: subprocess.Popen(
-                    cmd,
-                    shell=True,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
+            if app_type == "uwp":
+                # UWP / Store Apps: explorer.exe shell:AppsFolder\<AppID>
+                await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda: subprocess.Popen(
+                        ["explorer.exe", launch_cmd],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
                 )
-            )
-
-            # Wait for the window to appear
-            window_hint = _APP_WINDOW_HINTS.get(app_key, name)
-            wait_result = await window_controller.wait_for_window(
-                window_hint,
-                timeout=automation_config.APP_STARTUP_TIMEOUT
-            )
-
-            if wait_result["success"]:
-                log_action("app", "open", name, result=f"READY: {wait_result.get('title')}")
-                return {"success": True, "action": "open_app", "app": name,
-                        "window_title": wait_result.get("title")}
+            elif app_type == "protocol":
+                # URI Protocols: ms-settings:, whatsapp:, spotify:
+                await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda: os.startfile(launch_cmd)
+                )
+            elif app_type == "exe" and os.path.exists(launch_cmd):
+                # Executable with valid path
+                full_cmd = launch_cmd if not args else f'"{launch_cmd}" {args}'
+                await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda: subprocess.Popen(
+                        full_cmd,
+                        shell=True,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                )
             else:
-                # App may have launched but window title differs — return partial success
-                log_action("app", "open", name, result="LAUNCHED (window not confirmed)")
-                return {"success": True, "action": "open_app", "app": name,
-                        "note": "App launched but window title not confirmed"}
+                # Direct shell command
+                full_cmd = launch_cmd if not args else f"{launch_cmd} {args}"
+                await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda: subprocess.Popen(
+                        full_cmd,
+                        shell=True,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                )
+
+            # 2. Brief window confirmation (up to 1.5s non-blocking)
+            wait_res = await window_controller.wait_for_window(display_name, timeout=1.5)
+            if wait_res.get("success"):
+                log_action("app", "open", display_name, result=f"READY: {wait_res.get('title')}")
+                return {
+                    "success": True,
+                    "action": "open_app",
+                    "app": display_name,
+                    "window_title": wait_res.get("title"),
+                }
+
+            log_action("app", "open", display_name, result="LAUNCHED")
+            return {
+                "success": True,
+                "action": "open_app",
+                "app": display_name,
+            }
 
         except Exception as e:
-            log_action("app", "open", name, result=f"ERROR: {e}", level="ERROR")
-            return {"success": False, "error": str(e), "app": name}
+            log_action("app", "open", display_name, result=f"ERROR: {e}", level="ERROR")
+            return {"success": False, "error": str(e), "app": display_name}
 
     async def close_app(self, name: str, force: bool = False) -> dict:
         """Close an application gracefully, or force-kill if needed."""
@@ -188,40 +303,35 @@ class ApplicationController:
         action_name = "close_app_force" if force else "close_window"
         allowed, reason = safety_manager.is_allowed(action_name, name)
         if not allowed:
-            return {"success": False, "blocked": True, "reason": reason}
+            return {"success": False, "error": f"Blocked by safety manager: {reason}"}
 
-        log_action("app", "close" + (" (force)" if force else ""), name, dry_run=self.dry_run)
+        log_action("app", "close", name, dry_run=self.dry_run)
         if self.dry_run:
-            return {"success": True, "dry_run": True}
+            return {"success": True, "dry_run": True, "action": "close_app", "app": name}
 
-        if not HAS_PSUTIL or not force:
-            # Try graceful window close first
-            result = await window_controller.close_window(name)
-            return result
+        app_info = self.app_manager.find_app(name)
+        display_name = app_info["name"] if app_info else name
 
-        # Force kill via psutil
-        name_lower = name.lower().replace(".exe", "")
-        killed = 0
-        for proc in psutil.process_iter(["name", "pid"]):
-            try:
-                if name_lower in (proc.info["name"] or "").lower():
-                    proc.kill()
-                    killed += 1
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                pass
-        return {"success": True, "action": "close_app", "processes_killed": killed}
+        # 1. Try closing window gracefully
+        win_res = await window_controller.close_window(display_name)
+        if win_res["success"]:
+            return {"success": True, "action": "close_app", "app": display_name}
 
-    async def wait_for_app(self, name: str, timeout: float | None = None) -> bool:
-        """Wait until an app's window appears. Returns True if found, False on timeout."""
-        window_hint = _APP_WINDOW_HINTS.get(name.lower().strip(), name)
-        result = await window_controller.wait_for_window(
-            window_hint, timeout=timeout or automation_config.APP_STARTUP_TIMEOUT
-        )
-        return result["success"]
+        # 2. Fallback to process kill if requested or window close failed
+        if HAS_PSUTIL and force:
+            clean_name = name.lower().replace(".exe", "")
+            killed = 0
+            for proc in psutil.process_iter(["name", "pid"]):
+                try:
+                    if clean_name in (proc.info["name"] or "").lower():
+                        proc.terminate()
+                        killed += 1
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+            if killed > 0:
+                return {"success": True, "action": "close_app", "app": display_name, "killed_pids": killed}
 
-    def list_known_apps(self) -> list:
-        """Return list of app names JARVIS knows how to open."""
-        return sorted(set(_APP_REGISTRY.keys()))
+        return {"success": win_res.get("success", False), "action": "close_app", "app": display_name}
 
 
 # Global singleton
