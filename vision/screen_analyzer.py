@@ -331,15 +331,23 @@ async def analyze_screen(
 
         race_providers = []
 
-        # P1: Gemini 2.5 Flash — thinking disabled for speed (targets ~2s)
+        # P1: Gemini 2.5 Flash — fast cloud multimodal model
         if brain_config.GEMINI_API_KEY:
             gemini = GeminiVisionProvider(
                 api_key=brain_config.GEMINI_API_KEY,
                 model_name="gemini-2.5-flash",
+                timeout=5.0,
             )
             race_providers.append(("gemini", gemini))
 
-        # NOTE: Groq vision models are decommissioned (no working vision model on Groq as of Aug 2026)
+        # P2: Local Ollama (qwen3-vl:2b) — ultra-fast local offline backup
+        try:
+            ollama_local = OllamaVisionProvider(timeout=8.0)
+            race_providers.append(("ollama", ollama_local))
+        except Exception:
+            pass
+
+        logger.info(f"[JARVIS] Racing providers: {[name for name, _ in race_providers]}")
 
         if race_providers:
             res = await _race_providers(vision_image, enriched_prompt, race_providers)
@@ -386,7 +394,7 @@ async def analyze_screen(
         elapsed = round((time.perf_counter() - total_start) * 1000, 1)
         label = _vision_label("ollama", res.get("model", brain_config.OLLAMA_VISION_MODEL), elapsed)
         logger.info(f"[JARVIS] ✅ {label}")
-        return _build_result(True, "ollama", res.get("model", "qwen3-vl:8b"), query_type, analysis, label, elapsed, ctx, cv_result)
+        return _build_result(True, "ollama", res.get("model", "qwen3-vl:2b"), query_type, analysis, label, elapsed, ctx, cv_result)
 
     # ── Step 9: Emergency OCR fallback ───────────────────────────
     logger.warning("[JARVIS] P5: All vision LLMs failed. Using OpenCV+OCR fallback.")

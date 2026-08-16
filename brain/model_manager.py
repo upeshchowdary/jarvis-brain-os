@@ -63,6 +63,8 @@ class ModelManager:
             "mixtral-8x7b-32768": {"text": True, "vision": False},
             "gemma2-9b-it": {"text": True, "vision": False},
             "qwen2.5": {"text": True, "vision": False},
+            "qwen3-vl:2b": {"text": True, "vision": True},
+            "qwen3-vl:4b": {"text": True, "vision": True},
             "qwen3-vl:8b": {"text": True, "vision": True},
             "gemini-1.5-flash": {"text": True, "vision": True},
             "gemini-2.0-flash": {"text": True, "vision": True},

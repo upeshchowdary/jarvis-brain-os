@@ -27,7 +27,7 @@ _QUOTA_CODES = {429, 503, 500}
 _http_client: Optional[httpx.AsyncClient] = None
 
 
-def _get_client(timeout: float = 30.0) -> httpx.AsyncClient:
+def _get_client(timeout: float = 6.0) -> httpx.AsyncClient:
     """Get or create a pooled async HTTP client."""
     global _http_client
     if _http_client is None or _http_client.is_closed:
@@ -45,7 +45,7 @@ class GeminiVisionProvider(BaseVisionProvider):
         self,
         api_key: str,
         model_name: str = "gemini-2.5-flash",
-        timeout: float = 30.0,
+        timeout: float = 6.0,
         **kwargs: Any,
     ) -> None:
         super().__init__(provider_name="gemini", model_name=model_name, api_key=api_key)

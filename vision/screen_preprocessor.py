@@ -432,39 +432,34 @@ def build_enriched_prompt(
     """
     parts: List[str] = []
 
-    # Identity — concise
+    # Identity & instructions
     parts.append(
-        "You are JARVIS's visual perception system. "
-        "Examine the screenshot and answer the user's question directly and accurately."
+        "You are JARVIS's visual perception engine analyzing a Windows desktop screenshot. "
+        "Observe all visual details across the entire screen:\n"
+        "- The active window, applications, code, text, documents, or media displayed.\n"
+        "- The Windows taskbar and system tray at the bottom (system clock, battery status/percentage, Wi-Fi, volume, pinned and open application icons).\n"
+        "- Any UI controls, dialogs, buttons, notifications, or status indicators."
     )
 
-    # App context (tells LLM what kind of content to expect)
+    # App context
     if ctx.app_context_hint:
-        parts.append(f"\n[APP CONTEXT]: {ctx.app_context_hint}")
+        parts.append(f"\n[FOCUSED APP]: {ctx.app_context_hint}")
     if ctx.window_title:
-        parts.append(f"[ACTIVE WINDOW]: {ctx.window_title}")
+        parts.append(f"[WINDOW TITLE]: {ctx.window_title}")
 
-    # OCR grounding (prevents hallucination)
+    # OCR text (reference)
     if ctx.has_readable_text:
         if ctx.ocr_code_blocks:
-            code_snippet = ctx.ocr_code_blocks[0][:500]
-            parts.append(f"\n[VISIBLE CODE (OCR)]:\n{code_snippet}")
-        if ctx.ocr_paragraphs:
-            ocr_summary = "\n".join(f"  • {p[:120]}" for p in ctx.ocr_paragraphs[:6])
-            parts.append(f"\n[VISIBLE TEXT (OCR)]:\n{ocr_summary}")
-        parts.append(
-            "\nIMPORTANT: Use the OCR text above as ground truth. "
-            "Do NOT hallucinate text not listed above."
-        )
-    else:
-        parts.append("\n[OCR]: No readable text detected. Describe visual elements only.")
+            code_snippet = ctx.ocr_code_blocks[0][:400]
+            parts.append(f"\n[RECOGNIZED SCREEN TEXT / CODE]:\n{code_snippet}")
+        elif ctx.ocr_paragraphs:
+            ocr_summary = "\n".join(f"  • {p[:120]}" for p in ctx.ocr_paragraphs[:5])
+            parts.append(f"\n[RECOGNIZED SCREEN TEXT]:\n{ocr_summary}")
 
     # The user's question
     parts.append(f"\n[USER QUESTION]: {user_query}")
-
-    # Concise instruction
     parts.append(
-        "\nAnswer specifically, accurately, and concisely based on the screenshot."
+        "\nINSTRUCTION: Answer the user's question directly, accurately, and concisely based on what is visible anywhere on the screen."
     )
 
     return "\n".join(parts)

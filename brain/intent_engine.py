@@ -67,11 +67,12 @@ class IntentEngine:
 
         # ── AUTOMATION_TASK: Computer control, automation, recording, replay ──
         automation_triggers = [
-            # App control
-            "open chrome", "open google chrome", "open firefox", "open edge", "open brave",
-            "open vs code", "open vscode", "open visual studio", "open notepad", "open terminal",
-            "open file explorer", "open settings", "open calculator", "open word", "open excel",
+            # App control (including common typos)
+            "open chrome", "open chrom", "open google chrome", "open firefox", "open edge", "open brave",
+            "open vs code", "open vscode", "open code", "open visual studio", "open notepad", "open terminal",
+            "open file explorer", "open explorer", "open settings", "open calculator", "open word", "open excel",
             "open spotify", "open discord", "open slack", "open zoom", "open teams",
+            "open goggle", "open browser", "launch ",
             "close chrome", "close firefox", "close notepad", "close the app",
             # Mouse/click control
             "click the", "click on", "right click", "double click",
@@ -126,13 +127,16 @@ class IntentEngine:
             "screen", "display", "monitor", "desktop",
             # What-do-you-see patterns
             "can you see", "what do you see", "what can you see", "see my", "look at my",
-            "whats on my", "what is on my", "what's on my", "what is on screen",
-            "on my screen", "in my screen", "on the screen",
-            # Image/visual content on screen
+            "whats on my", "what is on my", "what's on my", "what is on screen", "whats on screen",
+            "on my screen", "in my screen", "on the screen", "see the screen",
+            # Image/visual content on screen (including common typos like inmage/imge)
             "image on screen", "picture on screen", "photo on screen", "image on my screen",
             "picture on my screen", "what is the image", "what's the image", "what image",
+            "what inmage", "inmage", "what imge", "what pic", "what picture", "what photo",
             "what animal", "what object", "what is in the image", "whats in the image",
-            "describe the image", "describe what you see", "describe my screen",
+            "describe the image", "describe what you see", "describe my screen", "what is shown",
+            # System tray / taskbar visual metrics
+            "battery", "battery %", "battery percentage", "see my battery", "charge",
             # App / window detection
             "active window", "focused window", "apps opened", "open windows", "open apps",
             "taskbar", "task bar", "which app", "which application", "which window",
@@ -142,12 +146,12 @@ class IntentEngine:
             "background colour", "background color", "background color of",
             "colour of the screen", "color of the screen",
             "what text", "text on screen", "visible text",
-            "whatsapp", "chrome", "vs code", "vscode", "code editor", "terminal window",
+            "whatsapp", "code editor", "terminal window",
             # Cursor / position
             "cursor position", "where is the cursor", "where is my cursor",
             # Change detection
             "what changed", "what's different", "screenshot", "screen capture",
-            # General visual queries (removed 'visual'/'visually' — too broad, triggers on non-vision queries)
+            # General visual queries
             "see the", "see it", "look at",
         ]
         if any(w in q_lower for w in vision_triggers):

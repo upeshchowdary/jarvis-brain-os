@@ -30,7 +30,7 @@ _VISION_MODEL_KEYWORDS = [
 
 # Preferred order when auto-discovering
 _PREFERRED_VISION_ORDER = [
-    "qwen3-vl:8b", "gemma3", "qwen2.5-vl", "pixtral",
+    "qwen3-vl:2b", "gemma3", "qwen2.5-vl", "pixtral",
     "llava:13b", "llava:7b", "llava",
     "moondream", "minicpm-v", "bakllava", "llama3.2-vision",
 ]
@@ -146,18 +146,22 @@ class OllamaVisionProvider(BaseVisionProvider):
                 "error": "Invalid or empty image.",
             }
 
-        # Auto-discover best vision model
-        target_model = kwargs.get("model") or self.model_name
-        best_model = await self.get_best_vision_model()
-        if best_model and best_model != target_model:
-            logger.info(f"[JARVIS] Auto-selected: {best_model} (configured: {target_model})")
-            target_model = best_model
-        elif not best_model:
-            return {
-                "success": False,
-                "provider": self.provider_name,
-                "error": "No Ollama vision model found. Run: ollama pull qwen3-vl:8b",
-            }
+        # Auto-discover best vision model if not explicitly specified
+        if "model" in kwargs and kwargs["model"]:
+            target_model = kwargs["model"]
+        else:
+            best_model = await self.get_best_vision_model()
+            if best_model and best_model != self.model_name:
+                logger.info(f"[JARVIS] Auto-selected: {best_model} (configured: {self.model_name})")
+                target_model = best_model
+            elif best_model:
+                target_model = best_model
+            else:
+                return {
+                    "success": False,
+                    "provider": self.provider_name,
+                    "error": "No Ollama vision model found. Run: ollama pull qwen3-vl:2b",
+                }
 
         logger.info(f"[JARVIS] Ollama vision: {target_model} (streaming)")
 

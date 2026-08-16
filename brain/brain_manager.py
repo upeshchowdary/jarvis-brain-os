@@ -135,25 +135,24 @@ class BrainManager:
                 summary="Follow-up question reusing last vision context.",
             )
 
-        # 3. CONDITIONAL MEMORY RETRIEVAL — Query long-term facts & vector search ONLY when query warrants it
+        # 3. MEMORY RETRIEVAL — Always load user facts (<1ms SQLite) + conditional vector/history search
         t_mem_start = time.perf_counter()
-        user_facts: Dict[str, str] = {}
+        user_facts: Dict[str, str] = await self.long_term_memory.get_all_facts()
         past_conversations: List[Dict[str, Any]] = []
         vector_docs: List[Any] = []
 
         requires_memory = (
             detected_intent.intent in ("KNOWLEDGE_REQUEST", "TASK_PLANNING", "CODE_GENERATION")
             or any(kw in q_lower for kw in [
-                "remember", "recall", "my name", "my project", "yesterday", "last time",
-                "previous", "preference", "what did i ask", "who am i", "my preference"
+                "remember", "recall", "my ", "about me", "who am i", "favorite", "favourite",
+                "yesterday", "last time", "previous", "preference", "what did i ask", "college"
             ])
         )
 
         if requires_memory:
-            logger.info(f"BrainManager: Intent [{detected_intent.intent}] requires memory retrieval.")
+            logger.info(f"BrainManager: Intent [{detected_intent.intent}] running vector & past conversation retrieval.")
             # Fire fact extraction in background — does not block main pipeline
             asyncio.create_task(self.long_term_memory.auto_extract_facts(user_query))
-            user_facts = await self.long_term_memory.get_all_facts()
             past_conversations = await db_manager.search_past_conversations(user_query, limit=5)
             vector_docs = vector_memory.search_similar(user_query, top_k=3)
 
@@ -313,7 +312,7 @@ class BrainManager:
             f"- Current Local Date & Time: {live_time_str}\n"
             f"- Current Local Time: {time_12h}\n"
             f"- Current Date: {date_str}\n"
-            f"MANDATE: When asked about the current time or date, state the exact live system date and time given above.\n"
+            f"MANDATE: Only mention or state the date or time if the user explicitly asks for the current time, date, day, or schedule. Do NOT include the date or time in normal greetings, pleasantries, or general conversations.\n"
         )
         
         memory_block = []
