@@ -125,7 +125,7 @@ def _ocr_fallback_description(ctx: ScreenContext, cv_result: CVAnalysisResult) -
 def _vision_label(provider: str, model: str, latency_ms: float, from_cache: bool = False) -> str:
     """Build a human-readable vision status label."""
     if from_cache:
-        return "👁 VISION: Cache hit [instant]"
+        return "[VISION] Cache hit [instant]"
 
     provider_display = {
         "claude": "Claude",
@@ -138,7 +138,7 @@ def _vision_label(provider: str, model: str, latency_ms: float, from_cache: bool
     }.get(provider, provider.title())
 
     short_model = model.split("/")[-1] if "/" in model else model
-    return f"👁 VISION: {provider_display} {short_model} [{latency_ms:.0f}ms]"
+    return f"[VISION] {provider_display} {short_model} [{latency_ms:.0f}ms]"
 
 
 # ---------------------------------------------------------------------------
@@ -228,7 +228,7 @@ async def analyze_screen(
     total_start = time.perf_counter()
 
     logger.info("=" * 60)
-    logger.info("[JARVIS] 👁 VISION PIPELINE v3 STARTED")
+    logger.info("[JARVIS] [VISION] PIPELINE v3 STARTED")
     logger.info(f"[JARVIS] Query type: {query_type} | quick_mode: {quick_mode}")
 
     # ── Step 1: Screenshot (~5-15ms) ──────────────────────────────
@@ -331,11 +331,11 @@ async def analyze_screen(
 
         race_providers = []
 
-        # P1: Gemini 2.5 Flash — fast cloud multimodal model
+        # P1: Gemini 3.5 Flash Lite — ultra-fast sub-1s multimodal vision model
         if brain_config.GEMINI_API_KEY:
             gemini = GeminiVisionProvider(
                 api_key=brain_config.GEMINI_API_KEY,
-                model_name="gemini-2.5-flash",
+                model_name="gemini-3.5-flash-lite",
                 timeout=5.0,
             )
             race_providers.append(("gemini", gemini))
@@ -358,7 +358,7 @@ async def analyze_screen(
                 store_cached_analysis(session_id, ctx.image_hash, analysis)
                 elapsed = round((time.perf_counter() - total_start) * 1000, 1)
                 label = _vision_label(provider_name, res.get("model", ""), elapsed)
-                logger.info(f"[JARVIS] ✅ RACE WINNER: {label}")
+                logger.info(f"[JARVIS] [OK] RACE WINNER: {label}")
                 return _build_result(
                     True, provider_name, res.get("model", ""),
                     query_type, analysis, label, elapsed, ctx, cv_result,
@@ -367,12 +367,12 @@ async def analyze_screen(
             logger.info(f"[JARVIS] Race failed: {res.get('error', '')[:80]}")
     else:
         # Sequential fallback (legacy behavior when VISION_RACE_PROVIDERS=False)
-        # P1: Gemini 2.5 Flash only — Groq vision is decommissioned
+        # P1: Gemini 3.5 Flash Lite
         if brain_config.GEMINI_API_KEY:
-            logger.info("[JARVIS] P1: Trying Gemini 2.5 Flash...")
+            logger.info("[JARVIS] P1: Trying Gemini 3.5 Flash Lite...")
             gemini = GeminiVisionProvider(
                 api_key=brain_config.GEMINI_API_KEY,
-                model_name="gemini-2.5-flash",
+                model_name="gemini-3.5-flash-lite",
             )
             res = await gemini.analyze_image(vision_image, enriched_prompt)
             if res.get("success") and res.get("analysis"):
@@ -380,7 +380,7 @@ async def analyze_screen(
                 store_cached_analysis(session_id, ctx.image_hash, analysis)
                 elapsed = round((time.perf_counter() - total_start) * 1000, 1)
                 label = _vision_label("gemini", res["model"], elapsed)
-                logger.info(f"[JARVIS] ✅ {label}")
+                logger.info(f"[JARVIS] [OK] {label}")
                 return _build_result(True, "gemini", res["model"], query_type, analysis, label, elapsed, ctx, cv_result)
 
     # ── Step 7: Ollama local fallback ────────────────────────────
@@ -393,7 +393,7 @@ async def analyze_screen(
         store_cached_analysis(session_id, ctx.image_hash, analysis)
         elapsed = round((time.perf_counter() - total_start) * 1000, 1)
         label = _vision_label("ollama", res.get("model", brain_config.OLLAMA_VISION_MODEL), elapsed)
-        logger.info(f"[JARVIS] ✅ {label}")
+        logger.info(f"[JARVIS] [OK] {label}")
         return _build_result(True, "ollama", res.get("model", "qwen3-vl:2b"), query_type, analysis, label, elapsed, ctx, cv_result)
 
     # ── Step 9: Emergency OCR fallback ───────────────────────────
@@ -401,7 +401,7 @@ async def analyze_screen(
     desc = _ocr_fallback_description(ctx, cv_result)
     elapsed = round((time.perf_counter() - total_start) * 1000, 1)
     label = _vision_label("ocr-fallback", "OCR", elapsed)
-    logger.info(f"[JARVIS] ⚠️  {label}")
+    logger.info(f"[JARVIS] [WARN] {label}")
     return _build_result(False, "ocr-fallback", "OCR", query_type, desc, label, elapsed, ctx, cv_result)
 
 

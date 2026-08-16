@@ -66,6 +66,9 @@ class ModelManager:
             "qwen3-vl:2b": {"text": True, "vision": True},
             "qwen3-vl:4b": {"text": True, "vision": True},
             "qwen3-vl:8b": {"text": True, "vision": True},
+            "gemini-3.5-flash-lite": {"text": True, "vision": True},
+            "gemini-flash-latest": {"text": True, "vision": True},
+            "gemini-flash-lite-latest": {"text": True, "vision": True},
             "gemini-1.5-flash": {"text": True, "vision": True},
             "gemini-2.0-flash": {"text": True, "vision": True},
             "gemini-1.5-pro": {"text": True, "vision": True},
@@ -472,7 +475,7 @@ class ModelManager:
             fallback_queue = [
                 ("groq", "llama-3.3-70b-versatile"),
                 ("groq", "llama-3.1-8b-instant"),
-                ("gemini", "gemini-2.5-flash"),
+                ("gemini", "gemini-3.5-flash-lite"),
                 ("ollama", self.ollama_model),
                 ("ollama", "qwen3.5:latest"),
             ]

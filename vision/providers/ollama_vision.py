@@ -178,8 +178,8 @@ class OllamaVisionProvider(BaseVisionProvider):
             "stream": True,
             "options": {
                 "temperature": 0.1,
-                "num_predict": 1024,
-                "think": False,
+                "num_predict": 512,
+                "think": False,   # Disable thinking to get direct content tokens
             },
         }
 
@@ -204,9 +204,15 @@ class OllamaVisionProvider(BaseVisionProvider):
                             continue
                         try:
                             chunk = _json.loads(line)
-                            token = chunk.get("message", {}).get("content", "")
-                            if token:
-                                full_text.append(token)
+                            msg = chunk.get("message", {})
+                            # qwen3-vl:2b streams under "thinking" key before "content"
+                            # We must capture CONTENT tokens — not thinking tokens
+                            content_token = msg.get("content", "")
+                            # Some Ollama versions may also put response in "response" key
+                            if not content_token:
+                                content_token = chunk.get("response", "")
+                            if content_token:
+                                full_text.append(content_token)
                             if chunk.get("done"):
                                 break
                         except Exception:

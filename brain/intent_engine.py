@@ -52,7 +52,7 @@ class IntentEngine:
             if target_raw == "ollama":
                 target_model = f"ollama/{brain_config.OLLAMA_MODEL}"
             elif target_raw == "gemini":
-                target_model = "gemini-2.5-flash"
+                target_model = "gemini-3.5-flash-lite"
             elif target_raw == "groq":
                 target_model = "llama-3.3-70b-versatile"
             elif target_raw in ("openai", "gpt"):
