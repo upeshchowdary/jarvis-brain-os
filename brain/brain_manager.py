@@ -265,6 +265,114 @@ class BrainManager:
                     },
                 )
 
+        elif detected_intent.intent == "FILESYSTEM_OPERATION":
+            from automation.system_controller import system_controller
+            q_low = user_query.lower()
+            try:
+                # 1. Folder or File Size Query
+                if any(w in q_low for w in ("size", "how big", "how much space", "how many files")):
+                    size_res = await system_controller.get_path_size(user_query)
+                    tool_execution_data = size_res
+                    if size_res.get("success"):
+                        name = size_res.get("name")
+                        is_dir = size_res.get("is_dir")
+                        item_type = "folder" if is_dir else "file"
+                        formatted = size_res.get("formatted_size")
+                        num_files = size_res.get("num_files")
+                        path = size_res.get("path")
+                        if is_dir:
+                            final_response_text = f"The {item_type} \"{name}\" located at `{path}` has a total size of **{formatted}** ({num_files} files)."
+                        else:
+                            final_response_text = f"The {item_type} \"{name}\" located at `{path}` has a size of **{formatted}**."
+                    else:
+                        final_response_text = f"⚠️ Could not retrieve size: {size_res.get('error')}"
+
+                # 2. Directory Listing Query
+                elif any(w in q_low for w in ("list", "show files", "contents", "what files", "inside")):
+                    list_res = await system_controller.list_directory(user_query)
+                    tool_execution_data = list_res
+                    if list_res.get("success"):
+                        items = list_res.get("items", [])
+                        path = list_res.get("path")
+                        total = list_res.get("total_items", 0)
+                        file_lines = []
+                        for item in items[:25]:
+                            prefix = "📁" if item.get("is_dir") else "📄"
+                            file_lines.append(f"  {prefix} {item.get('name')}")
+                        items_str = "\n".join(file_lines) if file_lines else "  (empty directory)"
+                        final_response_text = f"Contents of `{path}` ({total} items):\n{items_str}"
+                    else:
+                        final_response_text = f"⚠️ Could not list directory: {list_res.get('error')}"
+
+                # 3. Read File Query
+                elif any(w in q_low for w in ("read", "view", "cat", "content of")):
+                    read_res = await system_controller.read_file(user_query)
+                    tool_execution_data = read_res
+                    if read_res.get("success"):
+                        path = read_res.get("path")
+                        content = read_res.get("content", "")
+                        final_response_text = f"Contents of `{path}`:\n```\n{content}\n```"
+                    else:
+                        final_response_text = f"⚠️ Could not read file: {read_res.get('error')}"
+
+                # 4. Other filesystem action
+                else:
+                    final_response_text = f"Filesystem operation processed for: '{user_query}'"
+
+                self.conversation_manager.add_assistant_message(session.session_id, final_response_text)
+                elapsed_ms = (time.perf_counter() - start_time) * 1000
+                prov = "ollama" if "ollama" in self.model_manager.current_model.lower() else (
+                    "gemini" if "gemini" in self.model_manager.current_model.lower() else "groq"
+                )
+                return BrainExecutionOutput(
+                    query=user_query,
+                    intent=detected_intent,
+                    reasoning_steps=[f"Filesystem operation executed in {elapsed_ms:.1f}ms"],
+                    plan=HierarchicalPlan(goal=user_query, complexity="low", steps=[]),
+                    response=final_response_text,
+                    reflection=None,
+                    tool_results=tool_execution_data,
+                    metadata={
+                        "session_id": session.session_id,
+                        "provider": prov,
+                        "model": self.model_manager.current_model,
+                        "requested_model": self.model_manager.current_model,
+                        "fallback_used": False,
+                        "total_latency_ms": round(elapsed_ms, 2),
+                        "model_latency_ms": 0.0,
+                        "timing_breakdown_ms": {
+                            "intent_ms": telemetry_timing.get("intent_ms", 0),
+                            "fs_ms": round(elapsed_ms, 1),
+                        },
+                        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                    },
+                )
+            except Exception as e:
+                logger.error(f"Filesystem execution error: {e}")
+                final_response_text = f"⚠️ Filesystem error: {e}"
+                self.conversation_manager.add_assistant_message(session.session_id, final_response_text)
+                elapsed_ms = (time.perf_counter() - start_time) * 1000
+                return BrainExecutionOutput(
+                    query=user_query,
+                    intent=detected_intent,
+                    reasoning_steps=[f"Filesystem operation failed: {e}"],
+                    plan=HierarchicalPlan(goal=user_query, complexity="low", steps=[]),
+                    response=final_response_text,
+                    reflection=None,
+                    tool_results={"error": str(e)},
+                    metadata={
+                        "session_id": session.session_id,
+                        "provider": "system",
+                        "model": self.model_manager.current_model,
+                        "requested_model": self.model_manager.current_model,
+                        "fallback_used": False,
+                        "total_latency_ms": round(elapsed_ms, 2),
+                        "model_latency_ms": 0.0,
+                        "timing_breakdown_ms": {},
+                        "usage": {},
+                    },
+                )
+
         elif detected_intent.intent == "SYSTEM_TELEMETRY":
             telemetry_spec = ToolCallSpec(tool="system_info", arguments={})
             tool_res = await self.tool_router.route_and_execute(telemetry_spec)

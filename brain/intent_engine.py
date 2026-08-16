@@ -130,6 +130,35 @@ class IntentEngine:
                 summary=f"User requested computer automation: '{query[:60]}'",
             )
 
+        # ── FILESYSTEM_OPERATION: Native file and folder queries, sizes, contents, operations ──
+        fs_patterns = [
+            # Size queries
+            r"\b(?:size\s+of|how\s+big\s+is|folder\s+size|file\s+size|how\s+much\s+space|how\s+many\s+files)\b",
+            # Listing / contents
+            r"\b(?:list\s+files|show\s+files|contents\s+of|what\s+files|files\s+in|folders\s+in|inside\s+folder)\b",
+            # File operations
+            r"\b(?:read\s+file|view\s+file|cat\s+file|show\s+file|check\s+file|content\s+of\s+file)\b",
+            r"\b(?:create\s+file|make\s+file|write\s+file|delete\s+file|remove\s+file)\b",
+            r"\b(?:create\s+folder|make\s+folder|make\s+directory|mkdir|delete\s+folder)\b",
+        ]
+        if any(re.search(p, q_lower) for p in fs_patterns):
+            return StructuredIntent(
+                intent="FILESYSTEM_OPERATION",
+                confidence=0.98,
+                arguments={"query": query},
+                summary=f"User requested filesystem inspection or operation: '{query[:60]}'",
+            )
+
+        # ── SYSTEM_TELEMETRY: Hardware & OS telemetry ──
+        if any(w in q_lower for w in ["cpu", "ram", "memory usage", "system info", "os version", "disk space", "hardware status"]):
+            return StructuredIntent(
+                intent="SYSTEM_TELEMETRY",
+                confidence=0.95,
+                arguments={"query": query},
+                summary="User requested system metrics or OS telemetry.",
+            )
+
+        # ── SCREEN_VISION: Explicit visual perception queries ──
         refresh_triggers = [
             "look again", "refresh vision", "analyze again", "analyze the screen again",
             "re-analyze screen", "reanalyze screen", "check screen again", "look at screen again",
@@ -144,37 +173,26 @@ class IntentEngine:
                 summary=f"User explicitly requested fresh screen analysis ({v_type}).",
             )
 
-        # 1b. Screen Vision & Visual Perception Intent
         vision_triggers = [
-            # Direct screen/display references
-            "screen", "display", "monitor", "desktop",
-            # What-do-you-see patterns
-            "can you see", "what do you see", "what can you see", "see my", "look at my",
-            "whats on my", "what is on my", "what's on my", "what is on screen", "whats on screen",
+            # Explicit screen vision queries
             "on my screen", "in my screen", "on the screen", "see the screen",
-            # Image/visual content on screen (including common typos like inmage/imge)
+            "what is on my screen", "whats on my screen", "what's on my screen",
+            "what is on screen", "whats on screen", "what's on screen",
+            "can you see", "what do you see", "what can you see", "see my", "look at my",
+            "look at screen", "describe my screen", "describe the screen", "describe what you see",
+            # Image on screen
             "image on screen", "picture on screen", "photo on screen", "image on my screen",
             "picture on my screen", "what is the image", "what's the image", "what image",
             "what inmage", "inmage", "what imge", "what pic", "what picture", "what photo",
             "what animal", "what object", "what is in the image", "whats in the image",
-            "describe the image", "describe what you see", "describe my screen", "what is shown",
-            # System tray / taskbar visual metrics
-            "battery", "battery %", "battery percentage", "see my battery", "charge",
-            # App / window detection
-            "active window", "focused window", "apps opened", "open windows", "open apps",
-            "taskbar", "task bar", "which app", "which application", "which window",
-            "what app", "what application", "what window", "apps in taskbar",
-            "apps are open", "what's open", "whats open",
-            # Specific screen content
-            "background colour", "background color", "background color of",
-            "colour of the screen", "color of the screen",
-            "what text", "text on screen", "visible text",
+            # Taskbar / UI visual metrics
+            "battery %", "battery percentage", "see my battery",
             # Cursor / position
             "cursor position", "where is the cursor", "where is my cursor",
-            # Change detection
-            "what changed", "what's different",
-            # General visual queries
-            "see the", "see it", "look at",
+            # Visual highlights / colors
+            "red highlight", "blue highlight", "color of the screen", "background colour", "background color",
+            # General visual requests
+            "look at this", "see this", "what is shown",
         ]
         if any(w in q_lower for w in vision_triggers):
             v_type = IntentEngine.classify_visual_query_type(query)
@@ -185,7 +203,7 @@ class IntentEngine:
                 summary=f"User requested visual perception ({v_type}) of active desktop.",
             )
 
-        # 2. Real-Time / Internet Knowledge Search Intent
+        # ── REALTIME_KNOWLEDGE_SEARCH: Live web search ──
         realtime_triggers = [
             "today's", "right now", "latest news", "recent news",
             "search internet", "search the web", "search web", "look up online",
@@ -199,24 +217,6 @@ class IntentEngine:
                 confidence=0.95,
                 arguments={"search_query": query},
                 summary="User requested real-time live internet information or current web search.",
-            )
-
-        # 3. System Info / Telemetry Intent
-        if any(w in q_lower for w in ["cpu", "ram", "memory usage", "system info", "os version", "disk space", "hardware status"]):
-            return StructuredIntent(
-                intent="SYSTEM_TELEMETRY",
-                confidence=0.95,
-                arguments={"query": query},
-                summary="User requested system metrics or OS telemetry.",
-            )
-
-        # 4. File System Operation Intent
-        if any(w in q_lower for w in ["read file", "write file", "list directory", "list files", "save to file"]):
-            return StructuredIntent(
-                intent="FILESYSTEM_OPERATION",
-                confidence=0.92,
-                arguments={"query": query},
-                summary="User requested file or directory operation.",
             )
 
         # 5. Open Application Intent — ONLY for explicit launch commands, NOT screen queries

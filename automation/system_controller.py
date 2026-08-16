@@ -25,35 +25,41 @@ import re
 def resolve_user_system_path(path_str: str) -> Path:
     """
     Resolve user-friendly path names like 'desktop', 'downloads', 'documents',
-    or expressions like '123 in desktop' or 'desktop/123'.
+    or expressions like 'size of folder named ola in desktop' or 'ola in desktop'.
     """
     raw = path_str.strip().strip("'\"")
     location_hint = ""
 
-    # Check for expressions like "123 in desktop" or "notes on desktop"
+    # Check for expressions like "folder named ola" or "file named 123"
+    m_folder = re.search(
+        r"(?:folder|directory|file)\s+(?:named\s+|called\s+)?['\"]?([a-zA-Z0-9_\-\./\\]+)['\"]?",
+        raw,
+        re.IGNORECASE,
+    )
+    if m_folder:
+        clean_target = m_folder.group(1).strip()
+    else:
+        clean_target = raw
+
+    # Clean location prepositions
     loc_match = re.search(
-        r"^(.*?)\s+(?:in|on|at|inside)\s+(?:my\s+)?(desktop|downloads|documents|docs|pictures|music|videos)(?:\s+folder|\s+directory)?$",
+        r"(?:in|on|at|inside)\s+(?:my\s+)?(desktop|downloads|documents|docs|pictures|music|videos)(?:\s+folder|\s+directory)?",
         raw,
         re.IGNORECASE,
     )
     if loc_match:
-        raw = loc_match.group(1).strip()
-        location_hint = loc_match.group(2).lower().strip()
+        location_hint = loc_match.group(1).lower().strip()
 
     # Check for prefixes like "desktop/123" or "desktop\123"
-    if raw.lower().startswith("desktop/") or raw.lower().startswith("desktop\\"):
+    if clean_target.lower().startswith("desktop/") or clean_target.lower().startswith("desktop\\"):
         location_hint = "desktop"
-        raw = raw[8:].strip()
-    elif raw.lower().startswith("downloads/") or raw.lower().startswith("downloads\\"):
+        clean_target = clean_target[8:].strip()
+    elif clean_target.lower().startswith("downloads/") or clean_target.lower().startswith("downloads\\"):
         location_hint = "downloads"
-        raw = raw[10:].strip()
-    elif raw.lower().startswith("documents/") or raw.lower().startswith("documents\\"):
+        clean_target = clean_target[10:].strip()
+    elif clean_target.lower().startswith("documents/") or clean_target.lower().startswith("documents\\"):
         location_hint = "documents"
-        raw = raw[10:].strip()
-
-    # If no file extension provided, default to .txt
-    if raw and "." not in Path(raw).name:
-        raw = f"{raw}.txt"
+        clean_target = clean_target[10:].strip()
 
     user_home = Path.home()
     onedrive_desktop = user_home / "OneDrive" / "Desktop"
@@ -61,7 +67,7 @@ def resolve_user_system_path(path_str: str) -> Path:
     onedrive_pics = user_home / "OneDrive" / "Pictures"
 
     target_dir = Path.cwd()
-    if location_hint == "desktop":
+    if location_hint == "desktop" or "desktop" in raw.lower():
         target_dir = onedrive_desktop if onedrive_desktop.exists() else (user_home / "Desktop")
     elif location_hint in ("downloads", "download"):
         target_dir = user_home / "Downloads"
@@ -74,10 +80,19 @@ def resolve_user_system_path(path_str: str) -> Path:
     elif location_hint == "videos":
         target_dir = user_home / "Videos"
 
-    if location_hint:
-        return target_dir / Path(raw).name
+    # If the target already exists as a folder or file directly
+    cand = target_dir / clean_target
+    if cand.exists():
+        return cand
 
-    # If an absolute path or relative path without hint
+    # Check with .txt extension if a file was expected
+    cand_txt = target_dir / f"{clean_target}.txt"
+    if cand_txt.exists():
+        return cand_txt
+
+    if location_hint:
+        return cand
+
     p = Path(raw)
     if not p.is_absolute():
         p = Path.cwd() / p
@@ -108,21 +123,70 @@ class SystemController:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    async def read_file(self, path: str, max_bytes: int = 50000) -> dict:
-        log_action("system", "read_file", path, dry_run=self.dry_run)
-        if self.dry_run:
-            return {"success": True, "dry_run": True, "content": "[DRY RUN]"}
+    async def get_path_size(self, path: str) -> dict:
+        """Calculate total size of a file or directory in bytes, KB, MB, GB."""
+        log_action("system", "get_path_size", path, dry_run=self.dry_run)
         try:
             p = resolve_user_system_path(path)
             if not p.exists():
-                # Try relative to cwd
-                p_cwd = Path(path)
-                if p_cwd.exists():
-                    p = p_cwd
+                return {"success": False, "error": f"Path not found: '{path}' (checked '{p}')"}
+
+            if p.is_file():
+                size_bytes = p.stat().st_size
+                num_files = 1
+            else:
+                size_bytes = 0
+                num_files = 0
+                for root, _, files in os.walk(p):
+                    for f in files:
+                        try:
+                            fp = os.path.join(root, f)
+                            size_bytes += os.path.getsize(fp)
+                            num_files += 1
+                        except Exception:
+                            pass
+
+            def format_bytes(b: int) -> str:
+                if b < 1024:
+                    return f"{b} B"
+                elif b < 1024 * 1024:
+                    return f"{b / 1024:.2f} KB"
+                elif b < 1024 * 1024 * 1024:
+                    return f"{b / (1024 * 1024):.2f} MB"
                 else:
-                    return {"success": False, "error": f"File not found: {path} (checked {p})"}
-            content = p.read_bytes()[:max_bytes].decode("utf-8", errors="replace")
-            return {"success": True, "path": str(p), "content": content, "size": p.stat().st_size}
+                    return f"{b / (1024 * 1024 * 1024):.2f} GB"
+
+            return {
+                "success": True,
+                "path": str(p),
+                "name": p.name,
+                "is_dir": p.is_dir(),
+                "size_bytes": size_bytes,
+                "formatted_size": format_bytes(size_bytes),
+                "num_files": num_files,
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def list_directory(self, path: str = "") -> dict:
+        """List files and folders in the target directory."""
+        log_action("system", "list_directory", path, dry_run=self.dry_run)
+        try:
+            p = resolve_user_system_path(path) if path else Path.cwd()
+            if not p.exists() or not p.is_dir():
+                return {"success": False, "error": f"Directory not found: '{path}' (checked '{p}')"}
+
+            items = []
+            for entry in p.iterdir():
+                try:
+                    items.append({
+                        "name": entry.name,
+                        "is_dir": entry.is_dir(),
+                        "size_bytes": entry.stat().st_size if entry.is_file() else 0,
+                    })
+                except Exception:
+                    pass
+            return {"success": True, "path": str(p), "items": items, "total_items": len(items)}
         except Exception as e:
             return {"success": False, "error": str(e)}
 
