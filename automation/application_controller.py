@@ -1,12 +1,12 @@
 """JARVIS Dynamic Application Controller — Automatic system-wide app discovery & native execution.
 
-Dynamically scans, indexes, and controls ALL installed applications on Windows:
-- Desktop Win32 applications (Program Files, AppData, PATH)
-- Microsoft Store & UWP applications (WhatsApp, Spotify, Calculator, Apple Music, ChatGPT, etc.)
+Accurately scans, indexes, and controls ALL installed applications on Windows:
+- Win32 Desktop applications (Registry App Paths, User AppData, Program Files)
+- Microsoft Store & UWP applications (WhatsApp, Spotify, Calculator, Apple Music, ChatGPT)
 - Windows Protocol URIs (ms-settings, ms-photos, mailto, etc.)
-- Start Menu and Registry App Paths
+- Native system binaries & tools
 
-No hardcoded app paths. Fully aware of the local PC system state.
+Direct executable binaries take priority over shell AppIDs to guarantee flawless foreground launching.
 """
 
 import asyncio
@@ -39,10 +39,63 @@ class DynamicSystemAppManager:
         self.refresh_index()
 
     def refresh_index(self) -> int:
-        """Scan system and index desktop, Store, and UWP apps."""
+        """Scan system and index desktop, Store, and UWP apps with verified executable paths."""
         apps: Dict[str, Dict[str, str]] = {}
 
-        # 1. PowerShell Get-StartApps (Indexes all Desktop + Windows Store / UWP apps)
+        # ── Priority 1: Windows Registry "App Paths" (HKCU & HKLM) ───────
+        # These are 100% genuine executable binary paths registered in Windows
+        reg_roots = [winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE]
+        for root in reg_roots:
+            try:
+                with winreg.OpenKey(root, r"Software\Microsoft\Windows\CurrentVersion\App Paths") as base_key:
+                    num = winreg.QueryInfoKey(base_key)[0]
+                    for i in range(num):
+                        try:
+                            k_name = winreg.EnumKey(base_key, i)
+                            with winreg.OpenKey(base_key, k_name) as sub_key:
+                                exe_path, _ = winreg.QueryValueEx(sub_key, "")
+                                if exe_path and os.path.exists(exe_path):
+                                    clean_name = k_name.lower().replace(".exe", "").strip()
+                                    apps[clean_name] = {
+                                        "name": k_name.replace(".exe", "").title(),
+                                        "exe": exe_path,
+                                        "type": "exe",
+                                        "launch_cmd": exe_path,
+                                    }
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
+        # ── Priority 2: Common User AppData and Program Files Scanning ────
+        common_scans = [
+            os.path.expandvars(r"%LOCALAPPDATA%\Programs"),
+            os.path.expandvars(r"%PROGRAMFILES%"),
+            os.path.expandvars(r"%PROGRAMFILES(X86)%"),
+        ]
+        for base_dir in common_scans:
+            if not os.path.exists(base_dir):
+                continue
+            try:
+                for root_dir, _, files in os.walk(base_dir):
+                    depth = root_dir[len(base_dir):].count(os.sep)
+                    if depth > 3:
+                        continue
+                    for f in files:
+                        if f.lower().endswith(".exe") and not any(x in f.lower() for x in ("unins", "setup", "update", "crash", "helper")):
+                            clean_name = f.lower().replace(".exe", "").strip()
+                            if clean_name not in apps:
+                                full_p = os.path.join(root_dir, f)
+                                apps[clean_name] = {
+                                    "name": clean_name.title(),
+                                    "exe": full_p,
+                                    "type": "exe",
+                                    "launch_cmd": full_p,
+                                }
+            except Exception:
+                pass
+
+        # ── Priority 3: PowerShell Get-StartApps (Store / UWP Apps) ──────
         try:
             ps_cmd = "Get-StartApps | ConvertTo-Json -Compress"
             proc = subprocess.run(
@@ -60,76 +113,40 @@ class DynamicSystemAppManager:
                     appid = item.get("AppID", "").strip()
                     if name and appid:
                         clean_key = name.lower().strip()
-                        if os.path.exists(appid):
-                            launch_cmd = appid
-                            launch_type = "exe"
-                        else:
-                            launch_cmd = f"shell:AppsFolder\\{appid}"
-                            launch_type = "uwp"
-
-                        app_info = {
-                            "name": name,
-                            "appid": appid,
-                            "type": launch_type,
-                            "launch_cmd": launch_cmd,
-                        }
-                        apps[clean_key] = app_info
-
-                        # Add intuitive aliases for common applications
-                        if "google chrome" in clean_key:
-                            apps["chrome"] = app_info
-                        if "visual studio code" in clean_key:
-                            apps["vscode"] = app_info
-                            apps["vs code"] = app_info
-                            apps["code"] = app_info
-                        if "telegram desktop" in clean_key:
-                            apps["telegram"] = app_info
-                        if "whatsapp" in clean_key:
-                            apps["whatsapp"] = app_info
-                            apps["whats app"] = app_info
-                        if "calculator" in clean_key:
-                            apps["calc"] = app_info
-                        if "command prompt" in clean_key:
-                            apps["cmd"] = app_info
-                        if "file explorer" in clean_key:
-                            apps["explorer"] = app_info
+                        # If it's a true UWP package or not yet registered as a direct binary
+                        if "!" in appid:
+                            apps[clean_key] = {
+                                "name": name,
+                                "exe": appid,
+                                "type": "uwp",
+                                "launch_cmd": f"shell:AppsFolder\\{appid}",
+                            }
+                        elif clean_key not in apps:
+                            if os.path.exists(appid):
+                                apps[clean_key] = {
+                                    "name": name,
+                                    "exe": appid,
+                                    "type": "exe",
+                                    "launch_cmd": appid,
+                                }
+                            else:
+                                apps[clean_key] = {
+                                    "name": name,
+                                    "exe": appid,
+                                    "type": "startmenu",
+                                    "launch_cmd": f"shell:AppsFolder\\{appid}",
+                                }
         except Exception as e:
             log_action("app_discovery", "Get-StartApps", str(e), level="WARNING")
 
-        # 2. Windows Registry App Paths (HKLM & HKCU)
-        reg_paths = [
-            (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths"),
-            (winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\App Paths"),
-        ]
-        for root, key_path in reg_paths:
-            try:
-                with winreg.OpenKey(root, key_path) as key:
-                    num_subkeys = winreg.QueryInfoKey(key)[0]
-                    for i in range(num_subkeys):
-                        try:
-                            subkey_name = winreg.EnumKey(key, i)
-                            with winreg.OpenKey(key, subkey_name) as subkey:
-                                exe_path, _ = winreg.QueryValueEx(subkey, "")
-                                if exe_path and os.path.exists(exe_path):
-                                    clean_name = subkey_name.lower().replace(".exe", "").strip()
-                                    if clean_name not in apps:
-                                        apps[clean_name] = {
-                                            "name": subkey_name,
-                                            "appid": exe_path,
-                                            "type": "registry_exe",
-                                            "launch_cmd": exe_path,
-                                        }
-                        except Exception:
-                            pass
-            except Exception:
-                pass
-
-        # 3. Known System Built-ins & URI Protocols
+        # ── Priority 4: System Protocols & Essential Aliases ─────────────
         system_protocols = {
             "settings": ("Settings", "ms-settings:", "protocol"),
             "photos": ("Photos", "ms-photos:", "protocol"),
             "camera": ("Camera", "microsoft.windows.camera:", "protocol"),
             "mail": ("Mail", "mailto:", "protocol"),
+            "store": ("Microsoft Store", "ms-windows-store:", "protocol"),
+            "microsoft store": ("Microsoft Store", "ms-windows-store:", "protocol"),
             "paint": ("Paint", "mspaint.exe", "exe"),
             "notepad": ("Notepad", "notepad.exe", "exe"),
             "task manager": ("Task Manager", "taskmgr.exe", "exe"),
@@ -137,15 +154,32 @@ class DynamicSystemAppManager:
             "powershell": ("PowerShell", "powershell.exe", "exe"),
             "cmd": ("Command Prompt", "cmd.exe", "exe"),
             "explorer": ("File Explorer", "explorer.exe", "exe"),
+            "file explorer": ("File Explorer", "explorer.exe", "exe"),
         }
         for k, (disp, cmd_val, p_type) in system_protocols.items():
-            if k not in apps:
+            if k not in apps or p_type == "protocol":
                 apps[k] = {
                     "name": disp,
-                    "appid": cmd_val,
+                    "exe": cmd_val,
                     "type": p_type,
                     "launch_cmd": cmd_val,
                 }
+
+        # Intuitive aliases
+        if "google chrome" in apps and "chrome" not in apps:
+            apps["chrome"] = apps["google chrome"]
+        if "brave" in apps:
+            apps["brave browser"] = apps["brave"]
+        if "visual studio code" in apps:
+            apps["vscode"] = apps["visual studio code"]
+            apps["vs code"] = apps["visual studio code"]
+            apps["code"] = apps["visual studio code"]
+        if "telegram desktop" in apps and "telegram" not in apps:
+            apps["telegram"] = apps["telegram desktop"]
+        if "whatsapp" in apps:
+            apps["whats app"] = apps["whatsapp"]
+        if "calculator" in apps:
+            apps["calc"] = apps["calculator"]
 
         self._apps_cache = apps
         self._last_index_time = time.time()
@@ -234,8 +268,32 @@ class ApplicationController:
         display_name = app_info["name"]
 
         try:
-            if app_type == "uwp":
-                # UWP / Store Apps: explorer.exe shell:AppsFolder\<AppID>
+            # ── Native Windows Shell Execution ─────────────────────────
+            if app_type == "exe" and os.path.exists(launch_cmd):
+                # Direct binary execution via os.startfile (brings window to foreground)
+                if not args:
+                    await asyncio.get_event_loop().run_in_executor(
+                        None,
+                        lambda: os.startfile(launch_cmd)
+                    )
+                else:
+                    await asyncio.get_event_loop().run_in_executor(
+                        None,
+                        lambda: subprocess.Popen(
+                            f'"{launch_cmd}" {args}',
+                            shell=True,
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                        )
+                    )
+            elif app_type == "protocol":
+                # Protocol URI (ms-settings:, ms-windows-store:, mailto:)
+                await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda: os.startfile(launch_cmd)
+                )
+            elif app_type == "uwp":
+                # True UWP Store Apps: explorer.exe shell:AppsFolder\<AppID>
                 await asyncio.get_event_loop().run_in_executor(
                     None,
                     lambda: subprocess.Popen(
@@ -244,26 +302,8 @@ class ApplicationController:
                         stderr=subprocess.DEVNULL,
                     )
                 )
-            elif app_type == "protocol":
-                # URI Protocols: ms-settings:, whatsapp:, spotify:
-                await asyncio.get_event_loop().run_in_executor(
-                    None,
-                    lambda: os.startfile(launch_cmd)
-                )
-            elif app_type == "exe" and os.path.exists(launch_cmd):
-                # Executable with valid path
-                full_cmd = launch_cmd if not args else f'"{launch_cmd}" {args}'
-                await asyncio.get_event_loop().run_in_executor(
-                    None,
-                    lambda: subprocess.Popen(
-                        full_cmd,
-                        shell=True,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                    )
-                )
             else:
-                # Direct shell command
+                # Direct shell command fallback
                 full_cmd = launch_cmd if not args else f"{launch_cmd} {args}"
                 await asyncio.get_event_loop().run_in_executor(
                     None,
