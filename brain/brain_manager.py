@@ -194,6 +194,31 @@ class BrainManager:
                 f"[LIVE INTERNET SEARCH RESULTS]:\n{snippets_str}\n"
             )
 
+        elif detected_intent.intent == "AUTOMATION_TASK":
+            # Route to automation orchestrator — runs the full OBSERVE→PLAN→ACT loop
+            try:
+                from automation.orchestrator import automation_orchestrator
+                auto_result = await automation_orchestrator.execute(
+                    command=user_query,
+                    session_id=session.session_id,
+                )
+                tool_execution_data = {"automation_result": auto_result.summary}
+                status_emoji = "✅" if auto_result.success else "⚠️"
+                tool_context_injection = (
+                    f"\n\n[AUTOMATION EXECUTION RESULT]\n"
+                    f"{status_emoji} Status: {'Success' if auto_result.success else 'Failed'}\n"
+                    f"Summary: {auto_result.summary}\n"
+                    + (f"Steps completed: {auto_result.steps_done}\n" if auto_result.steps_done else "")
+                    + (f"Dry-run mode: ON (no real actions taken)\n" if auto_result.dry_run else "")
+                    + "\nReport the automation result to the user clearly and concisely."
+                )
+            except Exception as e:
+                logger.error(f"Automation execution error: {e}")
+                tool_context_injection = (
+                    f"\n\n[AUTOMATION ERROR]\nThe automation system encountered an error: {e}\n"
+                    "Tell the user clearly what went wrong."
+                )
+
         elif detected_intent.intent == "SYSTEM_TELEMETRY":
             telemetry_spec = ToolCallSpec(tool="system_info", arguments={})
             tool_res = await self.tool_router.route_and_execute(telemetry_spec)

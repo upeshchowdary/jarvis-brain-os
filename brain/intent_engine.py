@@ -65,7 +65,47 @@ class IntentEngine:
                 summary=f"User requested switching active model to '{target_model}'",
             )
 
-        # 1. Refresh Vision Intent
+        # ── AUTOMATION_TASK: Computer control, automation, recording, replay ──
+        automation_triggers = [
+            # App control
+            "open chrome", "open google chrome", "open firefox", "open edge", "open brave",
+            "open vs code", "open vscode", "open visual studio", "open notepad", "open terminal",
+            "open file explorer", "open settings", "open calculator", "open word", "open excel",
+            "open spotify", "open discord", "open slack", "open zoom", "open teams",
+            "close chrome", "close firefox", "close notepad", "close the app",
+            # Mouse/click control
+            "click the", "click on", "right click", "double click",
+            "drag and drop", "drag from",
+            # Keyboard control
+            "type in", "type into", "press enter", "press escape", "press tab",
+            "hold ctrl", "press ctrl", "press alt", "press shift",
+            "copy and paste", "select all and",
+            # Browser actions
+            "navigate to", "go to website", "go to url", "open website", "open url",
+            "search for on google", "search google for", "google search",
+            "new tab", "close tab", "refresh the page", "go back", "go forward",
+            "scroll down", "scroll up", "scroll to",
+            "fill in the form", "fill out", "fill the field",
+            # File operations
+            "create a file", "create file", "save file as", "delete file",
+            "rename the file", "move the file", "copy the file", "search for file",
+            # Workflow
+            "start recording", "stop recording", "record what i do",
+            "replay ", "run workflow", "play workflow", "learn this",
+            "repeat that workflow", "do that again",
+            # Automation commands
+            "automate", "automation status", "dry run mode", "emergency stop",
+            "stop everything", "stop automation", "what are you doing",
+            "take a screenshot", "take screenshot", "capture my screen",
+        ]
+        if any(t in q_lower for t in automation_triggers):
+            return StructuredIntent(
+                intent="AUTOMATION_TASK",
+                confidence=0.97,
+                arguments={"command": query},
+                summary=f"User requested computer automation: '{query[:60]}'",
+            )
+
         refresh_triggers = [
             "look again", "refresh vision", "analyze again", "analyze the screen again",
             "re-analyze screen", "reanalyze screen", "check screen again", "look at screen again",

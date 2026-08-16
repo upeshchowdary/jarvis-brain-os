@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.config.settings import settings
 from app.api.middleware import jarvis_exception_handler, log_requests_middleware
-from app.api.routes import chat_router, health_router, config_router, status_router
+from app.api.routes import chat_router, health_router, config_router, status_router, automation_router
 from app.database.connection import db_manager
 from app.utils.exceptions import JarvisError
 from app.utils.logger import logger
@@ -62,6 +62,7 @@ def create_app() -> FastAPI:
     app.include_router(health_router)
     app.include_router(config_router)
     app.include_router(status_router)
+    app.include_router(automation_router)
 
     return app
 
