@@ -162,6 +162,30 @@ def _fast_rule_planner(command: str) -> Optional[List[TaskStep]]:
             return [TaskStep(index=0, action="hotkey", value=key, description=f"Press hotkey {key}")]
         return [TaskStep(index=0, action="press", value=key, description=f"Press {key}")]
 
+    # 11. File Operations (Create, Write, Read)
+    m = re.search(
+        r"^(?:create|make|write)\s+(?:a\s+)?file\s+(?:named\s+|called\s+)?['\"]?([a-zA-Z0-9_\-\./\\]+?)['\"]?(?:\s+with\s+(?:content\s+|text\s+)?['\"]?(.+?)['\"]?)?$",
+        cmd,
+    )
+    if m:
+        file_path = m.group(1).strip()
+        file_content = m.group(2).strip() if m.group(2) else ""
+        return [TaskStep(index=0, action="create_file", target=file_path, value=file_content, description=f"Create file '{file_path}'")]
+
+    m = re.search(
+        r"^(?:read|view|show|cat|display)\s+(?:the\s+)?(?:content\s+of\s+)?(?:file\s+)?['\"]?([a-zA-Z0-9_\-\./\\]+\.[a-zA-Z0-9]+)['\"]?$",
+        cmd,
+    )
+    if m:
+        file_path = m.group(1).strip()
+        return [TaskStep(index=0, action="read_file", target=file_path, description=f"Read file '{file_path}'")]
+
+    # 12. Run terminal command
+    m = re.search(r"^(?:run|execute)\s+(?:terminal\s+|powershell\s+|cmd\s+)?command\s+['\"]?(.+?)['\"]?$", cmd)
+    if m:
+        cmd_str = m.group(1).strip()
+        return [TaskStep(index=0, action="run_command", value=cmd_str, description=f"Run command '{cmd_str}'")]
+
     return None
 
 
