@@ -43,20 +43,27 @@ class IntentEngine:
 
         # 0. Model Switch / Provider Change Intent
         switch_match = re.search(
-            r"\b(?:switch|change|set|use|select)\s+(?:model\s+|provider\s+)?(?:to\s+)?(ollama|gemini|groq|openai|gpt[a-zA-Z0-9_\-\.]*|llama[a-zA-Z0-9_\-\.]*|qwen[a-zA-Z0-9_\-\.]*|mixtral[a-zA-Z0-9_\-\.]*|gemma[a-zA-Z0-9_\-\.]*)",
+            r"\b(?:switch|change|set|use|select)\s+(?:model\s+|provider\s+)?(?:to\s+)?(ollama(?:/[a-zA-Z0-9_\-\.:]+|\s+[a-zA-Z0-9_\-\.:]+)?|gemini|groq|openai|gpt[a-zA-Z0-9_\-\.]*|llama[a-zA-Z0-9_\-\.]*|qwen[a-zA-Z0-9_\-\.:]*|mixtral[a-zA-Z0-9_\-\.]*|gemma[a-zA-Z0-9_\-\.:]*)",
             q_lower,
         )
         if switch_match:
             target_raw = switch_match.group(1).strip()
-            target_model = target_raw
-            if target_raw == "ollama":
-                target_model = f"ollama/{brain_config.OLLAMA_MODEL}"
+            if target_raw.startswith("ollama"):
+                sub = target_raw.replace("ollama", "").strip("/ ").strip()
+                if sub:
+                    target_model = f"ollama/{sub}"
+                else:
+                    target_model = f"ollama/{brain_config.OLLAMA_MODEL}"
             elif target_raw == "gemini":
                 target_model = "gemini-3.5-flash-lite"
             elif target_raw == "groq":
                 target_model = "llama-3.3-70b-versatile"
             elif target_raw in ("openai", "gpt"):
                 target_model = "gpt-4o-mini"
+            elif target_raw.startswith("qwen") or target_raw.startswith("gemma"):
+                target_model = f"ollama/{target_raw}"
+            else:
+                target_model = target_raw
 
             return StructuredIntent(
                 intent="MODEL_SWITCH",

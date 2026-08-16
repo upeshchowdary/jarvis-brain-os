@@ -41,7 +41,7 @@ class BrainConfig(BaseSettings):
     FAST_MODEL: str = "llama-3.1-8b-instant"
     GROQ_BASE_URL: str = "https://api.groq.com/openai/v1"
     OLLAMA_BASE_URL: str = "http://127.0.0.1:11434"
-    OLLAMA_MODEL: str = "qwen2.5"
+    OLLAMA_MODEL: str = "qwen3.5:latest"
     OLLAMA_VISION_MODEL: str = "qwen3-vl:2b"
     GROQ_VISION_MODEL: str = "llama-3.2-90b-vision-preview"
     CLAUDE_VISION_MODEL: str = "claude-3-5-sonnet-20241022"
