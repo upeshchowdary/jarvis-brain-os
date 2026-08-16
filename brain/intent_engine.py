@@ -41,9 +41,9 @@ class IntentEngine:
         """Classify intent using heuristic patterns and entity extraction."""
         q_lower = query.lower().strip()
 
-        # 0. Model Switch / Provider Change Intent
+        # 0. Model Switch / Provider Change Intent (typo-tolerant)
         switch_match = re.search(
-            r"\b(?:switch|change|set|use|select)\s+(?:model\s+|provider\s+)?(?:to\s+)?(ollama(?:/[a-zA-Z0-9_\-\.:]+|\s+[a-zA-Z0-9_\-\.:]+)?|gemini|groq|openai|gpt[a-zA-Z0-9_\-\.]*|llama[a-zA-Z0-9_\-\.]*|qwen[a-zA-Z0-9_\-\.:]*|mixtral[a-zA-Z0-9_\-\.]*|gemma[a-zA-Z0-9_\-\.:]*)",
+            r"\b(?:switch|swtich|swich|siwtch|sitch|change|set|use|select)\s+(?:model\s+|provider\s+)?(?:to\s+)?(ollama(?:/[a-zA-Z0-9_\-\.:]+|\s+[a-zA-Z0-9_\-\.:]+)?|gemini|groq|openai|gpt[a-zA-Z0-9_\-\.]*|llama[a-zA-Z0-9_\-\.]*|qwen[a-zA-Z0-9_\-\.:]*|mixtral[a-zA-Z0-9_\-\.]*|gemma[a-zA-Z0-9_\-\.:]*)",
             q_lower,
         )
         if switch_match:

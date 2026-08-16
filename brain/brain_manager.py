@@ -338,6 +338,7 @@ class BrainManager:
             system_persona += "\n\n" + "\n\n".join(memory_block)
 
         system_persona += tool_context_injection
+        system_persona += f"\n\n[ACTIVE RUNNING MODEL]: You are currently running on '{self.model_manager.current_model}'."
 
         messages = [{"role": "system", "content": system_persona}]
         messages.extend(history)
@@ -380,6 +381,10 @@ class BrainManager:
 
         elapsed_ms = (time.perf_counter() - start_time) * 1000
 
+        req_clean = self.model_manager.current_model.replace("ollama/", "").lower().strip()
+        res_clean = generation_res.get("model", "").replace("ollama/", "").lower().strip()
+        fallback_used = bool(req_clean and res_clean and req_clean != res_clean)
+
         output = BrainExecutionOutput(
             query=user_query,
             intent=detected_intent,
@@ -393,9 +398,7 @@ class BrainManager:
                 "provider": generation_res.get("provider", "groq"),
                 "model": generation_res.get("model", self.model_manager.current_model),
                 "requested_model": self.model_manager.current_model,
-                "fallback_used": (
-                    generation_res.get("model") != self.model_manager.current_model
-                ),
+                "fallback_used": fallback_used,
                 "total_latency_ms": round(elapsed_ms, 2),
                 "model_latency_ms": generation_res.get("latency_ms", 0),
                 "timing_breakdown_ms": telemetry_timing,

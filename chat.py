@@ -15,7 +15,7 @@ async def check_server_connection() -> bool:
             res = await client.get(f"{BASE_URL}/health")
             if res.status_code == 200:
                 data = res.json()
-                print(f" Connected to {data.get('app_name')} (Provider: {data.get('active_provider')})")
+                print(f" Connected to {data.get('app_name')} (Active Model: {data.get('active_model', data.get('active_provider'))})")
                 return True
     except Exception:
         pass
@@ -65,7 +65,9 @@ async def chat_loop():
                     fallback_used = meta.get("fallback_used", False)
                     latency = meta.get("total_latency_ms", meta.get("latency_ms", 0))
 
-                    if fallback_used and req_model and req_model != model_name:
+                    clean_req = req_model.replace("ollama/", "").lower().strip()
+                    clean_res = model_name.replace("ollama/", "").lower().strip()
+                    if fallback_used and clean_req and clean_req != clean_res:
                         model_tag = f"{provider} : {model_name} (Fallback from {req_model})"
                     else:
                         model_tag = f"{provider} : {model_name}"
