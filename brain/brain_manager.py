@@ -36,7 +36,7 @@ class BrainExecutionOutput(BaseModel):
     reasoning_steps: List[str]
     plan: HierarchicalPlan
     response: str
-    reflection: ReflectionResult
+    reflection: Optional[ReflectionResult] = None
     tool_results: Optional[Dict[str, Any]] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
@@ -194,7 +194,7 @@ class BrainManager:
             )
 
         elif detected_intent.intent == "AUTOMATION_TASK":
-            # Route to automation orchestrator — runs the full OBSERVE→PLAN→ACT loop
+            # Route to automation orchestrator — runs the full OBSERVE->PLAN->ACT loop
             try:
                 from automation.orchestrator import automation_orchestrator
                 auto_result = await automation_orchestrator.execute(
@@ -202,20 +202,67 @@ class BrainManager:
                     session_id=session.session_id,
                 )
                 tool_execution_data = {"automation_result": auto_result.summary}
-                status_emoji = "✅" if auto_result.success else "⚠️"
-                tool_context_injection = (
-                    f"\n\n[AUTOMATION EXECUTION RESULT]\n"
-                    f"{status_emoji} Status: {'Success' if auto_result.success else 'Failed'}\n"
-                    f"Summary: {auto_result.summary}\n"
-                    + (f"Steps completed: {auto_result.steps_done}\n" if auto_result.steps_done else "")
-                    + (f"Dry-run mode: ON (no real actions taken)\n" if auto_result.dry_run else "")
-                    + "\nReport the automation result to the user clearly and concisely."
+                status_tag = "[OK]" if auto_result.success else "[WARN]"
+
+                # Return clean structured execution summary directly (<1ms) without redundant secondary LLM call
+                final_response_text = (
+                    f"{status_tag} Status: {'Success' if auto_result.success else 'Failed'}\n"
+                    f"Summary: {auto_result.summary}"
+                    + (f"\nSteps completed: {auto_result.steps_done}" if auto_result.steps_done else "")
+                )
+                self.conversation_manager.add_assistant_message(session.session_id, final_response_text)
+
+                elapsed_ms = (time.perf_counter() - start_time) * 1000
+                prov = "ollama" if "ollama" in self.model_manager.current_model.lower() else (
+                    "gemini" if "gemini" in self.model_manager.current_model.lower() else "groq"
+                )
+                return BrainExecutionOutput(
+                    query=user_query,
+                    intent=detected_intent,
+                    reasoning_steps=[f"Executed automation in {auto_result.elapsed_ms:.0f}ms"],
+                    plan=HierarchicalPlan(goal=user_query, complexity="low", steps=[]),
+                    response=final_response_text,
+                    reflection=None,
+                    tool_results=tool_execution_data,
+                    metadata={
+                        "session_id": session.session_id,
+                        "provider": prov,
+                        "model": self.model_manager.current_model,
+                        "requested_model": self.model_manager.current_model,
+                        "fallback_used": False,
+                        "total_latency_ms": round(elapsed_ms, 2),
+                        "model_latency_ms": 0.0,
+                        "timing_breakdown_ms": {
+                            "intent_ms": telemetry_timing.get("intent_ms", 0),
+                            "automation_ms": round(auto_result.elapsed_ms, 1),
+                        },
+                        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                    },
                 )
             except Exception as e:
                 logger.error(f"Automation execution error: {e}")
-                tool_context_injection = (
-                    f"\n\n[AUTOMATION ERROR]\nThe automation system encountered an error: {e}\n"
-                    "Tell the user clearly what went wrong."
+                final_response_text = f"⚠️ Automation error: {e}"
+                self.conversation_manager.add_assistant_message(session.session_id, final_response_text)
+                elapsed_ms = (time.perf_counter() - start_time) * 1000
+                return BrainExecutionOutput(
+                    query=user_query,
+                    intent=detected_intent,
+                    reasoning_steps=[f"Automation failed: {e}"],
+                    plan=HierarchicalPlan(goal=user_query, complexity="low", steps=[]),
+                    response=final_response_text,
+                    reflection=None,
+                    tool_results={"error": str(e)},
+                    metadata={
+                        "session_id": session.session_id,
+                        "provider": "automation",
+                        "model": self.model_manager.current_model,
+                        "requested_model": self.model_manager.current_model,
+                        "fallback_used": False,
+                        "total_latency_ms": round(elapsed_ms, 2),
+                        "model_latency_ms": 0.0,
+                        "timing_breakdown_ms": {},
+                        "usage": {},
+                    },
                 )
 
         elif detected_intent.intent == "SYSTEM_TELEMETRY":

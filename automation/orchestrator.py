@@ -71,7 +71,7 @@ class AutomationOrchestrator:
             trigger_emergency_stop("user command")
             return AutomationResult(
                 success=True,
-                summary="🛑 Emergency stop triggered. All automation halted.",
+                summary="[STOP] Emergency stop triggered. All automation halted.",
                 dry_run=self._dry_run_mode,
             )
 
@@ -86,7 +86,7 @@ class AutomationOrchestrator:
             status = "enabled" if self._dry_run_mode else "disabled"
             return AutomationResult(
                 success=True,
-                summary=f"🧪 Dry-run mode {status}. Actions will {'be simulated' if self._dry_run_mode else 'execute for real'}.",
+                summary=f"[TEST] Dry-run mode {status}. Actions will {'be simulated' if self._dry_run_mode else 'execute for real'}.",
                 dry_run=self._dry_run_mode,
             )
 
@@ -104,7 +104,7 @@ class AutomationOrchestrator:
             names = ", ".join(workflows) if workflows else "none"
             return AutomationResult(
                 success=True,
-                summary=f"📋 Saved workflows: {names}",
+                summary=f"[LIST] Saved workflows: {names}",
                 details={"workflows": workflows},
             )
 
@@ -115,7 +115,7 @@ class AutomationOrchestrator:
             result = workflow_recorder.start_recording(name, description=command)
             return AutomationResult(
                 success=result["success"],
-                summary=f"🔴 Recording started: '{name}'. Perform actions — I'll watch and learn.",
+                summary=f"[REC] Recording started: '{name}'. Perform actions — I'll watch and learn.",
                 details=result,
             )
 
@@ -128,7 +128,7 @@ class AutomationOrchestrator:
                 name = save_result.get("name", "workflow")
                 return AutomationResult(
                     success=True,
-                    summary=f"⏹ Recording saved: '{name}' ({steps} steps). Say 'replay {name}' to run it.",
+                    summary=f"[SAVED] Recording saved: '{name}' ({steps} steps). Say 'replay {name}' to run it.",
                     details=save_result,
                 )
             return AutomationResult(success=False, summary="No active recording to stop.")
@@ -148,10 +148,11 @@ class AutomationOrchestrator:
             success = replay_result.get("success", False)
             done = replay_result.get("steps_total", 0) - replay_result.get("steps_failed", 0)
             total = replay_result.get("steps_total", 0)
+            status_tag = "[OK]" if success else "[WARN]"
             return AutomationResult(
                 success=success,
                 summary=(
-                    f"{'✅' if success else '⚠️'} Workflow '{name}' replayed: "
+                    f"{status_tag} Workflow '{name}' replayed: "
                     f"{done}/{total} steps succeeded."
                 ),
                 elapsed_ms=elapsed,
@@ -226,7 +227,7 @@ class AutomationOrchestrator:
             desc = state.vision_description or state.ocr_text[:300] or "Screen captured."
             return AutomationResult(
                 success=True,
-                summary=f"📸 **Screen:** {desc}",
+                summary=f"[SCREEN] {desc}",
                 details={
                     "active_app": state.active_app,
                     "window_title": state.window_title,

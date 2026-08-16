@@ -1,4 +1,4 @@
-﻿"""JARVIS Window Controller — Application window management via Windows API.
+"""JARVIS Window Controller — Application window management via Windows API.
 
 Uses pygetwindow + win32api for window listing, focus, resize, and state control.
 Falls back to graceful errors when windows are not found.
@@ -165,12 +165,12 @@ class WindowController:
         self, title_fragment: str, timeout: float | None = None
     ) -> dict:
         """Wait until a window with given title appears (for app startup detection)."""
-        deadline = asyncio.get_event_loop().time() + (timeout or automation_config.APP_STARTUP_TIMEOUT)
+        deadline = asyncio.get_event_loop().time() + (timeout or 2.5)
         while asyncio.get_event_loop().time() < deadline:
             if self.is_window_open(title_fragment):
                 w = self.find_window(title_fragment)
                 return {"success": True, "title": w.title if w else title_fragment}
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.05)
         return {"success": False, "error": f"Window '{title_fragment}' did not appear within timeout."}
 
     async def switch_window(self, title_fragment: str) -> dict:

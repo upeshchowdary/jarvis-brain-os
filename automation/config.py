@@ -12,19 +12,19 @@ from typing import Set
 class AutomationConfig:
     """Centralized config for the automation agent layer."""
 
-    # ── Retry & Timing ──────────────────────────────────────────────
-    MAX_RETRIES: int = 3
-    ACTION_TIMEOUT: float = 10.0          # Per-action timeout (seconds)
-    TASK_TIMEOUT: float = 120.0           # Overall task timeout (seconds)
-    VERIFICATION_TIMEOUT: float = 5.0    # Post-action verification timeout
-    VISION_TIMEOUT: float = 15.0         # Max wait for vision response
-    APP_STARTUP_TIMEOUT: float = 15.0    # Max wait for app to open
-    ELEMENT_SEARCH_TIMEOUT: float = 8.0  # Max wait to find an on-screen element
+    # ── Retry & Timing (Optimized for Sub-Second Execution) ─────
+    MAX_RETRIES: int = 2
+    ACTION_TIMEOUT: float = 5.0           # Per-action timeout (seconds)
+    TASK_TIMEOUT: float = 30.0            # Overall task timeout (seconds)
+    VERIFICATION_TIMEOUT: float = 1.0     # Post-action verification timeout
+    VISION_TIMEOUT: float = 8.0           # Max wait for vision response
+    APP_STARTUP_TIMEOUT: float = 1.5      # Max wait for app to open (fast non-blocking)
+    ELEMENT_SEARCH_TIMEOUT: float = 2.0   # Max wait to find an on-screen element
 
-    # ── Action timing (seconds between actions for reliability) ─────
-    ACTION_DELAY: float = 0.3            # Brief pause between actions
-    TYPE_INTERVAL: float = 0.03          # Delay between each typed character
-    CLICK_DELAY: float = 0.1             # Pause after each click
+    # ── Action timing (fast responsive delays) ──────────────────────
+    ACTION_DELAY: float = 0.05            # Brief pause between actions
+    TYPE_INTERVAL: float = 0.01           # Delay between each typed character
+    CLICK_DELAY: float = 0.02             # Pause after each click
 
     # ── Safety ──────────────────────────────────────────────────────
     SAFETY_ENABLED: bool = True

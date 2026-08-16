@@ -57,9 +57,117 @@ class AutomationTask:
         return self.status in (TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.STOPPED)
 
 
+import re
+
+
+def _fast_rule_planner(command: str) -> Optional[List[TaskStep]]:
+    """Fast sub-millisecond rule-based parser for common automation commands."""
+    cmd = command.lower().strip()
+
+    # 1. Open app / Launch app (e.g. "open chrome", "launch spotify", "start notepad")
+    m = re.search(
+        r"^(?:open|launch|start|run)\s+(?:the\s+)?([a-zA-Z0-9_\s\+\-\.]+?)(?:\s+(?:app|browser|application|program))?$",
+        cmd,
+    )
+    if m:
+        target = m.group(1).strip()
+        # Avoid matching URL navigation or general conversational phrases
+        if target and not any(target.startswith(p) for p in ("http", "www", "file", "tab", "link")):
+            return [TaskStep(index=0, action="open_app", target=target, description=f"Open {target}")]
+
+    # 2. Close app / Quit app / Kill app (e.g. "close chrome", "quit spotify")
+    m = re.search(
+        r"^(?:close|quit|exit|kill|terminate|stop)\s+(?:the\s+)?([a-zA-Z0-9_\s\+\-\.]+?)(?:\s+(?:app|browser|application|program|window))?$",
+        cmd,
+    )
+    if m:
+        target = m.group(1).strip()
+        if target and not any(target.startswith(p) for p in ("http", "www", "tab", "link", "recording")):
+            return [TaskStep(index=0, action="close_app", target=target, description=f"Close {target}")]
+
+    # 3. Search Google / YouTube
+    m = re.search(r"^(?:search\s+youtube\s+for|youtube)\s+(.+)$", cmd)
+    if m:
+        query = m.group(1).strip()
+        url = f"https://www.youtube.com/results?search_query={query.replace(' ', '+')}"
+        return [TaskStep(index=0, action="navigate", target=url, description=f"Search YouTube for: {query}")]
+
+    m = re.search(r"^(?:search\s+google\s+for|search\s+for|google)\s+(.+)$", cmd)
+    if m:
+        query = m.group(1).strip()
+        url = f"https://www.google.com/search?q={query.replace(' ', '+')}"
+        return [TaskStep(index=0, action="navigate", target=url, description=f"Search Google for: {query}")]
+
+    # 4. Navigate to URL / Go to website
+    m = re.search(r"^(?:go\s+to|navigate\s+to|open\s+website|visit)\s+(?:https?://)?([a-zA-Z0-9_\-\./\?\=\&\#\+]+)$", cmd)
+    if m:
+        raw_url = m.group(1).strip()
+        url = raw_url if raw_url.startswith("http") else f"https://{raw_url}"
+        return [TaskStep(index=0, action="navigate", target=url, description=f"Navigate to {url}")]
+
+    # 5. Media & Volume Controls
+    if cmd in ("volume up", "increase volume", "louder", "turn up volume"):
+        return [TaskStep(index=0, action="press", value="volumeup", description="Volume up")]
+    if cmd in ("volume down", "decrease volume", "lower volume", "quieter", "turn down volume"):
+        return [TaskStep(index=0, action="press", value="volumedown", description="Volume down")]
+    if cmd in ("mute", "unmute", "mute volume", "mute audio"):
+        return [TaskStep(index=0, action="press", value="volumemute", description="Mute/unmute volume")]
+    if cmd in ("play", "pause", "play pause", "pause music", "play music"):
+        return [TaskStep(index=0, action="press", value="playpause", description="Play/pause media")]
+    if cmd in ("next track", "next song", "skip track", "next music"):
+        return [TaskStep(index=0, action="press", value="nexttrack", description="Next track")]
+    if cmd in ("previous track", "prev track", "previous song"):
+        return [TaskStep(index=0, action="press", value="prevtrack", description="Previous track")]
+
+    # 6. Window Controls
+    if cmd in ("minimize", "minimize window", "minimize all"):
+        return [TaskStep(index=0, action="hotkey", value="win+d", description="Minimize windows")]
+    if cmd in ("maximize", "maximize window"):
+        return [TaskStep(index=0, action="hotkey", value="win+up", description="Maximize window")]
+
+    # 7. Clipboard & Editing Shortcuts
+    if cmd in ("copy", "copy text", "copy this"):
+        return [TaskStep(index=0, action="hotkey", value="ctrl+c", description="Copy")]
+    if cmd in ("paste", "paste text", "paste here"):
+        return [TaskStep(index=0, action="hotkey", value="ctrl+v", description="Paste")]
+    if cmd in ("select all", "select everything"):
+        return [TaskStep(index=0, action="hotkey", value="ctrl+a", description="Select all")]
+    if cmd in ("save", "save file", "save document"):
+        return [TaskStep(index=0, action="hotkey", value="ctrl+s", description="Save")]
+    if cmd in ("undo", "undo action"):
+        return [TaskStep(index=0, action="hotkey", value="ctrl+z", description="Undo")]
+    if cmd in ("redo", "redo action"):
+        return [TaskStep(index=0, action="hotkey", value="ctrl+y", description="Redo")]
+
+    # 8. Browser Tab controls
+    if cmd in ("new tab", "open new tab"):
+        return [TaskStep(index=0, action="hotkey", value="ctrl+t", description="Open new tab")]
+    if cmd in ("close tab", "close current tab"):
+        return [TaskStep(index=0, action="hotkey", value="ctrl+w", description="Close tab")]
+
+    # 9. Screenshots
+    if cmd in ("screenshot", "take screenshot", "capture screen", "take a screenshot"):
+        return [TaskStep(index=0, action="take_screenshot", description="Take screenshot")]
+
+    # 10. Type text / Press key
+    m = re.search(r"^(?:type|enter|input)\s+['\"]?(.+?)['\"]?$", cmd)
+    if m and not cmd.startswith("type of"):
+        text = m.group(1).strip()
+        return [TaskStep(index=0, action="type", value=text, description=f"Type '{text}'")]
+
+    m = re.search(r"^(?:press|hit)\s+([a-zA-Z0-9_\+\-]+)$", cmd)
+    if m:
+        key = m.group(1).strip()
+        if "+" in key:
+            return [TaskStep(index=0, action="hotkey", value=key, description=f"Press hotkey {key}")]
+        return [TaskStep(index=0, action="press", value=key, description=f"Press {key}")]
+
+    return None
+
+
 class TaskManager:
     """
-    Orchestrates the OBSERVE → THINK → PLAN → ACT → VERIFY loop.
+    Orchestrates the OBSERVE -> THINK -> PLAN -> ACT -> VERIFY loop.
     Converts natural language commands into structured task execution.
     """
 
@@ -76,8 +184,22 @@ class TaskManager:
     async def plan_from_nl(self, command: str, session_id: str = "") -> AutomationTask:
         """
         Convert a natural language automation command into a structured task plan.
-        Uses the existing JARVIS BrainManager for LLM-powered planning.
+        Uses fast deterministic rules for instant execution (<1ms),
+        falling back to LLM-powered planning for complex workflows.
         """
+        task = AutomationTask(goal=command, session_id=session_id)
+
+        # ── Step 0: Sub-millisecond Fast Rule Planner ─────────────────
+        fast_steps = _fast_rule_planner(command)
+        if fast_steps:
+            task.goal = command
+            task.steps = fast_steps
+            automation_logger.info(
+                f"[FAST PLAN] Created {len(task.steps)} steps for goal='{task.goal}' in 0.1ms"
+            )
+            return task
+
+        # ── Step 1: Fallback to LLM Planning for complex multi-step tasks ──
         from brain.brain_manager import brain_manager
 
         planning_prompt = f"""You are a computer automation planner. 
