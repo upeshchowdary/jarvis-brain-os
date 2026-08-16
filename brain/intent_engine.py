@@ -72,15 +72,27 @@ class IntentEngine:
                 summary=f"User requested switching active model to '{target_model}'",
             )
 
-        # ── AUTOMATION_TASK: Computer control, automation, recording, replay ──
+        # ── AUTOMATION_TASK: Dynamic computer control, app launching, actions ──
+        # 1. Regex match for opening, closing, or controlling any application or action
+        app_action_pattern = re.search(
+            r"^(?:please\s+)?(?:can\s+you\s+)?(open|launch|start|run|close|quit|kill|terminate|exit)\s+(?:the\s+)?([a-zA-Z0-9_\s\+\-\.]+?)(?:\s+(?:app|browser|application|program|window))?$",
+            q_lower,
+        )
+        if app_action_pattern:
+            action_verb = app_action_pattern.group(1).strip()
+            target_entity = app_action_pattern.group(2).strip()
+            # If target is not a pure question or vision request
+            if target_entity and not any(target_entity.startswith(w) for w in ("camera", "battery", "image")):
+                return StructuredIntent(
+                    intent="AUTOMATION_TASK",
+                    confidence=0.99,
+                    arguments={"command": query, "action": action_verb, "target": target_entity},
+                    summary=f"User requested automation: '{action_verb} {target_entity}'",
+                )
+
         automation_triggers = [
-            # App control (including common typos)
-            "open chrome", "open chrom", "open google chrome", "open firefox", "open edge", "open brave",
-            "open vs code", "open vscode", "open code", "open visual studio", "open notepad", "open terminal",
-            "open file explorer", "open explorer", "open settings", "open calculator", "open word", "open excel",
-            "open spotify", "open discord", "open slack", "open zoom", "open teams",
-            "open goggle", "open browser", "launch ",
-            "close chrome", "close firefox", "close notepad", "close the app",
+            # App/action verbs
+            "open ", "launch ", "start ", "run ", "close ", "quit ",
             # Mouse/click control
             "click the", "click on", "right click", "double click",
             "drag and drop", "drag from",
@@ -88,9 +100,12 @@ class IntentEngine:
             "type in", "type into", "press enter", "press escape", "press tab",
             "hold ctrl", "press ctrl", "press alt", "press shift",
             "copy and paste", "select all and",
+            # Volume and media
+            "volume up", "volume down", "mute volume", "mute audio", "unmute",
+            "next track", "previous track", "play music", "pause music",
             # Browser actions
             "navigate to", "go to website", "go to url", "open website", "open url",
-            "search for on google", "search google for", "google search",
+            "search for on google", "search google for", "google search", "search youtube for",
             "new tab", "close tab", "refresh the page", "go back", "go forward",
             "scroll down", "scroll up", "scroll to",
             "fill in the form", "fill out", "fill the field",
@@ -103,8 +118,9 @@ class IntentEngine:
             "repeat that workflow", "do that again",
             # Automation commands
             "automate", "automation status", "dry run mode", "emergency stop",
-            "stop everything", "stop automation", "what are you doing",
+            "stop everything", "stop automation",
             "take a screenshot", "take screenshot", "capture my screen",
+            "list apps", "show apps", "installed apps", "what apps are installed",
         ]
         if any(t in q_lower for t in automation_triggers):
             return StructuredIntent(
@@ -153,11 +169,10 @@ class IntentEngine:
             "background colour", "background color", "background color of",
             "colour of the screen", "color of the screen",
             "what text", "text on screen", "visible text",
-            "whatsapp", "code editor", "terminal window",
             # Cursor / position
             "cursor position", "where is the cursor", "where is my cursor",
             # Change detection
-            "what changed", "what's different", "screenshot", "screen capture",
+            "what changed", "what's different",
             # General visual queries
             "see the", "see it", "look at",
         ]
