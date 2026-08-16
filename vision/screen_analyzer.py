@@ -331,18 +331,18 @@ async def analyze_screen(
 
         race_providers = []
 
-        # P1: Gemini 3.5 Flash Lite — ultra-fast sub-1s multimodal vision model
+        # P1: Gemini 3.5 Flash Lite — ultra-fast multimodal vision model
         if brain_config.GEMINI_API_KEY:
             gemini = GeminiVisionProvider(
                 api_key=brain_config.GEMINI_API_KEY,
                 model_name="gemini-3.5-flash-lite",
-                timeout=5.0,
+                timeout=10.0,
             )
             race_providers.append(("gemini", gemini))
 
         # P2: Local Ollama (qwen3-vl:2b) — ultra-fast local offline backup
         try:
-            ollama_local = OllamaVisionProvider(timeout=8.0)
+            ollama_local = OllamaVisionProvider(timeout=15.0)
             race_providers.append(("ollama", ollama_local))
         except Exception:
             pass
