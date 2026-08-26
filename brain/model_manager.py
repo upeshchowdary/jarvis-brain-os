@@ -45,14 +45,12 @@ class ModelManager:
         self.openai_endpoint = "https://api.openai.com/v1/chat/completions"
 
         self.available_models = [
-            "gpt-4o-mini",
-            "gpt-4o",
-            "llama-3.3-70b-versatile",
-            "llama-3.1-8b-instant",
-            "mixtral-8x7b-32768",
-            "gemma2-9b-it",
+            "gemini-3.5-flash-lite",
+            "gemini-2.0-flash",
             "gemini-1.5-flash",
             "gemini-1.5-pro",
+            "gpt-4o-mini",
+            "gpt-4o",
             f"ollama/{self.ollama_model}",
             f"ollama/{self.ollama_vision_model}",
         ]
@@ -63,9 +61,14 @@ class ModelManager:
             "mixtral-8x7b-32768": {"text": True, "vision": False},
             "gemma2-9b-it": {"text": True, "vision": False},
             "qwen2.5": {"text": True, "vision": False},
+            # Ollama vision models
+            "qwen2-vl:2b": {"text": True, "vision": True},
+            "qwen2-vl:7b": {"text": True, "vision": True},
             "qwen3-vl:2b": {"text": True, "vision": True},
             "qwen3-vl:4b": {"text": True, "vision": True},
             "qwen3-vl:8b": {"text": True, "vision": True},
+            # Gemini models
+            "gemini-2.5-flash": {"text": True, "vision": True},
             "gemini-3.5-flash-lite": {"text": True, "vision": True},
             "gemini-flash-latest": {"text": True, "vision": True},
             "gemini-flash-lite-latest": {"text": True, "vision": True},
@@ -198,6 +201,32 @@ class ModelManager:
                 elapsed_ms = (time.perf_counter() - start_time) * 1000
 
                 if response.status_code == 404 or "not found" in response.text.lower():
+                    # Resolve known aliases first: "vision" → configured vision model
+                    vision_model = self.ollama_vision_model  # e.g. qwen2-vl:2b
+                    if clean_model in ("vision", "ollama-vision", "ollama_vision"):
+                        logger.info(
+                            f"[Ollama] Alias '{clean_model}' → using configured vision model '{vision_model}'"
+                        )
+                        payload["model"] = vision_model
+                        resp_alias = await client.post(endpoint, headers=headers, json=payload)
+                        if resp_alias.status_code == 200:
+                            data = resp_alias.json()
+                            content = data.get("message", {}).get("content", "")
+                            eval_count = data.get("eval_count", 0)
+                            prompt_eval_count = data.get("prompt_eval_count", 0)
+                            return {
+                                "content": content,
+                                "model": vision_model,
+                                "provider": "ollama",
+                                "latency_ms": round(elapsed_ms, 2),
+                                "finish_reason": "stop" if data.get("done") else None,
+                                "usage": {
+                                    "prompt_tokens": prompt_eval_count,
+                                    "completion_tokens": eval_count,
+                                    "total_tokens": prompt_eval_count + eval_count,
+                                },
+                            }
+
                     installed = await self._get_installed_ollama_models()
                     for alt_model in installed:
                         if alt_model != clean_model:
@@ -398,14 +427,23 @@ class ModelManager:
 
     async def generate(
         self,
-        messages: List[Dict[str, str]],
+        messages: Optional[List[Dict[str, str]]] = None,
         model: Optional[str] = None,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
         is_realtime_query: bool = False,
         intent_code: Optional[str] = None,
+        prompt: Optional[str] = None,
+        system_instruction: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Execute completion request with Autonomous Hybrid Router (Local Ollama vs Cloud APIs)."""
+        if messages is None:
+            messages = []
+            if system_instruction:
+                messages.append({"role": "system", "content": system_instruction})
+            if prompt:
+                messages.append({"role": "user", "content": prompt})
+
         target_model = model or self.current_model
         temp = temperature if temperature is not None else brain_config.TEMPERATURE
         tokens = max_tokens or brain_config.MAX_TOKENS
@@ -431,53 +469,45 @@ class ModelManager:
                 if ("ollama", inst_m) not in candidates:
                     candidates.append(("ollama", inst_m))
         else:
-            # 2. Hybrid Complexity Classification when online
-            complexity = self.classify_query_complexity(user_query, is_realtime_query, intent_code)
+            has_user_override = (target_model != brain_config.DEFAULT_MODEL)
 
-            if brain_config.ENABLE_HYBRID_ROUTING and model is None:
-                if complexity == QueryComplexity.SIMPLE:
-                    logger.info(
-                        f"Hybrid Router: Simple query detected ('{user_query[:40]}...'). "
-                        f"Routing to local Ollama [{self.ollama_model}] to conserve Cloud API tokens."
-                    )
-                    candidates.append(("ollama", self.ollama_model))
-                    installed = await self._get_installed_ollama_models()
-                    for inst_m in installed:
-                        if ("ollama", inst_m) not in candidates:
-                            candidates.append(("ollama", inst_m))
-                else:
-                    logger.info(
-                        f"Hybrid Router: {complexity.value.upper()} query detected ('{user_query[:40]}...'). "
-                        f"Routing to high-capacity Cloud API [{target_model}]."
-                    )
-
-            # Add primary target model
+            # 1. Add primary target model FIRST
             if "ollama" in target_model.lower():
                 clean_m = target_model.replace("ollama/", "")
+                if clean_m in ("vision", "ollama-vision", "ollama_vision", "qwen 2b", "qwen2b"):
+                    clean_m = self.ollama_vision_model
                 if ("ollama", clean_m) not in candidates:
                     candidates.append(("ollama", clean_m))
-            elif "gpt" in target_model.lower() or "openai" in target_model.lower():
-                if ("openai", target_model) not in candidates:
-                    candidates.append(("openai", target_model))
-            elif intent_code == "SCREEN_VISION":
-                # SCREEN_VISION uses the dedicated vision pipeline (screen_analyzer.py).
-                # Text LLM here is only for summarising the vision result — route to Groq.
-                if ("groq", "llama-3.3-70b-versatile") not in candidates:
-                    candidates.append(("groq", "llama-3.3-70b-versatile"))
             elif "gemini" in target_model.lower():
                 if ("gemini", target_model) not in candidates:
                     candidates.append(("gemini", target_model))
+            elif "gpt" in target_model.lower() or "openai" in target_model.lower():
+                if ("openai", target_model) not in candidates:
+                    candidates.append(("openai", target_model))
             else:
                 if ("groq", target_model) not in candidates:
                     candidates.append(("groq", target_model))
 
-            # Fallback queue — Groq → Gemini → local Ollama (OpenAI removed: invalid key)
+            # 2. Hybrid Complexity Routing (only if user hasn't explicitly chosen a specific model)
+            if brain_config.ENABLE_HYBRID_ROUTING and model is None and not has_user_override:
+                is_simple_query = len(user_query.split()) <= 6 and not any(k in user_query.lower() for k in ("code", "analyze", "explain", "architecture", "plan", "debug"))
+                if is_simple_query:
+                    logger.info(
+                        f"Hybrid Router: Simple query detected ('{user_query[:40]}...'). "
+                        f"Routing to local Ollama [{self.ollama_model}] to conserve Cloud API tokens."
+                    )
+                    if ("ollama", self.ollama_model) not in candidates:
+                        candidates.insert(0, ("ollama", self.ollama_model))
+                    installed = await self._get_installed_ollama_models()
+                    for inst_m in installed:
+                        if ("ollama", inst_m) not in candidates:
+                            candidates.append(("ollama", inst_m))
+
+            # Fallback queue — only used if primary model fails
             fallback_queue = [
-                ("groq", "llama-3.3-70b-versatile"),
-                ("groq", "llama-3.1-8b-instant"),
-                ("gemini", "gemini-3.5-flash-lite"),
+                ("gemini", brain_config.GEMINI_MODEL),
+                ("gemini", "gemini-1.5-flash"),
                 ("ollama", self.ollama_model),
-                ("ollama", "qwen3.5:latest"),
             ]
 
             for prov, mod in fallback_queue:

@@ -1,4 +1,4 @@
-﻿"""JARVIS Mouse Controller — Safe, vision-verified mouse interactions.
+"""JARVIS Mouse Controller — Safe, vision-verified mouse interactions.
 
 All actions support:
 - Dry-run mode (log only, no execution)
@@ -16,7 +16,7 @@ from automation.safety_manager import safety_manager
 
 try:
     import pyautogui
-    pyautogui.FAILSAFE = True   # Move mouse to top-left corner to abort
+    pyautogui.FAILSAFE = False
     pyautogui.PAUSE = automation_config.ACTION_DELAY
     HAS_PYAUTOGUI = True
 except ImportError:

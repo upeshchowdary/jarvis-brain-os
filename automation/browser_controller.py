@@ -1,12 +1,12 @@
-"""JARVIS Browser Controller — Screen-based browser automation.
+"""JARVIS Browser Controller — Hybrid OS & Playwright browser automation.
 
-Uses keyboard shortcuts + Vision as primary strategy (works with any browser).
-No Selenium/Playwright dependency required.
-Playwright/Selenium can be plugged in later as a drop-in enhancement.
+Supports:
+1. Playwright Driver (DOM-level deterministic automation, fast scraping, selector actions)
+2. Screen-based OS Controller (keyboard shortcuts + Vision as universal fallback for any desktop browser).
 """
 
 import asyncio
-from typing import Optional
+from typing import Optional, Dict, Any
 
 from automation.config import automation_config
 from automation.automation_logger import log_action
@@ -15,6 +15,12 @@ from automation.mouse_controller import mouse_controller
 from automation.application_controller import application_controller
 from automation.screen_observer import screen_observer
 from automation.window_controller import window_controller
+
+try:
+    from playwright.async_api import async_playwright
+    HAS_PLAYWRIGHT = True
+except ImportError:
+    HAS_PLAYWRIGHT = False
 
 
 class BrowserController:
@@ -179,21 +185,88 @@ class BrowserController:
         text, _ = await screen_observer.extract_text()
         return {"success": True, "action": "get_page_text", "text": text}
 
-    async def get_current_url(self) -> str:
-        """Attempt to read the current URL from the address bar using OCR."""
-        # Focus address bar, select all, copy
-        await keyboard_controller.hotkey("ctrl", "l")
-        await asyncio.sleep(0.2)
-        await keyboard_controller.copy()
-        await asyncio.sleep(0.1)
-        await keyboard_controller.escape()
-        # Read clipboard
+    # ── Playwright Direct Automation Engine ────────────────────────────
+
+    async def playwright_launch(self, headless: bool = True) -> Dict[str, Any]:
+        """Launch a dedicated Playwright browser instance."""
+        if not HAS_PLAYWRIGHT:
+            return {"success": False, "error": "Playwright is not installed. Run: pip install playwright && playwright install"}
+        
         try:
-            import pyperclip
-            return pyperclip.paste()
-        except ImportError:
-            return ""
+            if not hasattr(self, "_pw_instance") or self._pw_instance is None:
+                self._pw_playwright = await async_playwright().start()
+                self._pw_browser = await self._pw_playwright.chromium.launch(headless=headless)
+                self._pw_page = await self._pw_browser.new_page()
+                self._pw_instance = True
+            return {"success": True, "action": "playwright_launch", "headless": headless}
+        except Exception as e:
+            return {"success": False, "error": f"Failed to launch Playwright: {e}"}
+
+    async def playwright_goto(self, url: str, wait_until: str = "domcontentloaded") -> Dict[str, Any]:
+        """Navigate to a URL using Playwright."""
+        if not HAS_PLAYWRIGHT:
+            return await self.navigate(url)
+        
+        launch_res = await self.playwright_launch()
+        if not launch_res["success"]:
+            return launch_res
+
+        try:
+            await self._pw_page.goto(url, wait_until=wait_until, timeout=30000)
+            title = await self._pw_page.title()
+            return {"success": True, "action": "playwright_goto", "url": url, "title": title}
+        except Exception as e:
+            return {"success": False, "error": f"Playwright navigation error: {e}"}
+
+    async def playwright_click(self, selector: str) -> Dict[str, Any]:
+        """Click an element by CSS / XPath selector using Playwright."""
+        if not hasattr(self, "_pw_page") or self._pw_page is None:
+            return {"success": False, "error": "No active Playwright page. Call playwright_goto first."}
+        try:
+            await self._pw_page.click(selector, timeout=10000)
+            return {"success": True, "action": "playwright_click", "selector": selector}
+        except Exception as e:
+            return {"success": False, "error": f"Playwright click error: {e}"}
+
+    async def playwright_type(self, selector: str, text: str) -> Dict[str, Any]:
+        """Type text into an element by selector using Playwright."""
+        if not hasattr(self, "_pw_page") or self._pw_page is None:
+            return {"success": False, "error": "No active Playwright page. Call playwright_goto first."}
+        try:
+            await self._pw_page.fill(selector, text, timeout=10000)
+            return {"success": True, "action": "playwright_type", "selector": selector}
+        except Exception as e:
+            return {"success": False, "error": f"Playwright type error: {e}"}
+
+    async def playwright_get_text(self, selector: Optional[str] = None) -> Dict[str, Any]:
+        """Extract text content from page or specific element using Playwright."""
+        if not hasattr(self, "_pw_page") or self._pw_page is None:
+            return {"success": False, "error": "No active Playwright page. Call playwright_goto first."}
+        try:
+            if selector:
+                content = await self._pw_page.text_content(selector)
+            else:
+                content = await self._pw_page.inner_text("body")
+            return {"success": True, "action": "playwright_get_text", "text": (content or "").strip()}
+        except Exception as e:
+            return {"success": False, "error": f"Playwright text extraction error: {e}"}
+
+    async def playwright_close(self) -> Dict[str, Any]:
+        """Close the active Playwright browser session."""
+        try:
+            if hasattr(self, "_pw_browser") and self._pw_browser is not None:
+                await self._pw_browser.close()
+            if hasattr(self, "_pw_playwright") and self._pw_playwright is not None:
+                await self._pw_playwright.stop()
+            self._pw_instance = None
+            self._pw_page = None
+            self._pw_browser = None
+            self._pw_playwright = None
+            return {"success": True, "action": "playwright_close"}
+        except Exception as e:
+            return {"success": False, "error": f"Error closing Playwright: {e}"}
 
 
 # Global singleton
 browser_controller = BrowserController()
+

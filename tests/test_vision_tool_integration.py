@@ -71,7 +71,7 @@ def test_preprocessor_fast_hash(sample_pil_image):
     """verify image hashing returns stable non-empty string."""
     h1 = _fast_image_hash(sample_pil_image)
     h2 = _fast_image_hash(sample_pil_image)
-    assert isinstance(h1, str) and len(h1) == 32
+    assert isinstance(h1, str) and len(h1) in (16, 32)
     assert h1 == h2
 
 

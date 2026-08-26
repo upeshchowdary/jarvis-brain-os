@@ -214,6 +214,7 @@ async def analyze_screen(
     app_name: str = "",
     force_ocr: bool = False,
     quick_mode: bool = False,
+    active_model: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Main JARVIS vision entry point — v3 Real-Time Pipeline.
@@ -325,22 +326,58 @@ async def analyze_screen(
     if cv_context:
         enriched_prompt = enriched_prompt + f"\n\n[CV PRE-ANALYSIS]:\n{cv_context}"
 
-    # ── Step 6: Provider Racing (Concurrent) ──────────────────────
-    if brain_config.VISION_RACE_PROVIDERS:
-        logger.info("[JARVIS] Racing providers: Gemini 2.5 Flash (fast mode)")
+    # ── Step 6: Targeted Model Routing or Provider Racing ──────────────────
+    target_lower = (active_model or "").lower()
 
+    # Case A: User explicitly on Ollama (e.g. ollama/qwen3-vl:2b or ollama vision)
+    if "ollama" in target_lower:
+        clean_ollama_m = active_model.replace("ollama/", "") if active_model else brain_config.OLLAMA_VISION_MODEL
+        if clean_ollama_m in ("vision", "ollama-vision", "ollama_vision", "qwen 2b", "qwen2b"):
+            clean_ollama_m = brain_config.OLLAMA_VISION_MODEL
+        logger.info(f"[JARVIS] Active model is Ollama. Invoking local Ollama vision directly ({clean_ollama_m})...")
+        ollama_vis = OllamaVisionProvider(model_name=clean_ollama_m)
+        res = await ollama_vis.analyze_image(vision_image, enriched_prompt)
+        if res.get("success") and res.get("analysis"):
+            analysis = res["analysis"]
+            store_cached_analysis(session_id, ctx.image_hash, analysis)
+            elapsed = round((time.perf_counter() - total_start) * 1000, 1)
+            label = _vision_label("ollama", res.get("model", clean_ollama_m), elapsed)
+            logger.info(f"[JARVIS] [OK] {label}")
+            return _build_result(True, "ollama", res.get("model", clean_ollama_m), query_type, analysis, label, elapsed, ctx, cv_result)
+        logger.warning(f"[JARVIS] Ollama vision direct failed: {res.get('error')}")
+
+    # Case B: User explicitly on Gemini (e.g. gemini-3.5-flash-lite)
+    elif "gemini" in target_lower and brain_config.GEMINI_API_KEY:
+        gemini_m = active_model if "gemini" in (active_model or "") else brain_config.GEMINI_MODEL
+        logger.info(f"[JARVIS] Active model is Gemini. Invoking Gemini vision directly ({gemini_m})...")
+        gemini = GeminiVisionProvider(
+            api_key=brain_config.GEMINI_API_KEY,
+            model_name=gemini_m,
+            timeout=15.0,
+        )
+        res = await gemini.analyze_image(vision_image, enriched_prompt)
+        if res.get("success") and res.get("analysis"):
+            analysis = res["analysis"]
+            store_cached_analysis(session_id, ctx.image_hash, analysis)
+            elapsed = round((time.perf_counter() - total_start) * 1000, 1)
+            label = _vision_label("gemini", res.get("model", gemini_m), elapsed)
+            logger.info(f"[JARVIS] [OK] {label}")
+            return _build_result(True, "gemini", res.get("model", gemini_m), query_type, analysis, label, elapsed, ctx, cv_result)
+        logger.warning(f"[JARVIS] Gemini vision direct failed: {res.get('error')}")
+
+    # Case C: Default model (Groq) or Provider Racing
+    elif brain_config.VISION_RACE_PROVIDERS:
+        logger.info("[JARVIS] Racing providers: Gemini + Ollama")
         race_providers = []
 
-        # P1: Gemini 3.5 Flash Lite — ultra-fast multimodal vision model
         if brain_config.GEMINI_API_KEY:
             gemini = GeminiVisionProvider(
                 api_key=brain_config.GEMINI_API_KEY,
-                model_name="gemini-3.5-flash-lite",
+                model_name=brain_config.GEMINI_MODEL,
                 timeout=10.0,
             )
             race_providers.append(("gemini", gemini))
 
-        # P2: Local Ollama (qwen3-vl:2b) — ultra-fast local offline backup
         try:
             ollama_local = OllamaVisionProvider(timeout=15.0)
             race_providers.append(("ollama", ollama_local))
@@ -365,36 +402,20 @@ async def analyze_screen(
                 )
 
             logger.info(f"[JARVIS] Race failed: {res.get('error', '')[:80]}")
-    else:
-        # Sequential fallback (legacy behavior when VISION_RACE_PROVIDERS=False)
-        # P1: Gemini 3.5 Flash Lite
-        if brain_config.GEMINI_API_KEY:
-            logger.info("[JARVIS] P1: Trying Gemini 3.5 Flash Lite...")
-            gemini = GeminiVisionProvider(
-                api_key=brain_config.GEMINI_API_KEY,
-                model_name="gemini-3.5-flash-lite",
-            )
-            res = await gemini.analyze_image(vision_image, enriched_prompt)
-            if res.get("success") and res.get("analysis"):
-                analysis = res["analysis"]
-                store_cached_analysis(session_id, ctx.image_hash, analysis)
-                elapsed = round((time.perf_counter() - total_start) * 1000, 1)
-                label = _vision_label("gemini", res["model"], elapsed)
-                logger.info(f"[JARVIS] [OK] {label}")
-                return _build_result(True, "gemini", res["model"], query_type, analysis, label, elapsed, ctx, cv_result)
 
-    # ── Step 7: Ollama local fallback ────────────────────────────
-    logger.info("[JARVIS] P3: Trying Ollama local vision model...")
-    ollama_vis = OllamaVisionProvider()
-    res = await ollama_vis.analyze_image(vision_image, enriched_prompt)
+    # ── Step 7: Fallback to Ollama local vision if not already tried ──
+    if "ollama" not in target_lower:
+        logger.info("[JARVIS] P3: Trying Ollama local vision model...")
+        ollama_vis = OllamaVisionProvider()
+        res = await ollama_vis.analyze_image(vision_image, enriched_prompt)
 
-    if res.get("success") and res.get("analysis"):
-        analysis = res["analysis"]
-        store_cached_analysis(session_id, ctx.image_hash, analysis)
-        elapsed = round((time.perf_counter() - total_start) * 1000, 1)
-        label = _vision_label("ollama", res.get("model", brain_config.OLLAMA_VISION_MODEL), elapsed)
-        logger.info(f"[JARVIS] [OK] {label}")
-        return _build_result(True, "ollama", res.get("model", "qwen3-vl:2b"), query_type, analysis, label, elapsed, ctx, cv_result)
+        if res.get("success") and res.get("analysis"):
+            analysis = res["analysis"]
+            store_cached_analysis(session_id, ctx.image_hash, analysis)
+            elapsed = round((time.perf_counter() - total_start) * 1000, 1)
+            label = _vision_label("ollama", res.get("model", brain_config.OLLAMA_VISION_MODEL), elapsed)
+            logger.info(f"[JARVIS] [OK] {label}")
+            return _build_result(True, "ollama", res.get("model", brain_config.OLLAMA_VISION_MODEL), query_type, analysis, label, elapsed, ctx, cv_result)
 
     # ── Step 9: Emergency OCR fallback ───────────────────────────
     logger.warning("[JARVIS] P5: All vision LLMs failed. Using OpenCV+OCR fallback.")
@@ -449,3 +470,53 @@ def _build_result(
         "ocr_paragraphs": ctx.ocr_paragraphs[:3],
         "app_type": ctx.app_type,
     }
+
+
+class ScreenAnalyzer:
+    """Class wrapper for JARVIS Screen Analyzer with visual element grounding."""
+
+    async def analyze(self, query: str = "", image: Any = None, session_id: str = "default") -> Dict[str, Any]:
+        return await analyze_screen(prompt=query, session_id=session_id)
+
+    async def find_element(self, screenshot: Any, element_description: str) -> Dict[str, Any]:
+        """Finds a target UI element on screen using OCR and UI detector."""
+        from vision.ui_detector import ui_detector
+        from vision.ocr import ocr_engine
+
+        target_lower = element_description.lower().strip()
+        ocr_result = await ocr_engine.extract_text_async(screenshot)
+        ocr_items = ocr_result.get("text_items", []) if isinstance(ocr_result, dict) else []
+
+        # 1. Direct OCR Match
+        for item in ocr_items:
+            text = (item.text if hasattr(item, "text") else item.get("text", "")).lower()
+            if target_lower in text or text in target_lower:
+                bbox = item.bbox if hasattr(item, "bbox") else item.get("bbox", {})
+                if hasattr(bbox, "x"):
+                    box_dict = {"x": bbox.x, "y": bbox.y, "width": bbox.width, "height": bbox.height}
+                else:
+                    box_dict = bbox
+                return {"found": True, "bounding_box": box_dict, "text": text}
+
+        # 2. UI Detector structural elements
+        elements = ui_detector.detect_ui_elements(screenshot, ocr_items=ocr_items if ocr_items and hasattr(ocr_items[0], "text") else None)
+        for elem in elements:
+            label = (elem.label or elem.text or "").lower()
+            if target_lower in label or label in target_lower:
+                return {
+                    "found": True,
+                    "bounding_box": {
+                        "x": elem.bounding_box.x,
+                        "y": elem.bounding_box.y,
+                        "width": elem.bounding_box.width,
+                        "height": elem.bounding_box.height,
+                    },
+                    "type": elem.element_type.value,
+                }
+
+        return {"found": False, "error": f"Element '{element_description}' not found on screen"}
+
+
+# Global singleton instance
+screen_analyzer = ScreenAnalyzer()
+

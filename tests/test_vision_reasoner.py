@@ -6,8 +6,6 @@ from vision.visual_reasoner import visual_reasoner, VisualReasoner
 from vision.providers.base import BaseVisionProvider
 from vision.providers.openai import OpenAIVisionProvider
 from vision.providers.gemini import GeminiVisionProvider
-from vision.providers.qwen import QwenVisionProvider
-from vision.providers.llava import LLaVAVisionProvider
 
 
 class MockVisionProvider(BaseVisionProvider):

@@ -178,13 +178,13 @@ class OllamaVisionProvider(BaseVisionProvider):
             "stream": True,
             "options": {
                 "temperature": 0.1,
-                "num_predict": 512,
-                "think": False,   # Disable thinking to get direct content tokens
+                "num_predict": 1024,
             },
         }
 
         start_time = time.perf_counter()
         full_text = []
+        thinking_text = []
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 async with client.stream("POST", url, json=payload) as response:
@@ -205,14 +205,19 @@ class OllamaVisionProvider(BaseVisionProvider):
                         try:
                             chunk = _json.loads(line)
                             msg = chunk.get("message", {})
-                            # qwen3-vl:2b streams under "thinking" key before "content"
-                            # We must capture CONTENT tokens — not thinking tokens
+                            
+                            # Capture content tokens
                             content_token = msg.get("content", "")
-                            # Some Ollama versions may also put response in "response" key
                             if not content_token:
                                 content_token = chunk.get("response", "")
                             if content_token:
                                 full_text.append(content_token)
+
+                            # Also track thinking tokens for fallback
+                            thinking_token = msg.get("thinking", "")
+                            if thinking_token:
+                                thinking_text.append(thinking_token)
+
                             if chunk.get("done"):
                                 break
                         except Exception:
@@ -220,6 +225,15 @@ class OllamaVisionProvider(BaseVisionProvider):
 
             elapsed_ms = (time.perf_counter() - start_time) * 1000
             content = "".join(full_text).strip()
+
+            # If content is empty, fallback to distilled thoughts
+            if not content and thinking_text:
+                raw_thoughts = "".join(thinking_text).strip()
+                # Clean up reasoning markers
+                import re as _re
+                clean_thoughts = _re.sub(r"^(?:Okay|So|Alright|Let's see)[^\.\n]*[\.\n]", "", raw_thoughts, flags=_re.IGNORECASE).strip()
+                content = clean_thoughts or raw_thoughts
+                logger.info(f"[JARVIS] Ollama extracted response from reasoning thoughts ({len(content)} chars)")
 
             logger.info(f"[JARVIS] Ollama response: {elapsed_ms:.0f}ms ({len(content)} chars)")
 

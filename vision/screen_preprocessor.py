@@ -116,6 +116,10 @@ def _dhash(image: Any, hash_size: int = 8) -> str:
         return ""
 
 
+# Backwards-compatible alias
+_fast_image_hash = _dhash
+
+
 def _hamming_distance(hash1: str, hash2: str) -> int:
     """Count differing bits between two hex hash strings."""
     if not hash1 or not hash2 or len(hash1) != len(hash2):

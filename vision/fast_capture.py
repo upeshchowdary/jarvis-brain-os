@@ -73,7 +73,7 @@ def _get_mss_instance() -> Optional[Any]:
         return None
     if not hasattr(_local, "_mss"):
         try:
-            _local._mss = mss.mss()
+            _local._mss = mss.MSS() if hasattr(mss, "MSS") else mss.mss()
         except Exception as e:
             logger.debug(f"[JARVIS][FastCapture] mss init failed: {e}")
             _local._mss = None

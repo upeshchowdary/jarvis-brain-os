@@ -1,7 +1,10 @@
 """JARVIS Automation Orchestrator — Top-level entry point for the automation system.
 
 Called by BrainManager when AUTOMATION_TASK intent is detected.
-Routes: NL command → Task Plan → Execution → Result
+Routes:
+  - Simple commands  → fast rule-planner → task_manager
+  - Complex chained  → ComputerUseAgent (ReAct vision loop)
+  - Special commands → recording, replay, screenshot, etc.
 """
 
 import asyncio
@@ -36,6 +39,8 @@ class AutomationResult:
     details: Dict[str, Any] = field(default_factory=dict)
 
 
+import re as _re
+
 # Natural language routing keywords
 _RECORD_TRIGGERS = {"record", "start recording", "watch what i do", "learn this", "remember this"}
 _STOP_RECORD_TRIGGERS = {"stop recording", "done recording", "finish recording", "end recording"}
@@ -46,6 +51,59 @@ _DRY_RUN_TRIGGERS = {"dry run", "test run", "simulate", "don't actually do it"}
 _REPLAY_TRIGGERS = {"replay", "run workflow", "play workflow", "repeat", "do again"}
 _LIST_TRIGGERS = {"list workflows", "show workflows", "what workflows", "saved workflows"}
 _LIST_APPS_TRIGGERS = {"list apps", "show apps", "installed apps", "what apps are installed", "what apps do you see", "list installed apps", "all apps"}
+
+# ── Complex Chain Detection ───────────────────────────────────────────────────
+# Keywords that signal multi-step chained intent requiring the vision agent
+_CHAIN_CONJUNCTIONS = (
+    " and then ", " then ", " after that ", " next ", " also ", " afterwards ",
+    " and go to ", " and open ", " and click ", " and type ", " and send ",
+    " and message ", " and subscribe ", " and like ", " and comment ",
+    " and search ", " and scroll ", " and fill ", " and post ",
+    " then go ", " then click ", " then type ", " then open ",
+)
+_CHAIN_MULTI_VERBS = _re.compile(
+    r"(?:open|go|navigate|click|type|send|message|subscribe|like|comment|post|fill|search|scroll|find|visit|watch|play|download|upload|share|follow|unfollow|login|logout|sign).*?"
+    r"(?:and|then|also|after|next).*?"
+    r"(?:open|go|navigate|click|type|send|message|subscribe|like|comment|post|fill|search|scroll|find|visit|watch|play|download|upload|share|follow|unfollow|login|logout|sign)",
+    _re.IGNORECASE
+)
+
+
+def _is_complex_chain_task(command: str) -> bool:
+    """
+    Detect whether a command requires the Computer Use Agent (multi-step vision loop)
+    vs. a simple single-action or two-step task that task_manager can handle.
+    """
+    cmd = command.lower().strip()
+
+    # Always use agent for long, descriptive multi-step commands
+    if len(cmd) > 120:
+        return True
+
+    # Multi-verb patterns (open X and do Y and do Z)
+    if _CHAIN_MULTI_VERBS.search(cmd):
+        return True
+
+    # Contains explicit chaining conjunctions between task phrases
+    for conj in _CHAIN_CONJUNCTIONS:
+        if conj in cmd:
+            return True
+
+    # High-level web interaction keywords that need vision
+    complex_keywords = [
+        "subscribe", "like the video", "leave a comment", "post a comment",
+        "send a message", "send message", "send an email", "send email",
+        "fill in", "fill out", "login to", "log in to", "sign in to",
+        "open the", "go to youtube", "go to instagram", "go to twitter",
+        "go to linkedin", "go to facebook", "go to gmail", "go to whatsapp",
+        "the 3rd", "the first", "the second", "the last", "3rd video",
+        "channel", "playlist", "notification", "bell icon",
+        "formal", "professionally", "in a formal manner",
+    ]
+    if any(kw in cmd for kw in complex_keywords):
+        return True
+
+    return False
 
 
 class AutomationOrchestrator:
@@ -171,8 +229,34 @@ class AutomationOrchestrator:
                 details=replay_result,
             )
 
-        # ── General automation task ────────────────────────────────────
+        # ── Route: Direct execution through Advanced Automation Engine (Closed-Loop) ──
+        if not self._dry_run_mode:
+            try:
+                from automation.engine import advanced_orchestrator
+                engine_res = await advanced_orchestrator.execute(command, session_id=session_id)
+                icon = "✅" if engine_res.success else "⚠️"
+                return AutomationResult(
+                    success=engine_res.success,
+                    summary=f"{icon} {engine_res.summary}",
+                    task_id=f"engine_{session_id}",
+                    elapsed_ms=round(engine_res.elapsed_ms, 1),
+                    steps_done=engine_res.steps_completed,
+                    steps_failed=engine_res.steps_total - engine_res.steps_completed,
+                    details=engine_res.details,
+                )
+            except Exception as e:
+                automation_logger.error(f"[Orchestrator] Advanced engine error: {e}")
+                return AutomationResult(
+                    success=False,
+                    summary=f"⚠️ Automation failed: {e}",
+                    task_id=f"engine_{session_id}",
+                    elapsed_ms=round((time.perf_counter() - start) * 1000, 1),
+                )
+
+        # ── Route: Dry run mode / simple fallback ───────
         return await self._run_task(command, session_id, start)
+
+
 
     async def _run_task(
         self, command: str, session_id: str, start: float

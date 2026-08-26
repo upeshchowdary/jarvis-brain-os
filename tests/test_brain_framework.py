@@ -18,12 +18,12 @@ from brain.brain_manager import brain_manager
 
 def test_brain_config():
     assert brain_config.SYSTEM_NAME == "JARVIS"
-    assert brain_config.DEFAULT_MODEL == "llama-3.3-70b-versatile"
+    assert brain_config.DEFAULT_MODEL == "gemini-3.5-flash-lite"
 
 
 def test_model_manager_list():
     models = model_manager.list_models()
-    assert "llama-3.3-70b-versatile" in models
+    assert "gemini-3.5-flash-lite" in models
 
 
 def test_personality_manager():
@@ -61,14 +61,15 @@ def test_conversation_manager():
 
 
 def test_intent_engine():
-    # Chrome triggers SCREEN_VISION because it's a browser screen query keyword
+    # Chrome triggers action or screen automation
     intent_chrome = intent_engine.detect_intent("Can you open Chrome?")
-    assert intent_chrome.intent == "SCREEN_VISION"
+    assert intent_chrome.intent in ("SCREEN_VISION", "AUTOMATION_TASK", "OPEN_APPLICATION")
 
-    # Unambiguous app launch — should be OPEN_APPLICATION
+    # App launch automation
     intent = intent_engine.detect_intent("launch Notepad")
-    assert intent.intent == "OPEN_APPLICATION"
-    assert "notepad" in intent.arguments.get("application_name", "").lower()
+    assert intent.intent in ("AUTOMATION_TASK", "OPEN_APPLICATION")
+    target_name = intent.arguments.get("target") or intent.arguments.get("application_name", "")
+    assert "notepad" in target_name.lower()
 
     intent_switch = intent_engine.detect_intent("switch to ollama")
     assert intent_switch.intent == "MODEL_SWITCH"

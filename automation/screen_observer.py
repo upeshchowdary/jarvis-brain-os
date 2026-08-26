@@ -3,7 +3,7 @@
 Does NOT duplicate existing functionality.
 Integrates directly with:
   - vision.screen_capture.ScreenCaptureEngine (screenshot)
-  - vision.screen_analyzer.analyze_screen (Gemini vision)
+  - vision.screen_analyzer.analyze_screen (multi-provider vision pipeline)
   - vision.ocr.OCREngine (text extraction)
   - vision.environment.OCRTextItem (data model)
 """
@@ -88,7 +88,9 @@ class ScreenObserver:
         if image is None:
             return "", []
         try:
-            items = await self._ocr_engine.extract_text_items(image)
+            # extract_text_items is synchronous (CPU/IO-bound); run it in a
+            # worker thread so it never blocks the asyncio event loop.
+            items = await asyncio.to_thread(self._ocr_engine.extract_text_items, image)
             full_text = " ".join(item.text for item in items if item.text.strip())
             return full_text, items
         except Exception as e:
@@ -165,15 +167,13 @@ class ScreenObserver:
         # Exact match first
         for item in items:
             if search_lower == item.text.lower().strip():
-                cx = item.bounding_box.x + item.bounding_box.width // 2
-                cy = item.bounding_box.y + item.bounding_box.height // 2
+                cx, cy = item.bounds.center
                 return (cx, cy)
 
         # Partial / contains match
         for item in items:
             if search_lower in item.text.lower():
-                cx = item.bounding_box.x + item.bounding_box.width // 2
-                cy = item.bounding_box.y + item.bounding_box.height // 2
+                cx, cy = item.bounds.center
                 return (cx, cy)
 
         return None

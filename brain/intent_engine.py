@@ -42,26 +42,56 @@ class IntentEngine:
         q_lower = query.lower().strip()
 
         # 0. Model Switch / Provider Change Intent (typo-tolerant)
+        # Check for "ollama vision", "ollma vision", "qwen 2b", etc. first
+        _ollama_vision_triggers = [
+            "ollama vision", "ollama-vision", "ollama vison", "ollma vision",
+            "switch vision", "use vision model", "use ollama vision", "switch to vision",
+            "ollama qwen 2b", "ollma qwen 2b", "qwen 2b", "qwen2b", "ollama qwen",
+            "switch to ollama vision", "switch to ollama qwen 2b", "switch to ollma vision",
+            "switch to ollma qwen 2b", "switch ollama vision", "switch ollma vision",
+        ]
+        if any(t in q_lower for t in _ollama_vision_triggers) or (
+            re.search(r"\b(?:switch|change|set|use|select)\b", q_lower)
+            and (re.search(r"\bvision\b", q_lower) or re.search(r"\bqwen\s*2b\b", q_lower))
+            and not re.search(r"\bgemini\b|\bgpt\b|\bgroq\b", q_lower)
+        ):
+            # Always map to the installed Ollama 2B vision model
+            target_model = f"ollama/{brain_config.OLLAMA_VISION_MODEL}"
+            return StructuredIntent(
+                intent="MODEL_SWITCH",
+                confidence=0.99,
+                arguments={
+                    "target_model": target_model,
+                    "raw_query": query,
+                },
+                summary=f"User requested switching to Ollama vision model ({brain_config.OLLAMA_VISION_MODEL})",
+            )
+
         switch_match = re.search(
-            r"\b(?:switch|swtich|swich|siwtch|sitch|change|set|use|select)\s+(?:model\s+|provider\s+)?(?:to\s+)?(ollama(?:/[a-zA-Z0-9_\-\.:]+|\s+[a-zA-Z0-9_\-\.:]+)?|gemini|groq|openai|gpt[a-zA-Z0-9_\-\.]*|llama[a-zA-Z0-9_\-\.]*|qwen[a-zA-Z0-9_\-\.:]*|mixtral[a-zA-Z0-9_\-\.]*|gemma[a-zA-Z0-9_\-\.:]*)",
+            r"\b(?:switch|swtich|swich|siwtch|sitch|change|set|use|select)\s+(?:model\s+|provider\s+)?(?:to\s+)?(ollama(?:/[a-zA-Z0-9_\-\.:]+|\s+[a-zA-Z0-9_\-\.:]+)?|ollma(?:/[a-zA-Z0-9_\-\.:]+|\s+[a-zA-Z0-9_\-\.:]+)?|gemini[a-zA-Z0-9_\-\.\s]*|groq|openai|gpt[a-zA-Z0-9_\-\.]*|llama[a-zA-Z0-9_\-\.]*|qwen[a-zA-Z0-9_\-\.:]*|mixtral[a-zA-Z0-9_\-\.]*|gemma[a-zA-Z0-9_\-\.:]*)",
             q_lower,
         )
         if switch_match:
             target_raw = switch_match.group(1).strip()
-            if target_raw.startswith("ollama"):
-                sub = target_raw.replace("ollama", "").strip("/ ").strip()
-                if sub:
+            if target_raw.startswith("ollama") or target_raw.startswith("ollma"):
+                sub = re.sub(r"^oll[a-z]*", "", target_raw).strip("/ ").strip()
+                if "vision" in sub or "qwen 2b" in sub or "qwen2b" in sub:
+                    target_model = f"ollama/{brain_config.OLLAMA_VISION_MODEL}"
+                elif sub:
                     target_model = f"ollama/{sub}"
                 else:
                     target_model = f"ollama/{brain_config.OLLAMA_MODEL}"
-            elif target_raw == "gemini":
-                target_model = "gemini-3.5-flash-lite"
+            elif target_raw.startswith("gemini"):
+                target_model = brain_config.GEMINI_MODEL
             elif target_raw == "groq":
                 target_model = "llama-3.3-70b-versatile"
             elif target_raw in ("openai", "gpt"):
                 target_model = "gpt-4o-mini"
             elif target_raw.startswith("qwen") or target_raw.startswith("gemma"):
-                target_model = f"ollama/{target_raw}"
+                if "2b" in target_raw and "vl" in target_raw:
+                    target_model = f"ollama/{brain_config.OLLAMA_VISION_MODEL}"
+                else:
+                    target_model = f"ollama/{target_raw}"
             else:
                 target_model = target_raw
 
@@ -91,6 +121,36 @@ class IntentEngine:
                 )
 
         automation_triggers = [
+            # System and Window Control
+            "minimize", "maximize", "restore window", "unmaximize", "snap window", "snap left", "snap right",
+            "show desktop", "hide all windows", "switch window", "list windows", "open windows",
+            "close this window", "close active window", "close window", "close this app",
+            # Audio and Volume
+            "volume up", "volume down", "mute volume", "mute audio", "mute sound", "mute", "unmute", "unmute volume",
+            "set volume", "louder", "quieter", "turn up volume", "turn down volume",
+            "next track", "previous track", "play music", "pause music",
+            # Brightness
+            "brightness up", "brightness down", "increase brightness", "decrease brightness", "set brightness",
+            "dim screen", "dim the screen", "brighter", "dimmer",
+            # Power Management
+            "lock screen", "lock the screen", "lock laptop", "lock pc", "lock computer", "lock",
+            "sleep pc", "sleep laptop", "put pc to sleep", "put laptop to sleep", "sleep",
+            "shutdown pc", "shutdown laptop", "turn off pc", "turn off laptop", "shutdown",
+            "restart pc", "restart laptop", "reboot pc", "reboot laptop", "restart", "reboot",
+            # System Utilities & Apps
+            "task manager", "open task manager", "open taskmgr", "open settings", "windows settings",
+            "open file explorer", "open explorer", "open my files", "empty recycle bin", "clear recycle bin", "empty trash",
+            # Network & Connectivity
+            "turn on wifi", "enable wifi", "wifi on", "turn off wifi", "disable wifi", "wifi off", "wifi status",
+            "turn on bluetooth", "enable bluetooth", "bluetooth on", "turn off bluetooth", "disable bluetooth", "bluetooth off",
+            # Process & Hardware Management
+            "list processes", "running processes", "top processes", "kill process", "kill ", "terminate process", "terminate ",
+            "take a screenshot", "take screenshot", "capture my screen", "capture screen", "screenshot",
+            # Messaging and communication (full names + abbreviations)
+            "message to ", "message ", "msg to ", "msg ", "text to ", "text ", "send message", "send a message",
+            "dm to ", "dm ", "send email", "send an email", "send mail", "send a mail", "email to ", "mail to ", "compose email", "compose mail",
+            "open whatsapp", "open telegram", "open discord", "open slack", "open gmail",
+            "in telegram", "on telegram", "in whatsapp", "on whatsapp",
             # App/action verbs
             "open ", "launch ", "start ", "run ", "close ", "quit ",
             # Mouse/click control
@@ -100,9 +160,6 @@ class IntentEngine:
             "type in", "type into", "press enter", "press escape", "press tab",
             "hold ctrl", "press ctrl", "press alt", "press shift",
             "copy and paste", "select all and",
-            # Volume and media
-            "volume up", "volume down", "mute volume", "mute audio", "unmute",
-            "next track", "previous track", "play music", "pause music",
             # Browser actions
             "navigate to", "go to website", "go to url", "open website", "open url",
             "search for on google", "search google for", "google search", "search youtube for",
@@ -119,10 +176,20 @@ class IntentEngine:
             # Automation commands
             "automate", "automation status", "dry run mode", "emergency stop",
             "stop everything", "stop automation",
-            "take a screenshot", "take screenshot", "capture my screen",
             "list apps", "show apps", "installed apps", "what apps are installed",
         ]
-        if any(t in q_lower for t in automation_triggers):
+
+        automation_regex_patterns = [
+            r"\b(?:set\s+)?brightness\s+(?:to\s+)?\d+\b",
+            r"\b(?:set\s+)?volume\s+(?:to\s+)?\d+\b",
+            r"\b(?:turn\s+up|turn\s+down|increase|decrease|raise|lower)\s+(?:the\s+)?(?:volume|brightness|sound)\b",
+            r"\b(?:email|mail)\s+[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b",
+            r"\b(?:send|compose|write)\s+(?:a\s+)?(?:formal\s+|casual\s+)?(?:mail|email|message|dm)\b",
+            r"\b(?:open|launch)\s+(?:whatsapp|telegram|discord|slack|gmail)\b",
+            r"\b(?:dm|msg|text)\s+[a-zA-Z0-9_]+\s+on\s+(?:discord|slack|telegram|whatsapp)\b",
+        ]
+
+        if any(t in q_lower for t in automation_triggers) or any(re.search(p, q_lower) for p in automation_regex_patterns):
             return StructuredIntent(
                 intent="AUTOMATION_TASK",
                 confidence=0.97,
@@ -130,16 +197,21 @@ class IntentEngine:
                 summary=f"User requested computer automation: '{query[:60]}'",
             )
 
+
         # ── FILESYSTEM_OPERATION: Native file and folder queries, sizes, contents, operations ──
         fs_patterns = [
             # Size queries
             r"\b(?:size\s+of|how\s+big\s+is|folder\s+size|file\s+size|how\s+much\s+space|how\s+many\s+files)\b",
-            # Listing / contents
-            r"\b(?:list\s+files|show\s+files|contents\s+of|what\s+files|files\s+in|folders\s+in|inside\s+folder)\b",
-            # File operations
-            r"\b(?:read\s+file|view\s+file|cat\s+file|show\s+file|check\s+file|content\s+of\s+file)\b",
+            # Listing / directory contents
+            r"\b(?:list\s+files|show\s+files|contents\s+of|what\s+files|which\s+files|files\s+in|folders\s+in|inside\s+folder|files\s+on\s+desktop|files\s+in\s+desktop|what\s+is\s+on\s+my\s+desktop)\b",
+            # File operations and reading
+            r"\b(?:read\s+file|view\s+file|cat\s+file|show\s+file|check\s+file|content\s+of\s+file|contents\s+of\s+file|contents?\s+of\s+[a-zA-Z0-9_\-\.]+\s+file|what\s+is\s+in\s+.*file|what's\s+in\s+.*file|whats\s+in\s+.*file|open\s+and\s+read)\b",
             r"\b(?:create\s+file|make\s+file|write\s+file|delete\s+file|remove\s+file)\b",
             r"\b(?:create\s+folder|make\s+folder|make\s+directory|mkdir|delete\s+folder)\b",
+            # File presence and existence checks
+            r"\b(?:is\s+there\s+a\s+file|is\s+there\s+a\s+folder|file\s+named\s+[a-zA-Z0-9_\-\.]+|file\s+called\s+[a-zA-Z0-9_\-\.]+|is\s+.*(?:file|folder)\s+(?:present|exists?)|(?:file|folder)\s+is\s+(?:present|exists?)|check\s+if\s+.*(?:file|folder|exists?|present)|check\s+whether\s+.*(?:file|folder|exists?|present)|do\s+i\s+have\s+.*(?:file|folder)|exists?\s+(?:in|on)\s+desktop)\b",
+            # File inspection and details
+            r"\b(?:what\s+is\s+(?:that|this|the)\s+file|inspect\s+(?:file|folder)|file\s+info|details\s+of\s+file|tell\s+me\s+about\s+(?:that|this|the)\s+file|whats?\s+in\s+that\s+file)\b",
         ]
         if any(re.search(p, q_lower) for p in fs_patterns):
             return StructuredIntent(
@@ -150,7 +222,7 @@ class IntentEngine:
             )
 
         # ── SYSTEM_TELEMETRY: Hardware & OS telemetry ──
-        if any(w in q_lower for w in ["cpu", "ram", "memory usage", "system info", "os version", "disk space", "hardware status"]):
+        if any(re.search(rf"\b{w}\b", q_lower) for w in ["cpu", "ram", "memory usage", "system info", "os version", "disk space", "hardware status"]):
             return StructuredIntent(
                 intent="SYSTEM_TELEMETRY",
                 confidence=0.95,
@@ -232,8 +304,9 @@ class IntentEngine:
                 summary=f"User requested to launch application: '{app_name}'",
             )
 
-        # 5. Open Web / Browser Intent
-        if any(w in q_lower for w in ["browser", "website", "http", "www.", ".com", ".org"]):
+        # 5. Open Web / Browser Intent — only if not a memory or email statement
+        is_memory_or_email = bool(re.search(r"\b(?:remember|recall|my\s+email|email\s+is|favorite|favourite|who\s+am\s+i)\b", q_lower))
+        if not is_memory_or_email and any(w in q_lower for w in ["open url", "go to website", "navigate to", "http://", "https://", "www."]):
             url_match = re.search(r"https?://[^\s]+", query)
             target_url = url_match.group(0) if url_match else query
             return StructuredIntent(
@@ -244,7 +317,8 @@ class IntentEngine:
             )
 
         # 6. Coding Request Intent
-        if any(w in q_lower for w in ["def ", "class ", "write code", "fix bug", "function", "refactor", "python", "script"]):
+        code_triggers = ["def ", "class ", "write code", "fix bug", "refactor", "write a script", "write script", "python script", "write a python", "code for", "generate code", "implement function", "create function"]
+        if any(w in q_lower for w in code_triggers) and not any(kw in q_lower for kw in ["favorite", "favourite", "what is", "who is", "remember", "recall"]):
             return StructuredIntent(
                 intent="CODE_GENERATION",
                 confidence=0.92,

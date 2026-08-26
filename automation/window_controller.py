@@ -12,7 +12,7 @@ from automation.config import automation_config
 from automation.automation_logger import log_action
 
 try:
-    import pygetwindow as gw
+    import pygetwindow as gw  # type: ignore
     HAS_GW = True
 except ImportError:
     HAS_GW = False

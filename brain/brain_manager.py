@@ -201,15 +201,30 @@ class BrainManager:
                     command=user_query,
                     session_id=session.session_id,
                 )
-                tool_execution_data = {"automation_result": auto_result.summary}
-                status_tag = "[OK]" if auto_result.success else "[WARN]"
+                tool_execution_data = {
+                    "automation_result": auto_result.summary,
+                    "is_agent": auto_result.details.get("agent", False) if auto_result.details else False,
+                }
+                status_icon = "✅" if auto_result.success else "⚠️"
+                is_agent_run = auto_result.details.get("agent", False) if auto_result.details else False
 
-                # Return clean structured execution summary directly (<1ms) without redundant secondary LLM call
-                final_response_text = (
-                    f"{status_tag} Status: {'Success' if auto_result.success else 'Failed'}\n"
-                    f"Summary: {auto_result.summary}"
-                    + (f"\nSteps completed: {auto_result.steps_done}" if auto_result.steps_done else "")
-                )
+                # Build rich response for agent-run tasks vs simple tasks
+                if is_agent_run:
+                    steps_taken = auto_result.details.get("steps_taken", auto_result.steps_done)
+                    stopped_reason = auto_result.details.get("stopped_reason", "")
+                    final_response_text = (
+                        f"{status_icon} **Task {'Completed' if auto_result.success else 'Failed'}**\n"
+                        f"{auto_result.summary}\n"
+                        f"*Steps executed: {steps_taken} | Time: {auto_result.elapsed_ms:.0f}ms*"
+                    )
+                    if not auto_result.success and stopped_reason == "max_steps":
+                        final_response_text += "\n\n⚠️ Reached max step limit — the task may be partially complete."
+                else:
+                    final_response_text = (
+                        f"{'✅' if auto_result.success else '⚠️'} {auto_result.summary}"
+                        + (f"\n*Steps completed: {auto_result.steps_done}*" if auto_result.steps_done else "")
+                    )
+
                 self.conversation_manager.add_assistant_message(session.session_id, final_response_text)
 
                 elapsed_ms = (time.perf_counter() - start_time) * 1000
@@ -267,11 +282,154 @@ class BrainManager:
 
         elif detected_intent.intent == "FILESYSTEM_OPERATION":
             from automation.system_controller import system_controller
-            q_low = user_query.lower()
             try:
-                # 1. Folder or File Size Query
-                if any(w in q_low for w in ("size", "how big", "how much space", "how many files")):
-                    size_res = await system_controller.get_path_size(user_query)
+                # ── LLM-based intent classifier ──────────────────────────────────────
+                # Ask the LLM to understand what the user actually wants and
+                # extract the operation + target path from natural language.
+                fs_classify_prompt = (
+                    "You are a filesystem intent classifier for a personal AI assistant.\n"
+                    "Analyse the user's query and respond with ONLY a JSON object — no markdown, no explanation.\n\n"
+                    "JSON schema:\n"
+                    "{\n"
+                    '  "op": "<one of: read_file | count_files | list_files | file_size | check_presence | inspect_file>",\n'
+                    '  "location": "<the folder or file the user refers to, in natural language, e.g. \'desktop\', \'downloads folder\', \'pass file in my desktop\'>",\n'
+                    '  "wants_summary": <true if the user wants a summary/explanation of file contents, false for raw view>\n'
+                    "}\n\n"
+                    "Operation definitions:\n"
+                    "- read_file: user wants to see or understand the contents/text inside a specific file\n"
+                    "- count_files: user asks how many files/items are in a folder\n"
+                    "- list_files: user wants to see the names of files/items in a folder\n"
+                    "- file_size: user asks about the size or disk space used\n"
+                    "- check_presence: user asks if a specific file or folder exists\n"
+                    "- inspect_file: user wants metadata about a file (type, size, lines)\n\n"
+                    f"User query: \"{user_query}\"\n\n"
+                    "Respond with ONLY the JSON object."
+                )
+                fs_intent = {}
+                try:
+                    cls_res = await self.model_manager.generate(
+                        messages=[{"role": "user", "content": fs_classify_prompt}],
+                        temperature=0.0,
+                        max_tokens=120,
+                    )
+                    raw = (cls_res.get("content") if isinstance(cls_res, dict) else getattr(cls_res, "content", "")) or ""
+                    raw = raw.strip().strip("```json").strip("```").strip()
+                    import json as _json
+                    fs_intent = _json.loads(raw)
+                except Exception as _ce:
+                    logger.warning(f"FS intent classifier fallback ({_ce}); using keyword heuristics")
+
+                op = fs_intent.get("op", "")
+                location_hint = fs_intent.get("location", "")
+                wants_summary = fs_intent.get("wants_summary", True)
+
+                # ── Keyword heuristics as fallback ───────────────────────────────────
+                q_low = user_query.lower()
+                if not op:
+                    if any(w in q_low for w in ("content", "contents", "read", "view", "open", "cat ", "what is in", "whats in", "inside the file")):
+                        op = "read_file"
+                    elif any(w in q_low for w in ("how many", "count", "number of files", "total files", "how many files", "how many items", "number of items")):
+                        op = "count_files"
+                    elif any(w in q_low for w in ("list", "show files", "what files", "which files", "files in", "items in")):
+                        op = "list_files"
+                    elif any(w in q_low for w in ("size", "how big", "how much space")):
+                        op = "file_size"
+                    elif any(w in q_low for w in ("present", "exist", "exists", "is there", "do i have", "check if")):
+                        op = "check_presence"
+                    elif any(w in q_low for w in ("inspect", "what is that file", "what is the file", "file info", "details of")):
+                        op = "inspect_file"
+                    else:
+                        op = "list_files"
+
+                # ── Smart location extraction fallback ───────────────────────────────
+                # If LLM didn't give a clean location, extract it from known folder keywords.
+                if not location_hint or len(location_hint.strip()) > 80:
+                    _loc_map = {
+                        "desktop": "desktop", "downloads": "downloads",
+                        "documents": "documents", "pictures": "pictures",
+                        "photos": "pictures", "music": "music",
+                        "videos": "videos", "temp": "temp",
+                        "appdata": "appdata", "onedrive": "onedrive",
+                    }
+                    location_hint = user_query  # default: let system_controller parse it
+                    for kw, loc in _loc_map.items():
+                        if kw in q_low:
+                            location_hint = loc
+                            break
+
+                # ── Route to the correct operation ───────────────────────────────────
+                if op == "read_file":
+                    read_res = await system_controller.read_file(location_hint)
+                    tool_execution_data = read_res
+                    if read_res.get("success"):
+                        path = read_res.get("path")
+                        name = read_res.get("name")
+                        lines = read_res.get("line_count", 0)
+                        size_b = read_res.get("size_bytes", 0)
+                        content = read_res.get("content", "")
+
+                        if wants_summary and content and len(content.strip()) > 0 and not content.startswith("[Binary File:"):
+                            try:
+                                llm_prompt = (
+                                    f"The user asked about a local file on their system.\n\n"
+                                    f"File: {name} ({path}) — {size_b} bytes, {lines} lines\n\n"
+                                    f"Extracted Content:\n```\n{content[:7500]}\n```\n\n"
+                                    f"User Question: \"{user_query}\"\n\n"
+                                    f"Analyse the file content and provide a direct, accurate, concise response. "
+                                    f"Explain what the file is and answer the user's question precisely."
+                                )
+                                llm_res = await self.model_manager.generate(
+                                    messages=[{"role": "user", "content": llm_prompt}],
+                                    temperature=0.2,
+                                    max_tokens=700,
+                                )
+                                ans_text = (llm_res.get("content") if isinstance(llm_res, dict) else getattr(llm_res, "content", "")) or ""
+                                if ans_text and len(ans_text.strip()) > 10:
+                                    final_response_text = f"📄 **{name}** (`{path}`)\n\n{ans_text.strip()}"
+                                else:
+                                    final_response_text = f"📄 **{name}** (`{path}` — {size_b} bytes, {lines} lines):\n```\n{content}\n```"
+                            except Exception as e:
+                                logger.warning(f"LLM file summarization fallback: {e}")
+                                final_response_text = f"📄 **{name}** (`{path}` — {size_b} bytes, {lines} lines):\n```\n{content}\n```"
+                        else:
+                            final_response_text = f"📄 **{name}** (`{path}` — {size_b} bytes, {lines} lines):\n```\n{content}\n```"
+                    else:
+                        final_response_text = f"⚠️ Could not read file: {read_res.get('error')}"
+
+                elif op == "count_files":
+                    list_res = await system_controller.list_directory(location_hint)
+                    tool_execution_data = list_res
+                    if list_res.get("success"):
+                        items = list_res.get("items", [])
+                        path = list_res.get("path")
+                        total = list_res.get("total_items", len(items))
+                        file_count = sum(1 for i in items if not i.get("is_dir"))
+                        dir_count = sum(1 for i in items if i.get("is_dir"))
+                        final_response_text = (
+                            f"📁 **{path}** contains **{total} items total** "
+                            f"({file_count} files, {dir_count} folders)."
+                        )
+                    else:
+                        final_response_text = f"⚠️ Could not count files: {list_res.get('error')}"
+
+                elif op == "list_files":
+                    list_res = await system_controller.list_directory(location_hint)
+                    tool_execution_data = list_res
+                    if list_res.get("success"):
+                        items = list_res.get("items", [])
+                        path = list_res.get("path")
+                        total = list_res.get("total_items", len(items))
+                        file_lines = []
+                        for item in items[:40]:
+                            prefix = "📁" if item.get("is_dir") else "📄"
+                            file_lines.append(f"  {prefix} {item.get('name')}")
+                        items_str = "\n".join(file_lines) if file_lines else "  (empty directory)"
+                        final_response_text = f"Contents of `{path}` ({total} items):\n{items_str}"
+                    else:
+                        final_response_text = f"⚠️ Could not list directory: {list_res.get('error')}"
+
+                elif op == "file_size":
+                    size_res = await system_controller.get_path_size(location_hint)
                     tool_execution_data = size_res
                     if size_res.get("success"):
                         name = size_res.get("name")
@@ -281,43 +439,67 @@ class BrainManager:
                         num_files = size_res.get("num_files")
                         path = size_res.get("path")
                         if is_dir:
-                            final_response_text = f"The {item_type} \"{name}\" located at `{path}` has a total size of **{formatted}** ({num_files} files)."
+                            final_response_text = f"The {item_type} \"{name}\" at `{path}` has a total size of **{formatted}** ({num_files} files)."
                         else:
-                            final_response_text = f"The {item_type} \"{name}\" located at `{path}` has a size of **{formatted}**."
+                            final_response_text = f"The {item_type} \"{name}\" at `{path}` has a size of **{formatted}**."
                     else:
                         final_response_text = f"⚠️ Could not retrieve size: {size_res.get('error')}"
 
-                # 2. Directory Listing Query
-                elif any(w in q_low for w in ("list", "show files", "contents", "what files", "inside")):
-                    list_res = await system_controller.list_directory(user_query)
-                    tool_execution_data = list_res
-                    if list_res.get("success"):
-                        items = list_res.get("items", [])
-                        path = list_res.get("path")
-                        total = list_res.get("total_items", 0)
-                        file_lines = []
-                        for item in items[:25]:
-                            prefix = "📁" if item.get("is_dir") else "📄"
-                            file_lines.append(f"  {prefix} {item.get('name')}")
-                        items_str = "\n".join(file_lines) if file_lines else "  (empty directory)"
-                        final_response_text = f"Contents of `{path}` ({total} items):\n{items_str}"
+                elif op == "check_presence":
+                    pres_res = await system_controller.check_presence(location_hint)
+                    tool_execution_data = pres_res
+                    if pres_res.get("exists"):
+                        name = pres_res.get("name")
+                        path = pres_res.get("path")
+                        item_type = "folder" if pres_res.get("is_dir") else "file"
+                        f_type = pres_res.get("file_type", "")
+                        size_fmt = pres_res.get("formatted_size", "")
+                        preview = pres_res.get("content_preview", "")
+                        preview_str = f"\n\n**Content Preview:**\n```\n{preview[:500]}\n```" if preview else ""
+                        final_response_text = f"✅ **Yes, the {item_type} `{name}` is present.**\n- **Location:** `{path}`\n- **Type:** {f_type}\n- **Size:** {size_fmt}{preview_str}"
                     else:
-                        final_response_text = f"⚠️ Could not list directory: {list_res.get('error')}"
+                        final_response_text = f"❌ **Not Found:** {pres_res.get('error', 'Item is not present in the system.')}"
 
-                # 3. Read File Query
-                elif any(w in q_low for w in ("read", "view", "cat", "content of")):
-                    read_res = await system_controller.read_file(user_query)
-                    tool_execution_data = read_res
-                    if read_res.get("success"):
-                        path = read_res.get("path")
-                        content = read_res.get("content", "")
-                        final_response_text = f"Contents of `{path}`:\n```\n{content}\n```"
+                elif op == "inspect_file":
+                    insp_res = await system_controller.inspect_file(location_hint)
+                    tool_execution_data = insp_res
+                    if insp_res.get("exists"):
+                        name = insp_res.get("name")
+                        path = insp_res.get("path")
+                        item_type = "Folder" if insp_res.get("is_dir") else "File"
+                        f_type = insp_res.get("file_type", "")
+                        size_fmt = insp_res.get("formatted_size", "")
+                        lines = insp_res.get("line_count", 0)
+                        preview = insp_res.get("content_preview", "")
+
+                        if preview and len(preview.strip()) > 0:
+                            try:
+                                llm_prompt = (
+                                    f"The user asked to inspect a local file.\n\n"
+                                    f"File: {name} ({f_type}, {size_fmt}, {lines} lines)\nPath: {path}\n\n"
+                                    f"Content Preview:\n```\n{preview[:5000]}\n```\n\n"
+                                    f"User Prompt: \"{user_query}\"\n\n"
+                                    f"Explain what this file is and provide a clear, accurate summary of its contents."
+                                )
+                                llm_res = await self.model_manager.generate(
+                                    messages=[{"role": "user", "content": llm_prompt}],
+                                    temperature=0.2,
+                                    max_tokens=500,
+                                )
+                                ans_text = (llm_res.get("content") if isinstance(llm_res, dict) else getattr(llm_res, "content", "")) or ""
+                                if ans_text and len(ans_text.strip()) > 10:
+                                    final_response_text = f"📄 **{name}** ({f_type} — `{path}`, {size_fmt})\n\n{ans_text.strip()}"
+                                else:
+                                    final_response_text = f"📄 **{name}** ({item_type})\n- **Type:** {f_type}\n- **Path:** `{path}`\n- **Size:** {size_fmt}\n- **Lines:** {lines}\n\n```\n{preview}\n```"
+                            except Exception:
+                                final_response_text = f"📄 **{name}** ({item_type})\n- **Type:** {f_type}\n- **Path:** `{path}`\n- **Size:** {size_fmt}\n- **Lines:** {lines}"
+                        else:
+                            final_response_text = f"📄 **{name}** ({item_type})\n- **Type:** {f_type}\n- **Path:** `{path}`\n- **Size:** {size_fmt}\n- **Lines:** {lines}"
                     else:
-                        final_response_text = f"⚠️ Could not read file: {read_res.get('error')}"
+                        final_response_text = f"⚠️ Could not inspect item: {insp_res.get('error')}"
 
-                # 4. Other filesystem action
                 else:
-                    final_response_text = f"Filesystem operation processed for: '{user_query}'"
+                    final_response_text = f"I understood your filesystem request but couldn't determine the exact operation. Could you clarify what you'd like to do?"
 
                 self.conversation_manager.add_assistant_message(session.session_id, final_response_text)
                 elapsed_ms = (time.perf_counter() - start_time) * 1000
@@ -415,6 +597,7 @@ class BrainManager:
                         session_id=session.session_id,
                         window_title=active_win.title if active_win else "",
                         app_name=active_win.app_name if active_win else "",
+                        active_model=self.model_manager.current_model,
                     )
                     tool_execution_data = vision_result
                     vision_description = vision_result.get("description", "")

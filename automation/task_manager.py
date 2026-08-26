@@ -278,7 +278,8 @@ Be specific. Use exact app names and URLs when possible."""
             )
 
             from brain.utils import extract_and_clean_json
-            plan_data = extract_and_clean_json(llm_res.content)
+            raw_text = llm_res.get("content", "") if isinstance(llm_res, dict) else getattr(llm_res, "content", "")
+            plan_data = extract_and_clean_json(raw_text)
 
             if plan_data and "steps" in plan_data:
                 task.goal = plan_data.get("goal", command)

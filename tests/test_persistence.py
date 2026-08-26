@@ -1,5 +1,6 @@
 """Integration test suite verifying permanent chat data and memory persistence in SQLite across server restarts."""
 
+# pyrefly: ignore [missing-import]
 import pytest
 import asyncio
 from app.database.connection import DatabaseManager

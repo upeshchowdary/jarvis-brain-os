@@ -37,12 +37,13 @@ class BrainConfig(BaseSettings):
     GEMINI_API_KEY: Optional[str] = None
     OPENAI_API_KEY: Optional[str] = None
     ANTHROPIC_API_KEY: Optional[str] = None
-    DEFAULT_MODEL: str = "llama-3.3-70b-versatile"
-    FAST_MODEL: str = "llama-3.1-8b-instant"
+    DEFAULT_MODEL: str = "gemini-3.5-flash-lite"
+    FAST_MODEL: str = "gemini-3.5-flash-lite"
+    GEMINI_MODEL: str = "gemini-3.5-flash-lite"   # canonical Gemini 3.5 model ("switch to gemini")
     GROQ_BASE_URL: str = "https://api.groq.com/openai/v1"
     OLLAMA_BASE_URL: str = "http://127.0.0.1:11434"
     OLLAMA_MODEL: str = "qwen3.5:latest"
-    OLLAMA_VISION_MODEL: str = "qwen3-vl:2b"
+    OLLAMA_VISION_MODEL: str = "qwen3-vl:2b"       # installed local vision model (2b size)
     GROQ_VISION_MODEL: str = "llama-3.2-90b-vision-preview"
     CLAUDE_VISION_MODEL: str = "claude-3-5-sonnet-20241022"
     VISION_PRIMARY_PROVIDER: str = "gemini"   # gemini | groq | ollama
@@ -58,7 +59,7 @@ class BrainConfig(BaseSettings):
     VISION_TIMEOUT: float = Field(default=45.0, ge=10.0)
     VISION_IMAGE_SIZE: int = Field(default=768, ge=64, le=2048)
     VISION_CACHE_TTL: int = Field(default=10, ge=0)
-    VISION_RACE_PROVIDERS: bool = True   # fire Gemini + Groq simultaneously
+    VISION_RACE_PROVIDERS: bool = False   # Primary Gemini multimodal
     VISION_QUICK_MODE_MS: int = Field(default=300, ge=50)  # target latency for quick mode
 
     # LLM Hyperparameters

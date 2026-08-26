@@ -196,6 +196,14 @@ class ScreenCaptureEngine:
 
     def capture_region(self, bbox: BoundingBox) -> Any:
         """Captures a specific screen bounding box region."""
+        try:
+            from vision.fast_capture import capture_region as fast_cap_region
+            img = fast_cap_region(bbox.x, bbox.y, bbox.width, bbox.height)
+            if img is not None:
+                return img
+        except Exception as e:
+            logger.debug(f"fast_capture region capture fallback: {e}")
+
         if not HAS_PIL:
             return None
         box_tuple = (bbox.x, bbox.y, bbox.x + bbox.width, bbox.y + bbox.height)

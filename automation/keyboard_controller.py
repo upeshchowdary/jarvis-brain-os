@@ -12,6 +12,7 @@ from automation.automation_logger import log_action
 
 try:
     import pyautogui
+    pyautogui.FAILSAFE = False
     HAS_PYAUTOGUI = True
 except ImportError:
     HAS_PYAUTOGUI = False
