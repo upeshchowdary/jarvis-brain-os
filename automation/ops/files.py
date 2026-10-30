@@ -35,8 +35,11 @@ CATEGORIES = {
 
 
 
-_SYSTEM_ROOTS = ["c:/windows", "c:/program files", "c:/program files (x86)", "c:/programdata", "/usr", "/etc", "/bin",
+# Compared both as given and with any drive letter removed, so "\\Windows", "D:\\Windows" and a driveless
+# "/etc" on Windows are all caught.
+_SYSTEM_ROOTS = ["/windows", "/program files", "/program files (x86)", "/programdata", "/usr", "/etc", "/bin",
                  "/sbin", "/boot", "/system", "/library", "/var", "/opt", "/proc", "/sys", "/dev"]
+_DRIVE = re.compile(r"^[a-z]:")
 
 
 def _protected(p: Path) -> Optional[str]:
@@ -46,8 +49,9 @@ def _protected(p: Path) -> Optional[str]:
         rp = p
     for candidate in {str(p), str(rp)}:
         s = candidate.replace("\\", "/").lower()
-        if any(s == r or s.startswith(r + "/") for r in _SYSTEM_ROOTS):
-            return f"I won't modify system location {p}."
+        for form in {s, _DRIVE.sub("", s)}:
+            if any(form == r or form.startswith(r + "/") for r in _SYSTEM_ROOTS):
+                return f"I won't modify system location {p}."
     data = str(data_dir().resolve()).replace("\\", "/").lower()
     if s == data or s.startswith(data + "/"):
         return "I won't modify JARVIS's own data folder."

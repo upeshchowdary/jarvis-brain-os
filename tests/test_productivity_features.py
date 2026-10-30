@@ -154,6 +154,24 @@ async def test_protected_locations_refused():
     assert res.status == "failed"
 
 
+@pytest.mark.parametrize("path", ["D:\\Windows\\evil.txt", "\\Windows\\System32\\evil.txt", "C:\\Program Files\\evil.txt",
+                                  "c:/programdata/evil.txt", "/etc/evil.conf", "\\etc\\evil.conf"])
+async def test_system_roots_refused_in_every_spelling(path, tmp_path, monkeypatch):
+    """Rooted paths without a drive ("\\Windows\\…", "/etc/…") aren't "absolute" on Windows; they must still be
+    treated as system locations rather than resolved like natural language."""
+    monkeypatch.chdir(tmp_path)
+    res = await gateway.execute(ActionRequest("file.create", {"path": path, "content": "x"}), "prot", confirmed=True)
+    assert res.status == "failed" and "system location" in res.message, (path, res.message)
+    assert not any(tmp_path.iterdir()), "nothing may be written anywhere"
+
+
+def test_rooted_paths_resolve_to_absolute():
+    from automation.paths import resolve
+
+    for raw in ("/etc/evil.conf", "\\Windows\\evil.txt"):  # rooted: never handed to the natural-language resolver
+        assert resolve(raw).is_absolute(), raw
+
+
 async def test_unzip_blocks_zip_slip(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "CONFIRM_MEDIUM_RISK", False)
     evil = tmp_path / "evil.zip"
