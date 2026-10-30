@@ -244,7 +244,7 @@ class VectorMemoryManager:
         ]
 
     async def query(self, query: str, limit: int = 10, since_ts: Optional[float] = None,
-                    until_ts: Optional[float] = None) -> List[Dict[str, Any]]:
+                    until_ts: Optional[float] = None, channel: Optional[str] = None) -> List[Dict[str, Any]]:
         """Nearest documents to ``query`` (closest first) as {id, text, metadata, distance}, within
         [since_ts, until_ts) when given. Empty while embeddings are unavailable — never raises."""
         if not query:
@@ -258,6 +258,8 @@ class VectorMemoryManager:
             bounds.append({"ts": {"$gte": since_ts}})
         if until_ts is not None:
             bounds.append({"ts": {"$lt": until_ts}})
+        if channel:
+            bounds.append({"channel": channel})
         where = bounds[0] if len(bounds) == 1 else ({"$and": bounds} if bounds else None)
         try:
             return await asyncio.to_thread(self._query_sync, query, limit, where)

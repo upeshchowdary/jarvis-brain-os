@@ -126,7 +126,7 @@ class DatabaseManager:
             return None
 
     async def search_chat_fts(self, terms: List[str], limit: int = 20, since_iso: Optional[str] = None,
-                              until_iso: Optional[str] = None) -> List[Dict[str, Any]]:
+                              until_iso: Optional[str] = None, channel: Optional[str] = None) -> List[Dict[str, Any]]:
         """Chat turns matching any of ``terms`` (FTS5), best bm25 first, optionally within [since, until)."""
         if not terms:
             return []
@@ -138,6 +138,9 @@ class DatabaseManager:
         if until_iso:
             clauses.append("c.created_at < ?")
             params.append(until_iso)
+        if channel:
+            clauses.append("c.channel = ?")
+            params.append(channel)
         sql = f"""
         SELECT c.id, c.user_query, c.response_text, c.created_at, c.channel, bm25(chat_fts) AS score
         FROM chat_fts JOIN chat_logs c ON c.id = chat_fts.rowid

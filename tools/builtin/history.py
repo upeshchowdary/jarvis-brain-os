@@ -101,12 +101,10 @@ class ChatHistory(Tool):
         query = (query or "").strip()
 
         if query:
-            pool = limit * 4 if channel else limit
-            hits = await memory_search.search(query, pool, start_utc, end_utc)
-            if channel:
-                allowed = {h.chat_id for h in await memory_search.recent(1000, start_utc, end_utc, channel)}
-                hits = [h for h in hits if h.chat_id in allowed][:limit]
-            ordered = hits  # relevance order
+            hits = await memory_search.search(query, limit * 3, start_utc, end_utc, channel)
+            # top-`limit` by relevance, shown chronologically like every other result
+            chat_hits = [h for h in hits if h.chat_id is not None][:limit]  # chat turns only
+            ordered = sorted(chat_hits, key=lambda h: _local(h.created_at, tz) or now)
         else:
             hits = await memory_search.recent(limit, start_utc, end_utc, channel)
             ordered = list(reversed(hits))  # newest last

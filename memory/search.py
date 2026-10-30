@@ -43,8 +43,9 @@ def _terms(query: str) -> List[str]:
 
 
 async def search(query: str, limit: int = 10, since_utc: Optional[datetime] = None,
-                 until_utc: Optional[datetime] = None) -> List[Hit]:
-    """Best matches for ``query`` across chat turns, facts and notes, within [since_utc, until_utc)."""
+                 until_utc: Optional[datetime] = None, channel: Optional[str] = None) -> List[Hit]:
+    """Best matches for ``query`` across chat turns, facts and notes, within [since_utc, until_utc);
+    with ``channel`` only chat turns logged on that channel."""
     query = (query or "").strip()
     if not query:
         return []
@@ -52,8 +53,9 @@ async def search(query: str, limit: int = 10, since_utc: Optional[datetime] = No
     pool = max(limit * 3, 20)
     fts_rows, vector_rows = await asyncio.gather(
         db_manager.search_chat_fts(_terms(query), pool, since.isoformat() if since else None,
-                                   until.isoformat() if until else None),
-        vector_memory.query(query, pool, since.timestamp() if since else None, until.timestamp() if until else None),
+                                   until.isoformat() if until else None, channel),
+        vector_memory.query(query, pool, since.timestamp() if since else None, until.timestamp() if until else None,
+                            channel),
     )
 
     fused: Dict[str, Hit] = {}

@@ -48,12 +48,42 @@ async def test_today_filter_uses_local_midnight(db):
 
 
 async def test_query_uses_search(db):
-    await log_turn(db, "send a whatsapp to Nithesh", "Sent on WhatsApp.", created_at=NOW - timedelta(hours=2))
-    await log_turn(db, "what is the weather", "Sunny.", created_at=NOW - timedelta(hours=1))
-    res = await run(query="whatsapp")
+    await log_turn(db, "send a whatsapp to Nithesh", "Sent on WhatsApp.", created_at=NOW - timedelta(hours=5))
+    for i in range(4):  # newer and irrelevant: a recent()-only path would return these instead
+        await log_turn(db, f"what is the weather number {i}", "Sunny.", created_at=NOW - timedelta(hours=3 - i * 0.5))
+    res = await run(query="whatsapp", limit=1)
     assert res.success
-    assert res.message.splitlines()[0].count("whatsapp") >= 1
-    assert "weather" not in res.message.splitlines()[0]
+    assert "whatsapp" in res.message.lower()
+    assert "weather" not in res.message
+
+
+async def test_query_results_are_chronological(db):
+    await log_turn(db, "whatsapp newest", "r", created_at=utc("2026-10-30T03:00:00+00:00"))
+    await log_turn(db, "whatsapp oldest", "r", created_at=utc("2026-10-27T03:00:00+00:00"))
+    await log_turn(db, "whatsapp middle", "r", created_at=utc("2026-10-29T03:00:00+00:00"))
+    lines = (await run(query="whatsapp")).message.splitlines()
+    assert [("oldest" in l, "middle" in l, "newest" in l) for l in lines] == [
+        (True, False, False), (False, True, False), (False, False, True)]
+    assert lines[0].startswith("[Oct 27")
+
+
+async def test_query_with_channel_not_truncated(db):
+    # 12 newer-and-better text turns outrank the single voice turn; the filter must still find it.
+    await log_turn(db, "whatsapp voice note", "r", created_at=NOW - timedelta(hours=9), channel="voice")
+    for i in range(12):
+        await log_turn(db, f"whatsapp whatsapp text {i}", "r", created_at=NOW - timedelta(minutes=60 - i), channel="text")
+    res = await run(query="whatsapp", channel="voice", limit=2)
+    assert len(res.message.splitlines()) == 1 and "voice note" in res.message
+
+
+async def test_only_chat_turns_returned(db):
+    from memory.vector_memory import vector_memory as vm
+    await log_turn(db, "whatsapp chat turn", "r", created_at=NOW - timedelta(hours=1))
+    await vm.add_document_async("note:1", "whatsapp reminder note", {"created_at": (NOW - timedelta(hours=1)).isoformat(),
+                                "ts": (NOW - timedelta(hours=1)).timestamp()}, memory_type="note")
+    res = await run(query="whatsapp")
+    assert "Memory:" not in res.message and "reminder note" not in res.message
+    assert all(d["chat_id"] is not None for d in res.data)
 
 
 async def test_empty_history_message(db):
@@ -65,7 +95,9 @@ async def test_empty_history_message(db):
 async def test_unknown_since_is_error(db):
     res = await run(since="last century")
     assert not res.success
-    assert "today" in res.message and "YYYY" not in res.message.split("since")[0]
+    for accepted in ("today", "yesterday", "this week", "last week", "YYYY-MM-DD"):
+        assert accepted in res.message or accepted == "YYYY-MM-DD"
+    assert "2026-10-29" in res.message
 
 
 async def test_bad_limit_is_error_and_clamped(db):
@@ -74,6 +106,20 @@ async def test_bad_limit_is_error_and_clamped(db):
         await log_turn(db, f"turn {i}", "r", created_at=NOW - timedelta(minutes=10 - i))
     res = await run(limit=1000)
     assert res.success and len(res.message.splitlines()) == 3
+
+
+async def test_limit_clamped_to_50(db):
+    for i in range(55):
+        await log_turn(db, f"turn {i}", "r", created_at=NOW - timedelta(minutes=100 - i))
+    assert len((await run(limit=1000)).message.splitlines()) == 50
+    assert len((await run()).message.splitlines()) == 20
+
+
+async def test_local_midnight_boundary_is_exact(db):
+    await log_turn(db, "exactly midnight", "r", created_at=utc("2026-10-29T18:30:00+00:00"))
+    await log_turn(db, "one second before", "r", created_at=utc("2026-10-29T18:29:59+00:00"))
+    res = await run(since="today")
+    assert "exactly midnight" in res.message and "one second before" not in res.message
 
 
 async def test_channel_filter_with_and_without_query(db):

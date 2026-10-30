@@ -246,3 +246,12 @@ def test_collection_is_scoped_by_embedding_model():
     a = vector_memory_module.collection_name("BAAI/bge-base-en-v1.5")
     b = vector_memory_module.collection_name("BAAI/bge-small-en-v1.5")
     assert a != b and a.startswith("jarvis_memory_") and "/" not in a
+
+
+async def test_search_channel_filter(db):
+    await log_turn(db, "whatsapp from voice", "ok", channel="voice")
+    await log_turn(db, "whatsapp from text", "ok", channel="text")
+    voice = await memory_search.search("whatsapp", channel="voice")
+    assert [h.text.startswith("User: whatsapp from voice") for h in voice] == [True]
+    both = await memory_search.search("whatsapp")
+    assert len(both) == 2
