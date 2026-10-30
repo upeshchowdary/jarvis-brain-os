@@ -78,3 +78,24 @@ All notable changes to JARVIS Brain OS. Baseline before the v3 upgrade: commit `
 - `.env.example` added (and allowed by `.gitignore`); `chat.py` streams and authenticates.
 
 **Verify**: `python -m pytest -q` (758 tests), `ruff check .`, then try `restart my pc` → confirmation → `yes`.
+
+## Phase 4 — Voice, streaming, MCP, browser agent
+
+- **Streaming chat**: `POST /chat/stream` (Server-Sent Events: `text`, `tool`, `done`); `chat.py` prints tokens live.
+- **Voice**
+  - STT: local **faster-whisper** (MIT; int8 on CPU / float16 on GPU, model pre-loaded at start) with the free Google
+    web API as fallback; Whisper's "Thank you." hallucinations on noise are discarded.
+  - TTS: optional **Kokoro-82M** neural voice (kokoro-onnx MIT + Apache-2.0 weights, local) with interruptible playback;
+    pyttsx3/SAPI fallback. **Streaming TTS** speaks each sentence as soon as the LLM produces it.
+  - Optional acoustic wake word via **openWakeWord** ("hey jarvis"): nothing is transcribed until you address JARVIS.
+    (Its bundled pre-trained models are non-commercial — fine for personal use.)
+  - Spoken confirmations: "I need your confirmation… Say yes to confirm"; the follow-up "yes" needs no wake word.
+  - numpy-vectorised RMS/VAD; snappier 0.9 s end-of-speech; "like" is no longer stripped as a filler word.
+- **MCP**: `python -m integrations.mcp_server` exposes JARVIS (chat, status, search, files, apps, volume, pending
+  actions) to MCP clients — they can never confirm their own actions. `data/mcp_servers.json` plugs external MCP
+  servers in as tools; write tools go through the gateway op `mcp.call`.
+- **Browser agent** (`browser_task` tool / `browser.agent` op): Playwright observe→decide→act loop over numbered
+  interactive elements with a persistent profile; never types passwords; stops before buy/pay/send/delete/post.
+  Verified live in Chromium (`tests/test_browser_agent.py`).
+
+**Verify**: `pytest tests/test_voice_pipeline.py tests/test_mcp.py tests/test_browser_agent.py`.

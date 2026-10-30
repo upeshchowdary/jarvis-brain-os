@@ -261,3 +261,17 @@ class AutomationStatus(Tool):
             f"Medium-risk confirmation: {'on' if settings.CONFIRM_MEDIUM_RISK else 'off'}. "
             f"Pending confirmation: {pending.preview if pending else 'none'}."
         )
+
+
+@register
+class BrowserTask(GatewayTool):
+    name = "browser_task"
+    description = (
+        "Let JARVIS operate a real browser (with the user's logged-in profile) to achieve a web goal: fill forms, find "
+        "information across pages, add to cart, etc. Stops before purchases/sends/deletes and never types passwords."
+    )
+    parameters = obj({"goal": {"type": "string"}, "start_url": {"type": "string"}}, ["goal"])
+    risk = Risk.MEDIUM
+
+    async def run(self, ctx: ToolContext, goal: str = "", start_url: str = "", **_: Any) -> ToolResult:
+        return await via_gateway(ctx, ActionRequest("browser.agent", {"goal": goal, "start_url": start_url}))

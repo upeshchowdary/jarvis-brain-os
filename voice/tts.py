@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import queue
 import threading
+import time
 from typing import Optional, List, Dict
 from loguru import logger
 try:
@@ -38,6 +39,7 @@ class TextToSpeechEngine:
         self._worker_thread: Optional[threading.Thread] = None
         self._stop_worker = threading.Event()
         self._lock = threading.Lock()
+        self.backend_name = "none"
 
     def _start_worker(self) -> None:
         """Starts dedicated background TTS synthesis thread (lazily, on first speech)."""
@@ -73,7 +75,7 @@ class TextToSpeechEngine:
         """Set speech volume (0.0 to 1.0)."""
         self.volume = max(0.0, min(1.0, volume))
 
-    def speak(self, text: str, priority: bool = False) -> None:
+    def speak(self, text: str, priority: bool = False, concise: bool = True) -> None:
         """
         Enqueues text to be spoken.
         If priority is True, cancels any currently playing speech immediately.
@@ -81,7 +83,9 @@ class TextToSpeechEngine:
         if not self.enabled or not text.strip():
             return
 
-        cleaned_text = self._prepare_concise_text(text)
+        cleaned_text = self._prepare_concise_text(text, concise=concise)
+        if not cleaned_text:
+            return
         if priority:
             self.stop()
 
@@ -118,7 +122,7 @@ class TextToSpeechEngine:
                 logger.info("[TTS] Speech interrupted (barge-in triggered).")
                 voice_state_manager.transition_to(VoiceState.INTERRUPTED, "TTS interrupted")
 
-    def _prepare_concise_text(self, text: str) -> str:
+    def _prepare_concise_text(self, text: str, concise: bool = True) -> str:
         """Keeps spoken responses natural, brief, and free of markdown symbols."""
         import re
         clean = text.strip()
@@ -132,32 +136,87 @@ class TextToSpeechEngine:
         clean = re.sub(r"\s+", " ", clean).strip()
 
         # If concise mode is active, trim long paragraphs
-        if voice_config.CONCISE_SPEECH_MODE and len(clean) > 280:
+        if concise and voice_config.CONCISE_SPEECH_MODE and len(clean) > 280:
             sentences = re.split(r"(?<=[.!?]) +", clean)
             if sentences:
                 clean = " ".join(sentences[:2])
 
         return clean
 
-    def _speech_worker(self) -> None:
-        """Background thread executing speech via pyttsx3."""
-        try:
-            if pyttsx3 is None:
-                raise RuntimeError("pyttsx3 is not installed (pip install .[voice])")
-            engine = pyttsx3.init()
-        except Exception as e:
-            logger.error(f"[TTS] Engine initialization failed: {e}")
-            return
+    # ── Backends ────────────────────────────────────────────────────────
+    def _make_kokoro(self):
+        """Kokoro-82M neural TTS (kokoro-onnx: MIT code, Apache-2.0 weights). Needs the model files."""
+        from pathlib import Path
 
-        # Setup voice
+        from core.paths import BASE_DIR
+
+        model = Path(voice_config.KOKORO_MODEL_PATH)
+        voices = Path(voice_config.KOKORO_VOICES_PATH)
+        model = model if model.is_absolute() else BASE_DIR / model
+        voices = voices if voices.is_absolute() else BASE_DIR / voices
+        if not (model.exists() and voices.exists()):
+            raise RuntimeError(f"Kokoro model files not found ({model.name}, {voices.name}); see README → Voice")
+        from kokoro_onnx import Kokoro  # type: ignore
+        import sounddevice as sd  # type: ignore
+
+        kokoro = Kokoro(str(model), str(voices))
+
+        def speak(sentence: str) -> None:
+            samples, rate = kokoro.create(sentence, voice=voice_config.KOKORO_VOICE, speed=voice_config.KOKORO_SPEED, lang="en-us")
+            sd.play(samples, rate)
+            # Poll so barge-in can cut the audio instantly.
+            duration = len(samples) / float(rate)
+            end = time.monotonic() + duration
+            while time.monotonic() < end:
+                if self._interrupted.is_set():
+                    sd.stop()
+                    return
+                time.sleep(0.03)
+            sd.wait()
+
+        return speak
+
+    def _make_pyttsx3(self):
+        if pyttsx3 is None:
+            raise RuntimeError("pyttsx3 is not installed (pip install .[voice])")
+        engine = pyttsx3.init()
         try:
-            voices = engine.getProperty("voices")
-            for v in voices:
+            for v in engine.getProperty("voices"):
                 if self.preferred_voice.lower() in v.name.lower():
                     engine.setProperty("voice", v.id)
                     break
         except Exception:
             pass
+
+        def speak(sentence: str) -> None:
+            engine.setProperty("rate", self.rate)
+            engine.setProperty("volume", self.volume)
+            engine.say(sentence)
+            engine.runAndWait()
+
+        return speak
+
+    def _make_backend(self):
+        choice = voice_config.TTS_ENGINE.lower()
+        order = {"kokoro": ["kokoro", "pyttsx3"], "pyttsx3": ["pyttsx3"]}.get(choice, ["kokoro", "pyttsx3"])
+        for name in order:
+            try:
+                backend = self._make_kokoro() if name == "kokoro" else self._make_pyttsx3()
+                self.backend_name = name
+                logger.info(f"[TTS] Using {name} voice")
+                return backend
+            except Exception as exc:
+                logger.info(f"[TTS] {name} unavailable: {exc}")
+        return None
+
+    def _speech_worker(self) -> None:
+        """Background thread: speaks queued text sentence by sentence (interruptible)."""
+        import re
+
+        speak = self._make_backend()
+        if speak is None:
+            logger.error("[TTS] No speech backend available.")
+            return
 
         while not self._stop_worker.is_set():
             try:
@@ -168,27 +227,17 @@ class TextToSpeechEngine:
             self._interrupted.clear()
             self._is_speaking = True
             voice_state_manager.transition_to(VoiceState.SPEAKING, f"Speaking: '{text[:40]}...'")
-
             try:
-                engine.setProperty("rate", self.rate)
-                engine.setProperty("volume", self.volume)
-
-                # Speak sentence by sentence so barge-in interruption is instant
-                import re
-                sentences = re.split(r"(?<=[.!?,;:]) +", text)
-
-                for sentence in sentences:
+                for sentence in re.split(r"(?<=[.!?;:]) +", text):
                     if self._interrupted.is_set():
                         break
                     if sentence.strip():
-                        engine.say(sentence.strip())
-                        engine.runAndWait()
-
+                        speak(sentence.strip())
             except Exception as e:
                 logger.warning(f"[TTS] Speech synthesis warning: {e}")
             finally:
-                self._is_speaking = False
-                if not self._interrupted.is_set() and voice_state_manager.current_state == VoiceState.SPEAKING:
+                self._is_speaking = not self._queue.empty() and not self._interrupted.is_set()
+                if not self._is_speaking and not self._interrupted.is_set() and voice_state_manager.current_state == VoiceState.SPEAKING:
                     voice_state_manager.transition_to(VoiceState.MIC_READY, "Speech completed")
 
 

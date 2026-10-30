@@ -86,6 +86,7 @@ class Brain:
         model_override: Optional[str] = None,
         dry_run: Optional[bool] = None,
         stream_tokens: bool = True,
+        allow_confirm: bool = True,
     ) -> AsyncIterator[Dict[str, Any]]:
         """Yield events: {"type": "status"|"text"|"tool"|"done", ...}. The last one carries the TurnResult."""
         started = time.perf_counter()
@@ -115,7 +116,8 @@ class Brain:
             return
 
         # 1 ── Pending confirmation ───────────────────────────────────────
-        pending = gateway.pending_for(sid)
+        # Remote agents (MCP) may never confirm their own actions: the human approves them elsewhere.
+        pending = gateway.pending_for(sid) if allow_confirm else None
         if pending is not None:
             if router.is_affirmative(query):
                 res = await gateway.confirm(pending.pending_id, sid)
