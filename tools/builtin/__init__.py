@@ -6,6 +6,7 @@ from tools.builtin import (  # noqa: F401
     documents,
     files,
     files_manage,
+    history,
     info,
     memory_tools,
     messaging,

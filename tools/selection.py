@@ -72,6 +72,11 @@ GROUPS: Dict[str, Dict[str, Sequence[str]]] = {
                   "list_routines"],
         "keywords": ["record", "replay", "workflow", "routine", "mode", "automate", "repeat", "macro"],
     },
+    "history": {
+        "tools": ["chat_history"],
+        "keywords": ["chat", "chats", "asked you", "earlier", "yesterday", "conversation", "we did", "history", "last time",
+                     "before"],
+    },
     "memory": {
         "tools": ["memory_forget", "switch_model"],
         "keywords": ["forget", "about me", "remember", "model", "switch", "gemini", "groq", "ollama", "openai", "claude", "gpt"],
