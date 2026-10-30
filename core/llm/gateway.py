@@ -65,6 +65,9 @@ class ProviderSpec:
         return self.local or bool(self.api_key())
 
 
+# Upper bound for one keep-warm ping (seconds).
+_WARM_TIMEOUT = 3.0
+
 # Index of the key currently in use per provider (only matters when a provider has several keys).
 _KEY_CURSOR: Dict[str, int] = {}
 
@@ -453,23 +456,30 @@ class LLMGateway:
 
         Opens the TLS connection and wakes the provider so the first real turn isn't cold. Never raises.
         """
-        targets: Dict[str, str] = {}
-        for spec in (settings.DEFAULT_MODEL, settings.ACTION_MODEL, settings.INTENT_MODEL):
-            if not spec or not spec.strip():
-                continue
-            prov, mod = resolve_model(spec)
-            if PROVIDERS[prov].local or not PROVIDERS[prov].configured():
-                continue
-            targets.setdefault(prov, mod)
-
-        async def ping(prov: str, mod: str) -> None:
+        async def ping(spec: str) -> None:
             try:
+                prov, mod = resolve_model(spec)
+                provider = PROVIDERS[prov]
+                if provider.local or not provider.configured():
+                    return
                 payload = self._payload(mod, [{"role": "user", "content": "ping"}], None, None, 0.0, 1, False, prov)
-                await self._post(PROVIDERS[prov], payload, 10.0)
+                # Single shot: no retries or key rotation, so an outage can't stall startup or every cycle.
+                await asyncio.wait_for(
+                    self._client().post(f"{provider.base_url()}/chat/completions", json=payload,
+                                        headers=self._headers(provider), timeout=_WARM_TIMEOUT),
+                    _WARM_TIMEOUT,
+                )
             except Exception as exc:
-                logger.debug(f"[LLM] warm-up {prov}/{mod} failed: {exc}")
+                logger.debug(f"[LLM] warm-up {spec} failed: {exc}")
 
-        await asyncio.gather(*(ping(p, m) for p, m in targets.items()))
+        specs: Dict[str, str] = {}  # one ping per provider
+        for spec in (settings.DEFAULT_MODEL, settings.ACTION_MODEL, settings.INTENT_MODEL):
+            if spec and spec.strip():
+                try:
+                    specs.setdefault(resolve_model(spec)[0], spec)
+                except Exception:
+                    pass
+        await asyncio.gather(*(ping(spec) for spec in specs.values()))
 
     def start_keepwarm(self, interval: float = 50.0) -> None:
         """Re-run warm_up in the background while idle (no-op when LLM_KEEPWARM is off)."""

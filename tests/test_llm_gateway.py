@@ -294,3 +294,31 @@ async def test_keepwarm_warms_when_idle_and_stops(gw, monkeypatch):
     llm.stop_keepwarm()
     assert llm._keepwarm_task is None
     assert seen  # idle -> warmed at least once
+
+
+async def test_warm_up_is_single_shot_and_bounded(gw, monkeypatch):
+    import asyncio
+    import time
+
+    monkeypatch.setattr(settings, "MAX_RETRIES", 5)
+    monkeypatch.setattr(settings, "INTENT_MODEL", "")
+    monkeypatch.setattr(settings, "ACTION_MODEL", "")
+    monkeypatch.setattr(gateway_module, "_WARM_TIMEOUT", 0.2)
+    seen = gw(lambda r: httpx.Response(500, text="down"))
+    await llm.warm_up()
+    assert len(seen) == 1  # no retries on failure
+
+    async def slow(request):
+        await asyncio.sleep(5)
+        return ok("x")
+
+    llm.set_transport(httpx.MockTransport(slow))
+    started = time.perf_counter()
+    await llm.warm_up()
+    assert time.perf_counter() - started < 1.5
+
+
+async def test_warm_up_survives_bad_model_spec(gw, monkeypatch):
+    monkeypatch.setattr(settings, "INTENT_MODEL", None)
+    gw(lambda r: ok("x"))
+    await llm.warm_up()
