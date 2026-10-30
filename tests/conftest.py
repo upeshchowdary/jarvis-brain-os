@@ -40,6 +40,11 @@ from httpx import ASGITransport, AsyncClient  # noqa: E402
 
 from app.database.connection import db_manager  # noqa: E402
 from app.main import app  # noqa: E402
+from automation.application_controller import dynamic_app_manager  # noqa: E402
+
+# Never scan the real registry / Program Files / Start menu during tests (matters on Windows CI).
+dynamic_app_manager._loaded = True
+dynamic_app_manager._apps_cache = {}
 
 AUTH = {"Authorization": "Bearer test-token"}
 

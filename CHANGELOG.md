@@ -134,3 +134,18 @@ Every action-taking feature runs through the ActionGateway with the right risk l
 
 **Verify**: `pytest tests/test_productivity_features.py`, then `python jarvis.py --open` and try
 "remind me in 1 minute to stretch", "start study mode", "organize my downloads" → approve → "undo that".
+
+## Phase 6 — Packaging, CI, docs
+
+- `pyproject.toml` declares every dependency with version ranges; extras `[windows]`, `[vision]`, `[voice]`,
+  `[wakeword]`, `[docs]`, `[browser]`, `[mcp]`, `[memory]`, `[desktop]`, `[nlp]`, `[all]`, `[dev]`; console scripts
+  `jarvis` and `jarvis-mcp`; user-specific pyright paths removed. Verified with a clean venv: `pip install -e ".[dev]"`
+  → 819 passed.
+- GitHub Actions (`.github/workflows/ci.yml`): ruff + pyright (basic, 0 errors) and pytest with coverage on
+  Ubuntu and Windows × Python 3.12/3.13.
+- Pyright found a real bug (MCP `open_app` crashed on a duplicate `name` argument) — fixed with a regression test.
+- New README (setup in ~10 minutes, demo command per feature, architecture, safety model, configuration, MCP, API,
+  troubleshooting), `docs/ARCHITECTURE.md`, `docs/SAFETY.md`; the truncated `analysis_drawbacks.md` was removed.
+- The document reader prefers pypdf (BSD) over PyMuPDF (AGPL), which is no longer a dependency.
+
+**Verify**: `pip install -e ".[dev]" && python -m pytest -q && ruff check . && pyright`.

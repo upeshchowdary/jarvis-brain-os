@@ -30,7 +30,7 @@ class Research(Tool):
         searches = await asyncio.gather(*(ddg_search(q, 5) for q in query_variants(question)), return_exceptions=True)
         seen, results = set(), []
         for batch in searches:
-            if isinstance(batch, Exception):
+            if not isinstance(batch, list):
                 continue
             for r in batch:
                 if r["url"] and r["url"] not in seen:

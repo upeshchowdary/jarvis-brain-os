@@ -50,3 +50,15 @@ async def test_remote_write_tool_goes_through_gateway(monkeypatch):
     call.assert_not_called()
     done = await gateway.confirm(res.pending_id, "mcp-w")
     assert done.status == "executed" and call.await_count == 1
+
+
+async def test_server_tools_with_name_argument_work(monkeypatch):
+    """Regression: open_app(name=…) used to collide with the helper's own 'name' parameter."""
+    from integrations.mcp_server import build_server
+    from tools.registry import registry
+
+    tool = registry.get("open_app")
+    monkeypatch.setattr(tool, "run", AsyncMock(return_value=__import__("tools").ToolResult.ok("Opened Chrome.")))
+    result = await build_server().call_tool("open_app", {"name": "chrome"})
+    text = str(result)
+    assert "Opened Chrome" in text

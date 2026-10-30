@@ -1,38 +1,92 @@
 [project]
-name = "jarvis-brain"
-version = "0.1.0"
-description = "JARVIS AI Operating System - Phase 1: The Brain"
+name = "jarvis-brain-os"
+version = "3.0.0"
+description = "JARVIS — a safe, voice-first personal AI assistant and automation agent for Windows"
 readme = "README.md"
 requires-python = ">=3.12"
+license = { text = "Proprietary" }
+# Core: API, brain, LLM gateway, memory, tools. Runs on Windows, Linux and macOS (OS actions need Windows).
 dependencies = [
-    "fastapi>=0.111.0",
-    "uvicorn[standard]>=0.30.0",
-    "pydantic>=2.7.0",
-    "pydantic-settings>=2.3.0",
-    "python-dotenv>=1.0.1",
-    "loguru>=0.7.2",
-    "jinja2>=3.1.4",
-    "httpx>=0.27.0",
-    "sqlite-utils>=3.36",
-    "aiosqlite>=0.20.0",
-    "pyautogui>=0.9.54",
-    "pygetwindow>=0.0.9",
-    "psutil>=5.9.0",
-    "mss>=9.0.1",
-    "chromadb>=0.5.0",
-    "playwright>=1.44.0",
+    "fastapi>=0.115,<1",
+    "uvicorn[standard]>=0.30,<1",
+    "pydantic>=2.7,<3",
+    "pydantic-settings>=2.7,<3",
+    "python-dotenv>=1.0,<2",
+    "loguru>=0.7,<1",
+    "httpx>=0.27,<1",
+    "aiosqlite>=0.20,<1",
+    "psutil>=5.9,<8",
+    "numpy>=1.26,<3",
+    "pillow>=10,<14",
+    "pyyaml>=6.0,<7",
+    "ddgs>=9,<10",
+    "send2trash>=1.8,<3",
+    "jinja2>=3.1,<4",
 ]
 
 [project.optional-dependencies]
-dev = [
-    "pytest>=8.2.0",
-    "pytest-asyncio>=0.23.0",
-    "pytest-cov>=5.0.0",
+# Windows desktop control (UI Automation, audio, brightness, windows, clipboard, OCR)
+windows = [
+    "pywin32>=306; sys_platform == 'win32'",
+    "pywinauto>=0.6.9,<0.7; sys_platform == 'win32'",
+    "pycaw>=20240210; sys_platform == 'win32'",
+    "comtypes>=1.4,<2; sys_platform == 'win32'",
+    "wmi>=1.5,<2; sys_platform == 'win32'",
+    "winocr>=0.0.15; sys_platform == 'win32'",
+    "win11toast>=0.35; sys_platform == 'win32'",
+    "pyautogui>=0.9.54,<1",
+    "pygetwindow>=0.0.9",
+    "pyperclip>=1.8,<2",
+    "mss>=9,<11",
 ]
+vision = [
+    "opencv-python>=4.9,<6",
+    "pytesseract>=0.3.10,<1",
+]
+# Voice: local STT (faster-whisper), mic, TTS. Kokoro needs its model files (see README).
+voice = [
+    "sounddevice>=0.4.6,<1",
+    "SpeechRecognition>=3.10,<4",
+    "pyttsx3>=2.90,<3",
+    "faster-whisper>=1.1,<2",
+    "kokoro-onnx>=0.4,<1",
+]
+# Acoustic wake word (pre-trained models are non-commercial CC BY-NC-SA)
+wakeword = ["openwakeword>=0.6,<1"]
+docs = [
+    "pypdf>=4,<7",
+    "python-docx>=1.1,<2",
+    "python-pptx>=1.0,<2",
+    "openpyxl>=3.1,<4",
+    "pdfplumber>=0.11,<1",
+]
+browser = ["playwright>=1.48,<2"]
+mcp = ["mcp>=2.3,<3"]
+memory = ["chromadb>=0.5,<2"]
+desktop = ["pystray>=0.19,<1", "pynput>=1.7,<2"]
+nlp = ["dateparser>=1.2,<2"]
+all = ["jarvis-brain-os[windows,vision,voice,docs,browser,mcp,desktop,nlp]"]
+dev = [
+    "pytest>=8.2,<10",
+    "pytest-asyncio>=0.23,<2",
+    "pytest-cov>=5,<8",
+    "respx>=0.21,<1",
+    "ruff>=0.6,<1",
+    "pyright>=1.1.380",
+    "jarvis-brain-os[docs,mcp]",
+]
+
+[project.scripts]
+jarvis = "jarvis:main"
+jarvis-mcp = "integrations.mcp_server:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app", "automation", "brain", "core", "integrations", "memory", "services", "tools", "vision", "voice"]
+include = ["routines/*.yaml", "app/static/*.html", "jarvis.py", "jarvis_tray.py", "chat.py", "voice_assistant.py"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -45,11 +99,13 @@ markers = [
 ]
 
 [tool.pyright]
-include = ["."]
+include = ["core", "brain", "tools", "services", "integrations", "automation/gateway.py", "automation/ops", "app"]
 exclude = [".venv", "data", "**/__pycache__"]
+typeCheckingMode = "basic"
 reportMissingImports = false
 reportMissingModuleSource = false
-typeCheckingMode = "off"
+reportOptionalMemberAccess = false
+reportAttributeAccessIssue = false
 
 [tool.ruff]
 target-version = "py312"

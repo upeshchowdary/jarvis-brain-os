@@ -31,8 +31,10 @@ def build_server():
     )
     ctx = ToolContext(session_id=SESSION, channel="mcp", source="mcp")
 
-    async def _tool(name: str, **kwargs: Any) -> str:
-        res = await registry.get(name).run(ctx, **kwargs)
+    async def _tool(tool_name: str, **kwargs: Any) -> str:
+        tool = registry.get(tool_name)
+        assert tool is not None
+        res = await tool.run(ctx, **kwargs)
         out = res.message
         if res.content_for_llm:
             out += "\n\n" + res.content_for_llm

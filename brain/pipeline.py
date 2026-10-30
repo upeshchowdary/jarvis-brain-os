@@ -138,8 +138,8 @@ class Brain:
         t = time.perf_counter()
         decision = router.fast_route(query)
         timing["router_ms"] = round((time.perf_counter() - t) * 1000, 2)
-        if decision is not None and registry.get(decision.tool):
-            tool = registry.get(decision.tool)
+        tool = registry.get(decision.tool) if decision is not None else None
+        if decision is not None and tool is not None:
             record = await self._run_tool(tool, decision.args, ctx, origin="fast")
             timing["tool_ms"] = round(record.elapsed_ms, 1)
             yield {"type": "tool", "name": tool.name, "result": record.to_dict()}
@@ -160,7 +160,8 @@ class Brain:
             yield event
 
     # ── Agent loop ──────────────────────────────────────────────────────
-    async def _agent(self, query, history, state, ctx, personality, model_override, timing, stream_tokens, note, prefilled=None):
+    async def _agent(self, query, history, state, ctx, personality, model_override, timing, stream_tokens, note,
+                     prefilled=None) -> AsyncIterator[Dict[str, Any]]:
         allow_actions = router.is_imperative(query)
         base = registry.all() if allow_actions else registry.read_only()
         recent = " ".join(m.get("content", "")[:200] for m in history[-4:])

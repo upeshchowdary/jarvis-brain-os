@@ -1,0 +1,17 @@
+{
+  "servers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "C:/Users/YOU/Documents"],
+      "risk": "medium",
+      "read_only_tools": ["read_file", "read_text_file", "list_directory", "search_files", "get_file_info"]
+    },
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": {"GITHUB_PERSONAL_ACCESS_TOKEN": "put-your-token-here"},
+      "risk": "medium",
+      "read_only_tools": ["search_repositories", "get_file_contents", "list_issues", "list_commits"]
+    }
+  }
+}

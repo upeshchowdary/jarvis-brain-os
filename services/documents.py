@@ -35,17 +35,18 @@ def extract_text(path: Path, max_chars: int = 200_000) -> List[Tuple[str, str]]:
             rows = [", ".join(r) for _, r in zip(range(2000), csv.reader(fh))]
         out.append(("", "\n".join(rows)))
     elif ext == ".pdf":
+        # pypdf (BSD) is the declared dependency; PyMuPDF (AGPL) is used only if the user installed it.
         try:
+            from pypdf import PdfReader  # type: ignore
+
+            for i, page in enumerate(PdfReader(str(path)).pages, 1):
+                out.append((f"p.{i}", page.extract_text() or ""))
+        except ImportError:
             import pymupdf  # type: ignore
 
             with pymupdf.open(str(path)) as doc:
                 for i, page in enumerate(doc, 1):
                     out.append((f"p.{i}", page.get_text() or ""))
-        except ImportError:
-            from pypdf import PdfReader  # type: ignore
-
-            for i, page in enumerate(PdfReader(str(path)).pages, 1):
-                out.append((f"p.{i}", page.extract_text() or ""))
     elif ext == ".docx":
         import docx  # type: ignore
 
@@ -221,7 +222,8 @@ def write_xlsx(tables: List[List[List[str]]], dest: Path) -> None:
     from openpyxl import Workbook  # type: ignore
 
     wb = Workbook()
-    wb.remove(wb.active)
+    if wb.active is not None:
+        wb.remove(wb.active)  # type: ignore[arg-type]
     for i, table in enumerate(tables, 1):
         ws = wb.create_sheet(f"Table {i}")
         for row in table:

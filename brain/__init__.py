@@ -19,7 +19,8 @@ _EXPORTS = {
     "conversation_manager": "brain.conversation_manager",
 }
 
-__all__ = list(_EXPORTS)
+__all__ = ["Brain", "brain", "TurnResult", "PersonalityManager", "personality_manager", "PersonalityType",
+           "ConversationManager", "conversation_manager"]
 
 
 def __getattr__(name: str) -> Any:

@@ -117,7 +117,7 @@ class DatabaseManager:
                 async with db.execute(query, (session_id, limit)) as cursor:
                     rows = await cursor.fetchall()
                     history: List[Dict[str, str]] = []
-                    for row in reversed(rows):
+                    for row in reversed(list(rows)):
                         history.append({"role": "user", "content": row["user_query"]})
                         history.append({"role": "assistant", "content": row["response_text"]})
                     return history

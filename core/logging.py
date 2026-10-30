@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextvars
 import sys
+from typing import Any
 
 from loguru import logger
 
@@ -14,7 +15,7 @@ request_id_var: contextvars.ContextVar[str] = contextvars.ContextVar("request_id
 _configured = False
 
 
-def _patch(record: dict) -> None:
+def _patch(record: Any) -> None:
     record["extra"].setdefault("request_id", request_id_var.get())
 
 
