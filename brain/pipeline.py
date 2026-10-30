@@ -68,6 +68,8 @@ class TurnResult:
 class Brain:
     def __init__(self) -> None:
         load_builtin_tools()
+        self._persisting: set = set()  # post-turn log + index tasks (kept referenced until done)
+        self._extracting: set = set()  # post-turn fact-extraction tasks
 
     # ── Public API ──────────────────────────────────────────────────────
     async def handle(self, query: str, session_id: Optional[str] = None, **kwargs: Any) -> TurnResult:
@@ -109,6 +111,7 @@ class Brain:
             result.metadata.setdefault("provider", "jarvis")
             result.metadata.setdefault("model", "fast-path" if result.route != "agent" else "")
             result.metadata.update(session_id=sid, total_latency_ms=round(total, 1), timing_breakdown_ms=timing)
+            result.metadata["channel"] = channel
             conversation_manager.add_assistant_message(sid, response)
             bus.publish("turn", {"session_id": sid, "channel": channel, "query": query, "response": response[:2000],
                                  "status": result.status, "route": result.route})
@@ -328,7 +331,7 @@ class Brain:
             try:
                 from memory.vector_memory import vector_memory
 
-                for doc in vector_memory.search_similar(query, top_k=3):
+                for doc in await asyncio.to_thread(vector_memory.search_similar, query, 3):
                     if doc.score >= settings.MEMORY_RECALL_MIN_SCORE:
                         memories.append(doc.content[:300])
             except Exception:
@@ -341,37 +344,54 @@ class Brain:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return
-        loop.create_task(self._persist(result))
+        task = loop.create_task(self._persist(result))
+        self._persisting.add(task)
+        task.add_done_callback(self._persisting.discard)
+
+    async def flush_persistence(self, timeout: float = 5.0) -> None:
+        """Wait for this loop's pending post-turn persistence (shutdown, tests)."""
+        loop = asyncio.get_running_loop()
+        pending = [t for t in self._persisting if not t.done() and t.get_loop() is loop]
+        if pending:
+            await asyncio.wait(pending, timeout=timeout)
 
     async def _persist(self, result: TurnResult) -> None:
         try:
             from app.database.connection import db_manager
             from app.database.models import ChatLogRecord
-            from memory.long_term import long_term_memory
+            from memory.search import index_turn
 
             meta = result.metadata
             usage = meta.get("usage") or {}
-            await db_manager.log_chat_telemetry(ChatLogRecord(
+            record = ChatLogRecord(
                 session_id=result.session_id, user_query=result.query, intent=result.intent,
                 confidence=1.0 if result.route == "fast_path" else 0.9, provider=meta.get("provider", "jarvis"),
                 model=meta.get("model") or "fast-path", latency_ms=meta.get("total_latency_ms", 0.0),
                 prompt_tokens=usage.get("prompt_tokens", 0), completion_tokens=usage.get("completion_tokens", 0),
                 total_tokens=usage.get("total_tokens", 0), response_text=result.response,
-            ))
-            if result.route == "agent" and result.intent == "conversation":
-                await long_term_memory.auto_extract_facts(result.query)
-                if settings.ROUTER_USE_LLM:
-                    await long_term_memory.llm_extract_facts(result.query)
-                if len(result.query) > 25:
-                    from memory.vector_memory import vector_memory
-
-                    await vector_memory.add_document_async(
-                        doc_id=f"chat_{result.session_id}_{uuid.uuid4().hex[:6]}",
-                        content=f"User asked: {result.query} | JARVIS answered: {result.response[:300]}",
-                        metadata={"session_id": result.session_id},
-                    )
+                channel=meta.get("channel", "text"),
+            )
+            chat_id = await db_manager.log_chat_telemetry(record)
+            if chat_id:
+                await index_turn(chat_id, result.query, result.response, created_at=record.created_at,
+                                 channel=record.channel)
         except Exception as exc:  # never let bookkeeping break a turn
             logger.debug(f"[Brain] post-turn persistence skipped: {exc}")
+        if result.route == "agent" and result.intent == "conversation":
+            # Fact extraction may wait on an LLM: its own task, so flush_persistence() doesn't wait for it.
+            task = asyncio.get_running_loop().create_task(self._extract_facts(result.query))
+            self._extracting.add(task)
+            task.add_done_callback(self._extracting.discard)
+
+    async def _extract_facts(self, query: str) -> None:
+        try:
+            from memory.long_term import long_term_memory
+
+            await long_term_memory.auto_extract_facts(query)
+            if settings.ROUTER_USE_LLM:
+                await long_term_memory.llm_extract_facts(query)
+        except Exception as exc:
+            logger.debug(f"[Brain] fact extraction skipped: {exc}")
 
 
 brain = Brain()

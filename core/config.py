@@ -131,6 +131,7 @@ class Settings(BaseSettings):
     MAX_CONVERSATION_TOKENS: int = 4096
     MAX_FACTS_PER_TURN: int = 12
     MEMORY_RECALL_MIN_SCORE: float = 0.35
+    EMBEDDING_MODEL: str = "BAAI/bge-base-en-v1.5"  # local fastembed (ONNX, CPU) model for semantic memory
     SESSION_TTL_SECONDS: float = 6 * 3600
     MAX_SESSIONS: int = 200
     DEFAULT_PERSONALITY: PersonalityType = PersonalityType.ASSISTANT

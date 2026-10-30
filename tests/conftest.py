@@ -50,10 +50,39 @@ dynamic_app_manager._apps_cache = {}
 AUTH = {"Authorization": "Bearer test-token"}
 
 
+def fake_embedding(texts):
+    """Deterministic 16-dim bag-of-hashed-words embedding: no model, no download."""
+    import hashlib
+    import math
+    import re
+
+    vectors = []
+    for text in texts:
+        vec = [0.0] * 16
+        for word in re.findall(r"\w+", text.lower()):
+            vec[int(hashlib.md5(word.encode()).hexdigest(), 16) % 16] += 1.0
+        norm = math.sqrt(sum(v * v for v in vec)) or 1.0
+        vectors.append([v / norm for v in vec] if any(vec) else [1.0] + [0.0] * 15)
+    return vectors
+
+
+@pytest.fixture(autouse=True)
+def fake_embeddings():
+    """Every test embeds with the fake: the real fastembed model is never downloaded or loaded."""
+    from memory.vector_memory import vector_memory
+
+    vector_memory.set_embedding_function(fake_embedding)
+    yield
+
+
 @pytest.fixture(autouse=True)
 async def init_test_database():
-    """Ensure database tables exist before running test cases."""
+    """Ensure database tables exist before running test cases; let post-turn persistence finish after."""
     await db_manager.init_db()
+    yield
+    from brain.pipeline import brain
+
+    await brain.flush_persistence()
 
 
 @pytest.fixture

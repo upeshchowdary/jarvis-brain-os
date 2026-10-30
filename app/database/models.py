@@ -20,4 +20,5 @@ class ChatLogRecord(BaseModel):
     completion_tokens: int = 0
     total_tokens: int = 0
     response_text: str
+    channel: str = "text"
     created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())

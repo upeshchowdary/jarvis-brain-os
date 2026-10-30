@@ -32,7 +32,8 @@ class DatabaseManager:
             completion_tokens INTEGER DEFAULT 0,
             total_tokens INTEGER DEFAULT 0,
             response_text TEXT NOT NULL,
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            channel TEXT DEFAULT 'text'
         );
 
         CREATE TABLE IF NOT EXISTS session_buffers (
@@ -60,25 +61,46 @@ class DatabaseManager:
         try:
             async with aiosqlite.connect(str(self.db_path)) as db:
                 await db.executescript(table_schema)
+                async with db.execute("PRAGMA table_info(chat_logs);") as cursor:
+                    columns = {row[1] for row in await cursor.fetchall()}
+                if "channel" not in columns:
+                    await db.execute("ALTER TABLE chat_logs ADD COLUMN channel TEXT DEFAULT 'text';")
+                await self._init_chat_fts(db)
                 await db.commit()
             logger.info(f"SQLite database initialized successfully at: {self.db_path}")
         except Exception as exc:
             logger.error(f"Failed to initialize SQLite database: {exc}")
             raise DatabaseError(f"Database initialization error: {exc}") from exc
 
+    @staticmethod
+    async def _init_chat_fts(db: aiosqlite.Connection) -> None:
+        """FTS5 keyword index over chat_logs (query + response), kept current by an insert trigger."""
+        async with db.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'chat_fts';") as cursor:
+            is_new = await cursor.fetchone() is None
+        await db.executescript("""
+        CREATE VIRTUAL TABLE IF NOT EXISTS chat_fts USING fts5(
+            user_query, response_text, content='chat_logs', content_rowid='id'
+        );
+        CREATE TRIGGER IF NOT EXISTS chat_logs_fts_insert AFTER INSERT ON chat_logs BEGIN
+            INSERT INTO chat_fts(rowid, user_query, response_text)
+            VALUES (new.id, new.user_query, new.response_text);
+        END;
+        """)
+        if is_new:  # one-time backfill of the turns logged before the index existed
+            await db.execute("INSERT INTO chat_fts(chat_fts) VALUES('rebuild');")
 
-    async def log_chat_telemetry(self, record: ChatLogRecord) -> bool:
-        """Insert execution log record into SQLite table."""
+    async def log_chat_telemetry(self, record: ChatLogRecord) -> Optional[int]:
+        """Insert execution log record into SQLite table. Returns the new chat id (None on failure)."""
         insert_query = """
         INSERT INTO chat_logs (
             session_id, user_query, intent, confidence, provider, model,
             latency_ms, prompt_tokens, completion_tokens, total_tokens,
-            response_text, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            response_text, created_at, channel
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         """
         try:
             async with aiosqlite.connect(str(self.db_path)) as db:
-                await db.execute(
+                cursor = await db.execute(
                     insert_query,
                     (
                         record.session_id,
@@ -93,14 +115,70 @@ class DatabaseManager:
                         record.total_tokens,
                         record.response_text,
                         record.created_at,
+                        record.channel,
                     ),
                 )
                 await db.commit()
             logger.debug(f"Chat telemetry persisted to database for provider: {record.provider}")
-            return True
+            return cursor.lastrowid
         except Exception as exc:
             logger.error(f"Error persisting chat telemetry: {exc}")
-            return False
+            return None
+
+    async def search_chat_fts(self, terms: List[str], limit: int = 20, since_iso: Optional[str] = None,
+                              until_iso: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Chat turns matching any of ``terms`` (FTS5), best bm25 first, optionally within [since, until)."""
+        if not terms:
+            return []
+        match = " OR ".join('"' + term.replace('"', '""') + '"' for term in terms)
+        clauses, params = ["chat_fts MATCH ?"], [match]
+        if since_iso:
+            clauses.append("c.created_at >= ?")
+            params.append(since_iso)
+        if until_iso:
+            clauses.append("c.created_at < ?")
+            params.append(until_iso)
+        sql = f"""
+        SELECT c.id, c.user_query, c.response_text, c.created_at, c.channel, bm25(chat_fts) AS score
+        FROM chat_fts JOIN chat_logs c ON c.id = chat_fts.rowid
+        WHERE {" AND ".join(clauses)}
+        ORDER BY score LIMIT ?;
+        """
+        try:
+            async with aiosqlite.connect(str(self.db_path)) as db:
+                db.row_factory = aiosqlite.Row
+                async with db.execute(sql, (*params, limit)) as cursor:
+                    return [dict(row) for row in await cursor.fetchall()]
+        except Exception as exc:
+            logger.error(f"Error searching chat_fts: {exc}")
+            return []
+
+    async def recent_chats(self, limit: int, since_iso: Optional[str] = None, until_iso: Optional[str] = None,
+                           channel: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Newest chat turns first, optionally within [since, until) and on one channel."""
+        clauses, params = [], []
+        if since_iso:
+            clauses.append("created_at >= ?")
+            params.append(since_iso)
+        if until_iso:
+            clauses.append("created_at < ?")
+            params.append(until_iso)
+        if channel:
+            clauses.append("channel = ?")
+            params.append(channel)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        sql = f"""
+        SELECT id, user_query, response_text, created_at, channel FROM chat_logs {where}
+        ORDER BY created_at DESC, id DESC LIMIT ?;
+        """
+        try:
+            async with aiosqlite.connect(str(self.db_path)) as db:
+                db.row_factory = aiosqlite.Row
+                async with db.execute(sql, (*params, limit)) as cursor:
+                    return [dict(row) for row in await cursor.fetchall()]
+        except Exception as exc:
+            logger.error(f"Error reading recent chats: {exc}")
+            return []
 
     async def get_recent_logs(self, limit: int = 10) -> List[Dict[str, Any]]:
         """Fetch recent execution logs for system status check."""

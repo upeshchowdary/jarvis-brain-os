@@ -41,6 +41,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     await tasks.load()
     await long_term_memory.init_db()
     await vector_memory.load_from_db()
+    memory_warm_up = vector_memory.start_warm_up()  # Chroma + embedding model load in the background
     if settings.BACKGROUND_SERVICES:
         connectivity.start_background_refresh()
         from services import start_background_services
@@ -50,6 +51,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         llm.start_keepwarm()
     logger.info(f"JARVIS ready on http://{settings.HOST}:{settings.PORT} (token in .env as JARVIS_API_TOKEN)")
     yield
+    memory_warm_up.cancel()
+    from brain.pipeline import brain
+
+    await brain.flush_persistence()  # the last turn's log/index isn't lost on shutdown
     llm.stop_keepwarm()
     if settings.BACKGROUND_SERVICES:
         from services import stop_background_services
