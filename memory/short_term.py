@@ -49,6 +49,10 @@ class ShortTermMemoryManager:
             await self.load_from_db(session_id)
         return self._buffers.get(session_id, []).copy()
 
+    def forget_buffer(self, session_id: str) -> None:
+        """Drop the in-RAM buffer only (history stays in SQLite)."""
+        self._buffers.pop(session_id, None)
+
     def clear(self, session_id: str) -> None:
         """Clear memory buffer for session."""
         if session_id in self._buffers:

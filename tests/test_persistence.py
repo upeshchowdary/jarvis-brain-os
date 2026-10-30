@@ -37,7 +37,7 @@ async def test_vector_memory_persistence(tmp_path):
     await db_mgr.init_db()
 
     # Create vector memory and add document
-    vm1 = VectorMemoryManager()
+    VectorMemoryManager()
 
     # Direct persistence call to test_db
     await db_mgr.save_vector_document(

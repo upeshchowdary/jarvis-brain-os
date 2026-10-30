@@ -1,90 +1,90 @@
-"""Interactive Terminal Chat Interface for JARVIS AI Operating System."""
+"""Interactive terminal chat for JARVIS (streams replies token by token).
+
+Usage:  python chat.py            (server must be running: python -m app.main)
+"""
+
+from __future__ import annotations
 
 import asyncio
+import json
+import os
+import sys
+
 import httpx
 
-BASE_URL = "http://127.0.0.1:8000"
+from core.config import ensure_api_token, settings
+
+BASE_URL = os.environ.get("JARVIS_URL", f"http://{settings.HOST}:{settings.PORT}")
+HEADERS = {"Authorization": f"Bearer {settings.JARVIS_API_TOKEN or ensure_api_token()}"}
 
 
-async def check_server_connection() -> bool:
-    """Verify that the FastAPI server is running."""
+async def check_server(client: httpx.AsyncClient) -> bool:
     try:
-        async with httpx.AsyncClient(timeout=3.0) as client:
-            res = await client.get(f"{BASE_URL}/health")
-            if res.status_code == 200:
-                data = res.json()
-                print(f" Connected to {data.get('app_name')} (Active Model: {data.get('active_model', data.get('active_provider'))})")
-                return True
+        res = await client.get(f"{BASE_URL}/health", timeout=3.0)
+        data = res.json()
+        print(f"Connected to {data.get('app_name')} — model {data.get('active_provider')}/{data.get('active_model')}")
+        return True
     except Exception:
-        pass
-    print(" Server is not running. Please start the server using: uvicorn app.main:app --reload")
-    return False
+        print("Server is not running. Start it with:  python -m app.main")
+        return False
 
 
-async def chat_loop():
-    # print("=" * 60)
-    # print("  JARVIS AI OPERATING SYSTEM — INTERACTIVE TERMINAL CHAT")
-    # print("=" * 60)
-    
-    if not await check_server_connection():
-        return
+async def ask(client: httpx.AsyncClient, query: str, session_id: str) -> None:
+    payload = {"query": query, "session_id": session_id}
+    print("JARVIS > ", end="", flush=True)
+    streamed = False
+    async with client.stream("POST", f"{BASE_URL}/chat/stream", json=payload, headers=HEADERS, timeout=180.0) as res:
+        if res.status_code != 200:
+            print(f"\nError {res.status_code}: {(await res.aread()).decode()[:300]}")
+            return
+        async for line in res.aiter_lines():
+            if not line.startswith("data:"):
+                continue
+            event = json.loads(line[5:])
+            if event["type"] == "text":
+                streamed = True
+                print(event["delta"], end="", flush=True)
+            elif event["type"] == "tool":
+                print(f"\n  [tool: {event['name']}]", end="", flush=True)
+            elif event["type"] == "error":
+                print(f"\n⚠️ {event['message']}")
+            elif event["type"] == "done":
+                result = event["result"]
+                if not streamed:
+                    print(("\n" if result.get("tools") else "") + result["response"], end="")
+                meta = result.get("metadata", {})
+                tag = f"{meta.get('provider', '')}/{meta.get('model', '')}".strip("/")
+                print(f"\n  ({result['route']} · {tag} · {meta.get('total_latency_ms', 0):.0f} ms)")
+                if result.get("status") == "needs_confirmation":
+                    print("  ↳ reply 'yes' to confirm, anything else cancels.")
+    print("-" * 60)
 
-    print("Type your message and press Enter\n")
-    session_id = "cli_session_001"
 
-    async with httpx.AsyncClient(timeout=180.0) as client:
+async def chat_loop() -> None:
+    async with httpx.AsyncClient() as client:
+        if not await check_server(client):
+            return
+        print("Type a message (exit to quit).\n")
+        session_id = "cli_session_001"
         while True:
             try:
-                user_input = input("You > ").strip()
-                if not user_input:
-                    continue
-                if user_input.lower() in ("exit", "quit"):
-                    print("Goodbye!")
-                    break
-
-                payload = {
-                    "query": user_input,
-                    "session_id": session_id,
-                }
-
-                print("JARVIS is thinking...", end="\r", flush=True)
-                response = await client.post(f"{BASE_URL}/chat", json=payload)
-                print(" " * 30, end="\r", flush=True)  # Clear thinking indicator
-
-                if response.status_code == 200:
-                    data = response.json()
-                    intent_obj = data.get("intent", {})
-                    intent_code = intent_obj.get("intent") if isinstance(intent_obj, dict) else str(intent_obj)
-                    resp_text = data.get("response", "")
-                    meta = data.get("metadata", {})
-                    provider = meta.get("provider", "gemini").upper()
-                    model_name = meta.get("model", "gemini-3.5-flash-lite")
-                    req_model = meta.get("requested_model", "")
-                    fallback_used = meta.get("fallback_used", False)
-                    latency = meta.get("total_latency_ms", meta.get("latency_ms", 0))
-
-                    clean_req = req_model.replace("ollama/", "").lower().strip()
-                    clean_res = model_name.replace("ollama/", "").lower().strip()
-                    if fallback_used and clean_req and clean_req != clean_res:
-                        model_tag = f"{provider} : {model_name} (Fallback from {req_model})"
-                    else:
-                        model_tag = f"{provider} : {model_name}"
-
-                    print(f"\nJARVIS [{model_tag} | {intent_code} | {latency:.0f}ms] >")
-                    print(resp_text)
-                    print("-" * 60 + "\n")
-                else:
-                    print(f"Error {response.status_code}: {response.text}\n")
-
+                query = input("You > ").strip()
             except (KeyboardInterrupt, EOFError):
                 print("\nGoodbye!")
-                break
-            except Exception as exc:
-                print(f"\nConnection Error: {exc}\n")
+                return
+            if not query:
+                continue
+            if query.lower() in ("exit", "quit"):
+                print("Goodbye!")
+                return
+            try:
+                await ask(client, query, session_id)
+            except httpx.HTTPError as exc:
+                print(f"\nConnection error: {exc}")
 
 
 if __name__ == "__main__":
     try:
         asyncio.run(chat_loop())
-    except (KeyboardInterrupt, asyncio.CancelledError):
-        print("\nGoodbye!")
+    except KeyboardInterrupt:
+        sys.exit(0)

@@ -43,7 +43,7 @@ class KeyboardController:
     """Keyboard interaction controller with dry-run and safety support."""
 
     def __init__(self, dry_run: bool = False) -> None:
-        self.dry_run = dry_run or automation_config.DRY_RUN
+        self.dry_run = dry_run  # global dry-run is enforced by the gateway
 
     def _require_pyautogui(self) -> None:
         if not HAS_PYAUTOGUI:

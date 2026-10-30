@@ -10,7 +10,7 @@ from typing import List, Any
 from loguru import logger
 
 try:
-    from PIL import Image
+    from PIL import Image  # noqa: F401
     HAS_PIL = True
 except ImportError:
     HAS_PIL = False
@@ -45,7 +45,7 @@ class DocumentReader:
                 raw_text = file_path_or_text
 
         if raw_text:
-            lines = [l.strip() for l in raw_text.splitlines() if l.strip()]
+            lines = [ln.strip() for ln in raw_text.splitlines() if ln.strip()]
             if lines:
                 title = lines[0]
 
@@ -58,7 +58,7 @@ class DocumentReader:
                     paragraphs.append(line)
 
             # Simulated table parsing if markdown or pipe-separated lines
-            table_rows = [l for l in lines if "|" in l]
+            table_rows = [ln for ln in lines if "|" in ln]
             if table_rows:
                 grid: List[TableCell] = []
                 for r_idx, r_text in enumerate(table_rows[:10]):

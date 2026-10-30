@@ -8,7 +8,7 @@ from typing import List, Any
 from loguru import logger
 
 try:
-    from PIL import Image
+    from PIL import Image  # noqa: F401
     HAS_PIL = True
 except ImportError:
     HAS_PIL = False

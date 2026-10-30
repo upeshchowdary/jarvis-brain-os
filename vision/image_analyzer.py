@@ -8,7 +8,7 @@ from typing import Dict, Any, Tuple
 from loguru import logger
 
 try:
-    from PIL import Image, ImageStat
+    from PIL import Image, ImageStat  # noqa: F401
     HAS_PIL = True
 except ImportError:
     HAS_PIL = False

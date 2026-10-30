@@ -20,7 +20,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from loguru import logger
 
 try:
-    from PIL import Image, ImageFilter, ImageStat
+    from PIL import Image, ImageFilter, ImageStat  # noqa: F401
     HAS_PIL = True
 except ImportError:
     HAS_PIL = False

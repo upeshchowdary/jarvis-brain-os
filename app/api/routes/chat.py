@@ -1,46 +1,63 @@
-"""Chat Processing REST Endpoint delegating to BrainManager Framework."""
+"""Chat endpoints: request/response and Server-Sent-Events streaming."""
+
+from __future__ import annotations
+
+import json
+from typing import Any, AsyncIterator, Dict, Optional
 
 from fastapi import APIRouter
-from typing import Dict, Any, Optional
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from brain.brain_manager import brain_manager, BrainExecutionOutput
-from app.database.connection import db_manager
-from app.database.models import ChatLogRecord
+
+from brain.pipeline import TurnResult, brain
 
 router = APIRouter(tags=["Chat"])
 
 
 class BrainChatRequest(BaseModel):
-    query: str = Field(..., description="User query prompt")
-    session_id: Optional[str] = Field(default=None)
-    personality: Optional[str] = Field(default=None, description="Optional personality override (assistant, developer, etc.)")
-    model_override: Optional[str] = Field(default=None, description="Optional model override")
+    query: str = Field(..., min_length=1, max_length=8000, description="User message")
+    session_id: Optional[str] = Field(default=None, max_length=100)
+    personality: Optional[str] = Field(default=None, description="assistant | professional | friendly | developer | minimal")
+    model_override: Optional[str] = Field(default=None, description="provider/model for this request")
+    dry_run: Optional[bool] = Field(default=None, description="Simulate actions instead of executing them")
+    channel: str = Field(default="text", pattern="^(text|voice|api)$")
 
 
 @router.post("/chat")
 async def process_chat_query(request: BrainChatRequest) -> Dict[str, Any]:
-    """Execute query via JARVIS Brain Framework and return structured execution output."""
-    output: BrainExecutionOutput = await brain_manager.execute_cognitive_pipeline(
-        user_query=request.query,
-        session_id=request.session_id,
+    result: TurnResult = await brain.handle(
+        request.query,
+        request.session_id,
+        channel=request.channel,
         personality=request.personality,
         model_override=request.model_override,
+        dry_run=request.dry_run,
     )
+    return result.to_dict()
 
-    # Persist execution telemetry to SQLite
-    record = ChatLogRecord(
-        session_id=output.metadata.get("session_id"),
-        user_query=output.query,
-        intent=output.intent.intent,
-        confidence=output.intent.confidence,
-        provider=output.metadata.get("provider", "gemini"),
-        model=output.metadata.get("model", "gemini-3.5-flash-lite"),
-        latency_ms=output.metadata.get("total_latency_ms", 0.0),
-        prompt_tokens=output.metadata.get("usage", {}).get("prompt_tokens", 0),
-        completion_tokens=output.metadata.get("usage", {}).get("completion_tokens", 0),
-        total_tokens=output.metadata.get("usage", {}).get("total_tokens", 0),
-        response_text=output.response,
-    )
-    await db_manager.log_chat_telemetry(record)
 
-    return output.model_dump()
+def _sse(event: Dict[str, Any]) -> str:
+    if event["type"] == "done":
+        event = {"type": "done", "result": event["result"].to_dict()}
+    return f"event: {event['type']}\ndata: {json.dumps(event, default=str)}\n\n"
+
+
+@router.post("/chat/stream")
+async def stream_chat(request: BrainChatRequest) -> StreamingResponse:
+    """Stream tokens as they are generated (SSE). Events: text, tool, done."""
+
+    async def gen() -> AsyncIterator[str]:
+        try:
+            async for event in brain.stream(
+                request.query,
+                request.session_id,
+                channel=request.channel,
+                personality=request.personality,
+                model_override=request.model_override,
+                dry_run=request.dry_run,
+            ):
+                yield _sse(event)
+        except Exception as exc:  # surface errors to the client instead of a dropped connection
+            yield f"event: error\ndata: {json.dumps({'type': 'error', 'message': str(exc)})}\n\n"
+
+    return StreamingResponse(gen(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})

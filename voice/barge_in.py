@@ -18,7 +18,7 @@ from voice.state import VoiceState, voice_state_manager
 from voice.tts import tts_engine
 from voice.audio_capture import audio_capture
 from voice.vad import vad_detector
-from automation.action_executor import trigger_emergency_stop
+from automation.gateway import gateway
 
 
 class BargeInMonitor:
@@ -64,7 +64,7 @@ class BargeInMonitor:
 
         # 2. Halt any running non-critical automation
         if "stop" in reason.lower() or "cancel" in reason.lower() or "abort" in reason.lower():
-            trigger_emergency_stop(reason)
+            gateway.emergency_stop(reason)
 
         voice_state_manager.transition_to(VoiceState.INTERRUPTED, reason)
 

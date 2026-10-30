@@ -8,7 +8,6 @@ Supports:
 import asyncio
 from typing import Optional, Dict, Any
 
-from automation.config import automation_config
 from automation.automation_logger import log_action
 from automation.keyboard_controller import keyboard_controller
 from automation.mouse_controller import mouse_controller
@@ -27,7 +26,7 @@ class BrowserController:
     """Controls browser via keyboard shortcuts and Vision-guided interaction."""
 
     def __init__(self, dry_run: bool = False) -> None:
-        self.dry_run = dry_run or automation_config.DRY_RUN
+        self.dry_run = dry_run  # global dry-run is enforced by the gateway
         self._default_browser = "chrome"
 
     # ── App Lifecycle ────────────────────────────────────────────────

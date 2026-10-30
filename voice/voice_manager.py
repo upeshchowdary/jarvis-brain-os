@@ -25,7 +25,6 @@ from voice.wake_word import wake_word_detector
 from voice.stt import stt_engine
 from voice.tts import tts_engine
 from voice.barge_in import barge_in_monitor
-from brain.brain_manager import brain_manager, BrainExecutionOutput
 
 
 class VoiceManager:
@@ -130,10 +129,9 @@ class VoiceManager:
 
         # 4. Cognitive Execution via BrainManager
         voice_state_manager.transition_to(VoiceState.UNDERSTANDING, f"Understanding: '{command}'")
-        output: BrainExecutionOutput = await brain_manager.execute_cognitive_pipeline(
-            user_query=command,
-            session_id=self.session_id,
-        )
+        from brain.pipeline import brain
+
+        output = await brain.handle(command, self.session_id, channel="voice")
 
         wake_word_detector.record_interaction()
 
@@ -145,7 +143,7 @@ class VoiceManager:
         return {
             "success": True,
             "command": command,
-            "intent": output.intent.intent,
+            "intent": output.intent,
             "response": response_text,
             "metadata": output.metadata,
         }

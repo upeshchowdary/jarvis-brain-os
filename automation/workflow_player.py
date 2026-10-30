@@ -1,189 +1,71 @@
-﻿"""JARVIS Workflow Player — Adaptive Vision-guided workflow replay.
+﻿"""Workflow replay — recorded workflows become a ``computer.run_plan`` gateway request.
 
-Does NOT blindly replay coordinates.
-For each step: observe screen -> find equivalent target -> execute -> verify.
+Parameters: step text may contain ``{name}`` placeholders, filled from ``params``
+("replay send report to {name}" → ``params={"name": "Rahul"}``). Replays get the
+same preview, confirmation, dry-run, verification/retry and audit as any other plan.
 """
 
-import asyncio
-from typing import Dict, Any
+from __future__ import annotations
 
-from automation.config import automation_config
-from automation.automation_logger import log_action, automation_logger
-from automation.workflow_recorder import WorkflowStep, workflow_recorder
-from automation.action_executor import is_emergency_stopped
-from automation.screen_observer import screen_observer
-from automation.mouse_controller import mouse_controller
-from automation.keyboard_controller import keyboard_controller
-from automation.window_controller import window_controller
-from automation.application_controller import application_controller
-from automation.browser_controller import browser_controller
+import re
+from typing import Any, Dict, List, Optional
+
+from automation.gateway import ActionRequest, GatewayResult, gateway
+from automation.workflow_recorder import workflow_recorder
+
+_PLACEHOLDER = re.compile(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}")
+
+
+def fill_params(text: str, params: Dict[str, str]) -> str:
+    return _PLACEHOLDER.sub(lambda m: str(params.get(m.group(1), m.group(0))), text or "")
+
+
+def missing_params(steps: List[Dict[str, Any]], params: Dict[str, str]) -> List[str]:
+    names = set()
+    for s in steps:
+        for field in ("target", "value"):
+            names.update(_PLACEHOLDER.findall(str(s.get(field, ""))))
+    return sorted(n for n in names if n not in params)
 
 
 class WorkflowPlayer:
-    """Adaptively replays recorded workflows using Vision-guided targeting."""
+    def steps_for(self, name: str, params: Optional[Dict[str, str]] = None) -> Optional[List[Dict[str, Any]]]:
+        wf = workflow_recorder.load_workflow(name)
+        if wf is None:
+            return None
+        params = params or {}
+        steps = []
+        for st in wf.steps:
+            step: Dict[str, Any] = {
+                "action": {"left_click": "click", "type_text": "type", "press_key": "press", "fill_field": "fill",
+                           "switch_window": "focus_window"}.get(st.action, st.action),
+                "target": fill_params(st.target, params),
+                "value": fill_params(st.value, params),
+                "description": fill_params(st.description, params),
+            }
+            if st.x is not None and st.y is not None and not st.target:
+                step["x"], step["y"] = st.x, st.y
+            steps.append(step)
+        return steps
 
-    def __init__(self, dry_run: bool = False) -> None:
-        self.dry_run = dry_run or automation_config.DRY_RUN
+    def build_request(self, name: str, params: Optional[Dict[str, str]] = None) -> Optional[ActionRequest]:
+        steps = self.steps_for(name, params)
+        if steps is None:
+            return None
+        return ActionRequest("computer.run_plan", {"goal": f"Replay workflow '{name}'", "steps": steps}, description=f"Replay '{name}'")
 
-    async def replay(
-        self,
-        workflow_name: str,
-        adaptive: bool = True,
-    ) -> Dict[str, Any]:
-        """
-        Replay a named workflow.
-
-        Args:
-            workflow_name: Name of saved workflow to replay
-            adaptive:      If True, use Vision to find targets (ignores saved coordinates)
-                          If False, use saved coordinates directly (faster but fragile)
-        """
-        wf = workflow_recorder.load_workflow(workflow_name)
-        if not wf:
-            return {"success": False, "error": f"Workflow '{workflow_name}' not found."}
-
-        automation_logger.info(f"REPLAY START: '{wf.name}' ({len(wf.steps)} steps, adaptive={adaptive})")
-        results = []
-        failed_steps = []
-
-        for step in wf.steps:
-            if is_emergency_stopped():
-                automation_logger.warning("REPLAY ABORTED: Emergency stop triggered.")
-                break
-
-            log_action("player", f"step[{step.step_index}]",
-                      f"{step.action} -> {step.target or step.value}")
-
-            result = await self._execute_step(step, adaptive=adaptive)
-            results.append({
-                "step": step.step_index,
-                "action": step.action,
-                "target": step.target or step.value,
-                "success": result.get("success", False),
-                "error": result.get("error", ""),
-            })
-
-            if not result.get("success"):
-                failed_steps.append(step.step_index)
-                # Try recovery: re-observe and retry once
-                if adaptive:
-                    automation_logger.warning(
-                        f"Step {step.step_index} failed — attempting adaptive recovery..."
-                    )
-                    await asyncio.sleep(1.0)
-                    recovery = await self._execute_step(step, adaptive=True)
-                    if recovery.get("success"):
-                        results[-1]["success"] = True
-                        results[-1]["recovered"] = True
-                        failed_steps.pop()
-
-            # Brief pause between steps
-            await asyncio.sleep(automation_config.ACTION_DELAY)
-
-        # Update run statistics
-        wf.run_count += 1
-        import time
-        wf.last_run = time.time()
-        wf.success_rate = 1.0 - (len(failed_steps) / max(len(wf.steps), 1))
-        try:
-            workflow_recorder.save_workflow()
-        except Exception:
-            pass
-
-        success = len(failed_steps) == 0
-        automation_logger.info(
-            f"REPLAY DONE: '{wf.name}' | success={success} | "
-            f"failed_steps={failed_steps}"
-        )
-        return {
-            "success": success,
-            "workflow": wf.name,
-            "steps_total": len(wf.steps),
-            "steps_failed": len(failed_steps),
-            "failed_at": failed_steps,
-            "results": results,
-        }
-
-    async def _execute_step(
-        self, step: WorkflowStep, adaptive: bool = True
-    ) -> Dict[str, Any]:
-        """Execute a single workflow step, optionally using Vision to find targets."""
-        action = step.action.lower()
-
-        # ── Application open ─────────────────────────────────────────
-        if action == "open_app":
-            return await application_controller.open_app(step.target)
-
-        # ── Navigation ───────────────────────────────────────────────
-        if action == "navigate":
-            return await browser_controller.navigate(step.target or step.value)
-
-        # ── Click ────────────────────────────────────────────────────
-        if action in ("click", "left_click"):
-            if adaptive and step.target:
-                # Find target by text using OCR
-                loc = await screen_observer.find_text_location(step.target)
-                if loc:
-                    return await mouse_controller.click(loc[0], loc[1])
-                # Fall back to Vision
-                loc = await screen_observer.find_element_by_description(step.target)
-                if loc:
-                    return await mouse_controller.click(loc[0], loc[1])
-                return {"success": False, "error": f"Could not find target: '{step.target}'"}
-            elif step.x is not None and step.y is not None:
-                return await mouse_controller.click(step.x, step.y)
-            return {"success": False, "error": "No target or coordinates for click."}
-
-        # ── Double click ─────────────────────────────────────────────
-        if action == "double_click":
-            if adaptive and step.target:
-                loc = await screen_observer.find_text_location(step.target)
-                if loc:
-                    return await mouse_controller.double_click(loc[0], loc[1])
-            elif step.x and step.y:
-                return await mouse_controller.double_click(step.x, step.y)
-            return {"success": False, "error": "No target for double_click."}
-
-        # ── Typing ───────────────────────────────────────────────────
-        if action in ("type", "type_text"):
-            return await keyboard_controller.type_text(step.value)
-
-        # ── Key press ────────────────────────────────────────────────
-        if action in ("press", "press_key"):
-            return await keyboard_controller.press(step.value)
-
-        # ── Hotkey ───────────────────────────────────────────────────
-        if action == "hotkey":
-            keys = step.value.split("+") if "+" in step.value else [step.value]
-            return await keyboard_controller.hotkey(*keys)
-
-        # ── Scroll ───────────────────────────────────────────────────
-        if action == "scroll":
-            direction = step.value if step.value in ("up", "down") else "down"
-            amount = int(step.target) if step.target.isdigit() else 3
-            return await mouse_controller.scroll(amount, direction=direction)
-
-        # ── Focus window ─────────────────────────────────────────────
-        if action in ("focus_window", "switch_window"):
-            return await window_controller.focus_window(step.target)
-
-        # ── Fill field ───────────────────────────────────────────────
-        if action == "fill_field":
-            return await browser_controller.fill_field(step.target, step.value)
-
-        # ── Wait ─────────────────────────────────────────────────────
-        if action == "wait":
-            try:
-                secs = float(step.value or "1.0")
-                await asyncio.sleep(secs)
-                return {"success": True}
-            except ValueError:
-                return {"success": True}
-
-        automation_logger.warning(f"Unknown step action: '{action}' — skipping.")
-        return {"success": True, "skipped": True, "reason": f"Unknown action: {action}"}
+    async def replay(self, name: str, params: Optional[Dict[str, str]] = None, session_id: str = "default",
+                     dry_run: Optional[bool] = None, source: str = "workflow") -> GatewayResult:
+        req = self.build_request(name, params)
+        if req is None:
+            return GatewayResult("failed", f"Workflow '{name}' not found.")
+        missing = missing_params(req.args["steps"], params or {})
+        if missing:
+            return GatewayResult("failed", f"Workflow '{name}' needs values for: {', '.join(missing)}.")
+        result = await gateway.execute(req, session_id, dry_run=dry_run, source=source)
+        if result.status in ("executed", "failed"):
+            workflow_recorder.record_run(name, result.status == "executed")
+        return result
 
 
-# Global singleton
 workflow_player = WorkflowPlayer()
-

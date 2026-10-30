@@ -1,47 +1,71 @@
-﻿"""JARVIS Workflow Recorder — Records automation actions to replayable JSON files.
+﻿"""Workflow recorder v2 — workflows are human-editable YAML files in data/workflows/.
 
-Records: mouse clicks, keyboard, hotkeys, window changes, URLs, and screenshots.
-Saves to data/workflows/<name>.json in a Vision-replayable format.
+A workflow file looks like::
+
+    name: send report
+    description: Email the weekly report
+    params: [name]
+    triggers:
+      - {type: time, at: "17:30", days: [mon, tue, wed, thu, fri]}
+      - {type: file_created, folder: "~/Downloads", pattern: "*.pdf"}
+    steps:
+      - {action: open_app, target: outlook}
+      - {action: click, target: New Email}
+      - {action: type, value: "Hi {name}, here is the report."}
+
+Old ``.json`` recordings are still loaded. Steps are replayed through the gateway
+(see ``automation.workflow_player``).
 """
 
-import json
-import time
-from dataclasses import dataclass, field, asdict
-from typing import List, Optional, Dict, Any
+from __future__ import annotations
 
-from automation.config import automation_config
+import json
+import re
+import time
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+from automation.automation_logger import automation_logger, log_action
 from core.paths import data_dir
-from automation.automation_logger import log_action, automation_logger
 
 try:
-    import pyautogui
-    HAS_PYAUTOGUI = True
-except ImportError:
-    HAS_PYAUTOGUI = False
+    import yaml  # PyYAML (MIT)
+except ImportError:  # pragma: no cover - declared dependency
+    yaml = None
 
 
 @dataclass
 class WorkflowStep:
-    """A single recorded step in a workflow."""
     step_index: int
-    action: str                   # open_app | navigate | click | type | hotkey | press | scroll
-    target: str = ""              # Window title / URL / text / coordinates
-    value: str = ""               # Text typed, key name, scroll amount
-    x: Optional[int] = None       # Click X coordinate
-    y: Optional[int] = None       # Click Y coordinate
-    description: str = ""         # Human description of what this step does
+    action: str  # open_app | navigate | click | double_click | type | press | hotkey | scroll | wait | focus_window | fill
+    target: str = ""
+    value: str = ""
+    x: Optional[int] = None
+    y: Optional[int] = None
+    description: str = ""
     timestamp: float = field(default_factory=time.time)
-    screenshot_b64: str = ""      # Optional screenshot at this step
+    screenshot_b64: str = ""
+
+    def to_yaml_dict(self) -> Dict[str, Any]:
+        d: Dict[str, Any] = {"action": self.action}
+        for key in ("target", "value", "description"):
+            if getattr(self, key):
+                d[key] = getattr(self, key)
+        if self.x is not None and self.y is not None:
+            d["x"], d["y"] = self.x, self.y
+        return d
 
 
 @dataclass
 class Workflow:
-    """A complete recorded automation workflow."""
     name: str
     description: str = ""
     trigger_phrases: List[str] = field(default_factory=list)
     required_apps: List[str] = field(default_factory=list)
     steps: List[WorkflowStep] = field(default_factory=list)
+    params: List[str] = field(default_factory=list)
+    triggers: List[Dict[str, Any]] = field(default_factory=list)
     created_at: float = field(default_factory=time.time)
     run_count: int = 0
     last_run: float = 0.0
@@ -50,23 +74,57 @@ class Workflow:
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
+    def to_yaml_dict(self) -> Dict[str, Any]:
+        return {
+            "name": self.name,
+            "description": self.description,
+            "params": self.params,
+            "trigger_phrases": self.trigger_phrases,
+            "triggers": self.triggers,
+            "steps": [s.to_yaml_dict() for s in self.steps],
+            "stats": {"created_at": self.created_at, "run_count": self.run_count, "last_run": self.last_run,
+                      "success_rate": round(self.success_rate, 3)},
+        }
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Workflow":
-        steps = [WorkflowStep(**s) for s in data.pop("steps", [])]
-        wf = cls(**data)
+        data = dict(data)
+        stats = data.pop("stats", {}) or {}
+        raw_steps = data.pop("steps", []) or []
+        steps = []
+        for i, s in enumerate(raw_steps):
+            s = dict(s)
+            s.setdefault("step_index", i)
+            steps.append(WorkflowStep(**{k: v for k, v in s.items() if k in WorkflowStep.__dataclass_fields__}))
+        known = {k: v for k, v in data.items() if k in cls.__dataclass_fields__}
+        wf = cls(**known)
         wf.steps = steps
+        for k in ("created_at", "run_count", "last_run", "success_rate"):
+            if k in stats:
+                setattr(wf, k, stats[k])
+        if not wf.params:
+            found = set()
+            for s in steps:
+                found.update(re.findall(r"\{([a-zA-Z_]\w*)\}", f"{s.target} {s.value}"))
+            wf.params = sorted(found)
         return wf
 
 
-class WorkflowRecorder:
-    """Records user automation actions into replayable workflow files."""
+def _slug(name: str) -> str:
+    return re.sub(r"[^a-z0-9_]+", "_", name.lower().strip()).strip("_") or "workflow"
 
+
+class WorkflowRecorder:
     def __init__(self) -> None:
         self._is_recording = False
         self._current_workflow: Optional[Workflow] = None
         self._step_counter = 0
-        self._workflows_dir = data_dir() / "workflows"
-        self._workflows_dir.mkdir(parents=True, exist_ok=True)
+
+    @property
+    def workflows_dir(self) -> Path:
+        path = data_dir() / "workflows"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
 
     @property
     def is_recording(self) -> bool:
@@ -76,144 +134,103 @@ class WorkflowRecorder:
     def current_workflow(self) -> Optional[Workflow]:
         return self._current_workflow
 
-    def start_recording(
-        self,
-        name: str,
-        description: str = "",
-        trigger_phrases: Optional[List[str]] = None,
-    ) -> dict:
-        """Begin recording a new workflow."""
+    def start_recording(self, name: str, description: str = "", trigger_phrases: Optional[List[str]] = None) -> dict:
         if self._is_recording:
             return {"success": False, "error": "Already recording. Stop the current recording first."}
-
-        self._current_workflow = Workflow(
-            name=name,
-            description=description,
-            trigger_phrases=trigger_phrases or [name.lower()],
-        )
+        self._current_workflow = Workflow(name=name, description=description, trigger_phrases=trigger_phrases or [name.lower()])
         self._step_counter = 0
         self._is_recording = True
-
         automation_logger.info(f"RECORDING STARTED: '{name}'")
-        log_action("recorder", "start_recording", name)
         return {"success": True, "action": "start_recording", "workflow": name}
 
-    def record_step(
-        self,
-        action: str,
-        target: str = "",
-        value: str = "",
-        x: Optional[int] = None,
-        y: Optional[int] = None,
-        description: str = "",
-        include_screenshot: bool = False,
-    ) -> None:
-        """Record a single automation step during an active recording session."""
+    def record_step(self, action: str, target: str = "", value: str = "", x: Optional[int] = None,
+                    y: Optional[int] = None, description: str = "", include_screenshot: bool = False) -> None:
         if not self._is_recording or not self._current_workflow:
             return
-
-        screenshot_b64 = ""
-        if include_screenshot or automation_config.LOG_SCREENSHOTS:
-            try:
-                from automation.screen_observer import screen_observer
-                import io
-                import base64
-                img = screen_observer.capture()
-                if img:
-                    buf = io.BytesIO()
-                    img.save(buf, format="JPEG", quality=60)
-                    screenshot_b64 = base64.b64encode(buf.getvalue()).decode()
-            except Exception:
-                pass
-
-        step = WorkflowStep(
-            step_index=self._step_counter,
-            action=action,
-            target=target,
-            value=value,
-            x=x,
-            y=y,
-            description=description or f"{action} {target}".strip(),
-            screenshot_b64=screenshot_b64,
-        )
+        step = WorkflowStep(self._step_counter, action, target, value, x, y, description or f"{action} {target or value}".strip())
         self._current_workflow.steps.append(step)
         self._step_counter += 1
         log_action("recorder", action, target or value)
 
     def stop_recording(self) -> dict:
-        """Stop recording and return the completed workflow (not saved yet)."""
         if not self._is_recording or not self._current_workflow:
             return {"success": False, "error": "No active recording session."}
-
         self._is_recording = False
         steps = len(self._current_workflow.steps)
-        automation_logger.info(
-            f"RECORDING STOPPED: '{self._current_workflow.name}' ({steps} steps)"
-        )
-        return {
-            "success": True,
-            "action": "stop_recording",
-            "workflow": self._current_workflow.name,
-            "steps": steps,
-        }
+        automation_logger.info(f"RECORDING STOPPED: '{self._current_workflow.name}' ({steps} steps)")
+        return {"success": True, "action": "stop_recording", "workflow": self._current_workflow.name, "steps": steps}
+
+    def save(self, wf: Workflow) -> Path:
+        path = self.workflows_dir / f"{_slug(wf.name)}.yaml"
+        if yaml is not None:
+            path.write_text(yaml.safe_dump(wf.to_yaml_dict(), sort_keys=False, allow_unicode=True), encoding="utf-8")
+        else:
+            path = path.with_suffix(".json")
+            path.write_text(json.dumps(wf.to_dict(), indent=2), encoding="utf-8")
+        return path
 
     def save_workflow(self, name: Optional[str] = None) -> dict:
-        """Save the current recorded workflow to disk."""
         if not self._current_workflow:
             return {"success": False, "error": "No workflow to save."}
-
         wf = self._current_workflow
         if name:
             wf.name = name
-
-        filename = wf.name.lower().replace(" ", "_") + ".json"
-        path = self._workflows_dir / filename
-
         try:
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(wf.to_dict(), f, indent=2)
-            automation_logger.info(f"WORKFLOW SAVED: '{wf.name}' -> {path}")
-            return {
-                "success": True,
-                "action": "save_workflow",
-                "name": wf.name,
-                "path": str(path),
-                "steps": len(wf.steps),
-            }
-        except Exception as e:
-            return {"success": False, "error": str(e)}
+            path = self.save(wf)
+        except OSError as exc:
+            return {"success": False, "error": str(exc)}
+        automation_logger.info(f"WORKFLOW SAVED: '{wf.name}' -> {path}")
+        return {"success": True, "action": "save_workflow", "name": wf.name, "path": str(path), "steps": len(wf.steps)}
+
+    def _path_for(self, name: str) -> Optional[Path]:
+        slug = _slug(name)
+        for candidate in (f"{slug}.yaml", f"{slug}.yml", f"{slug}.json", f"{name}.json", f"{name}.yaml"):
+            path = self.workflows_dir / candidate
+            if path.exists():
+                return path
+        return None
 
     def list_workflows(self) -> List[str]:
-        """Return names of all saved workflow files."""
-        return [f.stem for f in self._workflows_dir.glob("*.json")]
+        names = set()
+        for path in self.workflows_dir.iterdir():
+            if path.suffix in (".yaml", ".yml", ".json"):
+                names.add(path.stem)
+        return sorted(names)
 
     def load_workflow(self, name: str) -> Optional[Workflow]:
-        """Load a workflow by name from disk."""
-        filename = name.lower().replace(" ", "_") + ".json"
-        path = self._workflows_dir / filename
-        if not path.exists():
-            # Try exact filename
-            path = self._workflows_dir / (name + ".json")
-        if not path.exists():
+        path = self._path_for(name)
+        if path is None:
             return None
         try:
-            with open(path, encoding="utf-8") as f:
-                data = json.load(f)
-            return Workflow.from_dict(data)
-        except Exception as e:
-            automation_logger.error(f"Failed to load workflow '{name}': {e}")
+            text = path.read_text(encoding="utf-8")
+            data = yaml.safe_load(text) if (path.suffix in (".yaml", ".yml") and yaml is not None) else json.loads(text)
+            return Workflow.from_dict(data or {})
+        except Exception as exc:
+            automation_logger.error(f"Failed to load workflow '{name}': {exc}")
             return None
 
+    def record_run(self, name: str, success: bool) -> None:
+        wf = self.load_workflow(name)
+        if wf is None:
+            return
+        total_ok = wf.success_rate * wf.run_count + (1 if success else 0)
+        wf.run_count += 1
+        wf.last_run = time.time()
+        wf.success_rate = total_ok / wf.run_count
+        try:
+            old = self._path_for(name)
+            new = self.save(wf)
+            if old is not None and old != new and old.suffix == ".json":
+                old.unlink()  # migrated to YAML
+        except OSError:
+            pass
+
     def delete_workflow(self, name: str) -> dict:
-        """Delete a saved workflow file."""
-        filename = name.lower().replace(" ", "_") + ".json"
-        path = self._workflows_dir / filename
-        if path.exists():
-            path.unlink()
-            return {"success": True, "deleted": name}
-        return {"success": False, "error": f"Workflow '{name}' not found."}
+        path = self._path_for(name)
+        if path is None:
+            return {"success": False, "error": f"Workflow '{name}' not found."}
+        path.unlink()
+        return {"success": True, "deleted": name}
 
 
-# Global singleton
 workflow_recorder = WorkflowRecorder()
-

@@ -26,7 +26,6 @@ else:  # Non-Windows: registry discovery is skipped, the package still imports.
 
 from core.paths import data_path
 
-from automation.config import automation_config
 from automation.automation_logger import log_action
 from automation.window_controller import window_controller
 
@@ -266,7 +265,7 @@ class ApplicationController:
     """Launch, detect, and control any application on the user's computer."""
 
     def __init__(self, dry_run: bool = False) -> None:
-        self.dry_run = dry_run or automation_config.DRY_RUN
+        self.dry_run = dry_run  # global dry-run is enforced by the gateway
         self.app_manager = dynamic_app_manager
 
     def is_running(self, process_name: str) -> bool:
@@ -381,13 +380,7 @@ class ApplicationController:
             return {"success": False, "error": str(e), "app": display_name}
 
     async def close_app(self, name: str, force: bool = False) -> dict:
-        """Close an application gracefully, or force-kill if needed."""
-        from automation.safety_manager import safety_manager
-        action_name = "close_app_force" if force else "close_window"
-        allowed, reason = safety_manager.is_allowed(action_name, name)
-        if not allowed:
-            return {"success": False, "error": f"Blocked by safety manager: {reason}"}
-
+        """Close an application window gracefully (force-killing is the gateway's process.kill op)."""
         log_action("app", "close", name, dry_run=self.dry_run)
         if self.dry_run:
             return {"success": True, "dry_run": True, "action": "close_app", "app": name}
@@ -399,20 +392,6 @@ class ApplicationController:
         win_res = await window_controller.close_window(display_name)
         if win_res["success"]:
             return {"success": True, "action": "close_app", "app": display_name}
-
-        # 2. Fallback to process kill if requested or window close failed
-        if HAS_PSUTIL and force:
-            clean_name = name.lower().replace(".exe", "")
-            killed = 0
-            for proc in psutil.process_iter(["name", "pid"]):
-                try:
-                    if clean_name in (proc.info["name"] or "").lower():
-                        proc.terminate()
-                        killed += 1
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
-                    pass
-            if killed > 0:
-                return {"success": True, "action": "close_app", "app": display_name, "killed_pids": killed}
 
         return {"success": win_res.get("success", False), "action": "close_app", "app": display_name}
 

@@ -1,8 +1,10 @@
 import uuid
+from collections import OrderedDict
 from typing import Dict, List, Optional
-from brain.brain_config import brain_config
+
 from brain.utils import estimate_token_count
-from brain.logger import logger
+from core.config import settings as brain_config
+from core.logging import logger
 from memory.short_term import short_term_memory
 from app.database.connection import db_manager
 
@@ -35,14 +37,19 @@ class ConversationManager:
     """Manages active conversation sessions, token bounds, session lifecycles, and SQLite persistence."""
 
     def __init__(self) -> None:
-        self._sessions: Dict[str, ConversationSession] = {}
+        # LRU-bounded: the oldest idle conversation is dropped from RAM (it stays in SQLite).
+        self._sessions: "OrderedDict[str, ConversationSession]" = OrderedDict()
 
     def get_or_create_session(self, session_id: Optional[str] = None) -> ConversationSession:
         """Retrieve existing session or spawn new session in memory."""
         sid = session_id or f"session_{uuid.uuid4().hex[:8]}"
         if sid not in self._sessions:
-            logger.info(f"Creating new conversation session object: '{sid}'")
+            logger.debug(f"Creating conversation session '{sid}'")
             self._sessions[sid] = ConversationSession(sid)
+            while len(self._sessions) > brain_config.MAX_SESSIONS:
+                old_sid, _ = self._sessions.popitem(last=False)
+                short_term_memory.forget_buffer(old_sid)
+        self._sessions.move_to_end(sid)
         return self._sessions[sid]
 
     async def get_or_create_session_async(self, session_id: Optional[str] = None) -> ConversationSession:

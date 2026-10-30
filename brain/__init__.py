@@ -9,16 +9,14 @@ from importlib import import_module
 from typing import Any
 
 _EXPORTS = {
-    "BrainManager": "brain.brain_manager",
-    "brain_manager": "brain.brain_manager",
-    "BrainExecutionOutput": "brain.brain_manager",
+    "Brain": "brain.pipeline",
+    "brain": "brain.pipeline",
+    "TurnResult": "brain.pipeline",
     "PersonalityManager": "brain.personality_manager",
     "personality_manager": "brain.personality_manager",
     "PersonalityType": "brain.personality_manager",
     "ConversationManager": "brain.conversation_manager",
     "conversation_manager": "brain.conversation_manager",
-    "ContextManager": "brain.context_manager",
-    "context_manager": "brain.context_manager",
 }
 
 __all__ = list(_EXPORTS)

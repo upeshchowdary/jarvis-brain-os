@@ -7,7 +7,7 @@ extracting Titles, Axes, Legends, and estimated series values into ChartData mod
 from typing import Any, Optional
 
 try:
-    from PIL import Image
+    from PIL import Image  # noqa: F401
     HAS_PIL = True
 except ImportError:
     HAS_PIL = False
@@ -40,7 +40,7 @@ class ChartReader:
         y_label = "Y-Axis / Value"
         legend = ["Series A", "Series B"]
 
-        lines = [l.strip() for l in (ocr_text or "").splitlines() if l.strip()]
+        lines = [ln.strip() for ln in (ocr_text or "").splitlines() if ln.strip()]
         if lines:
             title = lines[0]
 

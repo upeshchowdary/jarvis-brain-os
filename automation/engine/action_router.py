@@ -1,7 +1,7 @@
 """Hierarchical Action Router for JARVIS Automation Engine.
 
 Implements the 6-Level Action Hierarchy:
-Level 1: Direct API / Filesystem / Shell / Process
+Level 1: Direct API (open app, read file) — no shell, ever
 Level 2: DOM & Web Accessibility Locators (Playwright / Semantic Selectors)
 Level 3: Windows UI Automation (pywinauto native controls by Name/Id/Type)
 Level 4: Keyboard Navigation & Fast Clipboard Text Injection
@@ -14,7 +14,6 @@ from __future__ import annotations
 import asyncio
 import enum
 import os
-import re
 import time
 from dataclasses import dataclass, field
 from typing import Dict, Optional, Any
@@ -81,39 +80,6 @@ class ActionRouter:
                     target=target,
                     elapsed_ms=elapsed,
                     output_data=res,
-                )
-
-            elif atype == "system_control":
-                # Route to system_controller for volume, brightness, window, power, etc.
-                from automation.engine.system_controller import execute_system_action
-                sys_action = action.value or target
-                res = await execute_system_action(sys_action, target=action.parameters.get("target", ""), value=action.parameters.get("value", ""))
-                elapsed = (time.perf_counter() - start) * 1000
-                return ActionExecutionResult(
-                    success=res.get("success", False),
-                    level_used=ActionLevel.LEVEL_1_DIRECT_API,
-                    action_type=atype,
-                    target=target,
-                    elapsed_ms=elapsed,
-                    output_data=res.get("summary", ""),
-                    error=None if res.get("success") else res.get("summary", "System action failed"),
-                )
-
-            elif atype == "run_command" or atype == "shell":
-                proc = await asyncio.create_subprocess_shell(
-                    target,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                )
-                stdout, stderr = await proc.communicate()
-                elapsed = (time.perf_counter() - start) * 1000
-                return ActionExecutionResult(
-                    success=(proc.returncode == 0),
-                    level_used=ActionLevel.LEVEL_1_DIRECT_API,
-                    action_type=atype,
-                    target=target,
-                    elapsed_ms=elapsed,
-                    output_data=stdout.decode("utf-8", errors="replace"),
                 )
 
             elif atype == "read_file":
@@ -192,37 +158,18 @@ class ActionRouter:
         value = action.value
 
         if atype == "navigate":
-            import urllib.parse
-            clean_target = target.strip()
-            # Resolve common aliases and search queries
-            known_sites = {
-                "python compiler": "https://www.online-python.com/",
-                "python complier": "https://www.online-python.com/",
-                "online python compiler": "https://www.online-python.com/",
-                "python ide": "https://www.online-python.com/",
-                "raven": "https://raven.com",
-                "raven website": "https://raven.com",
-                "google": "https://www.google.com",
-                "youtube": "https://www.youtube.com",
-                "github": "https://github.com",
-                "chatgpt": "https://chatgpt.com",
-                "reddit": "https://reddit.com",
-                "wikipedia": "https://wikipedia.org",
-            }
-            target_low = re.sub(r"\b(website|page|site|webpage|in\s+it|in\s+browser)\b", "", clean_target.lower()).strip()
-            if target_low in known_sites:
-                url = known_sites[target_low]
-            elif clean_target.startswith("http://") or clean_target.startswith("https://"):
-                url = clean_target
-            elif "." in target_low and " " not in target_low:
-                url = f"https://{target_low}"
-            else:
-                url = f"https://www.google.com/search?q={urllib.parse.quote(target_low or clean_target)}"
+            from automation.web_utils import search_url, site_url
 
-            # 1. Drive active desktop browser window directly
+            url = site_url(target) or search_url(target)
+
+            # 1. OS default-browser handler (works even when no browser is open), then the active window
+            import webbrowser
             from automation.browser_controller import browser_controller
             try:
-                nav_res = await browser_controller.navigate(url)
+                opened = await asyncio.to_thread(webbrowser.open, url, 2)
+                if opened:
+                    await asyncio.sleep(1.2)  # let the page start loading before the next step
+                nav_res = {"success": True} if opened else await browser_controller.navigate(url)
                 if nav_res.get("success"):
                     elapsed = (time.perf_counter() - start) * 1000
                     return ActionExecutionResult(
@@ -253,11 +200,12 @@ class ActionRouter:
 
             elapsed = (time.perf_counter() - start) * 1000
             return ActionExecutionResult(
-                success=True,
+                success=False,
                 level_used=ActionLevel.LEVEL_2_DOM_WEB,
                 action_type=atype,
                 target=url,
                 elapsed_ms=elapsed,
+                error="Could not open the browser",
             )
 
         try:
@@ -355,45 +303,6 @@ class ActionRouter:
         target = action.target
         value = action.value
 
-        # ── Messaging dispatch: send_message routes to messaging_handler ──────
-        if atype == "send_message":
-            try:
-                from automation.engine.messaging_handler import (
-                    extract_messaging_intent, dispatch_message
-                )
-                # value contains the full original user instruction
-                full_query = value or target
-                contact, msg_text, app, subject = await extract_messaging_intent(full_query)
-                # target explicitly holds the app if set by planner
-                app_override = target.lower() if target.lower() in ("telegram", "whatsapp", "discord", "slack", "gmail", "email", "mail") else app
-
-                automation_logger.info(f"[ActionRouter] Messaging: app={app_override}, contact={contact}")
-                if not contact:
-                    elapsed = (time.perf_counter() - start) * 1000
-                    return ActionExecutionResult(
-                        success=False, level_used=ActionLevel.LEVEL_3_WINDOWS_UIA,
-                        action_type=atype, target=target, elapsed_ms=elapsed,
-                        error="Could not extract contact name or email from instruction",
-                    )
-
-                result = await dispatch_message(app_override, contact, msg_text, subject=subject)
-                elapsed = (time.perf_counter() - start) * 1000
-                return ActionExecutionResult(
-                    success=result.get("success", False),
-                    level_used=ActionLevel.LEVEL_3_WINDOWS_UIA,
-                    action_type=atype,
-                    target=target,
-                    elapsed_ms=elapsed,
-                    output_data=result.get("summary", ""),
-                    error=None if result.get("success") else result.get("summary", "Messaging failed"),
-                )
-            except Exception as e:
-                elapsed = (time.perf_counter() - start) * 1000
-                return ActionExecutionResult(
-                    success=False, level_used=ActionLevel.LEVEL_3_WINDOWS_UIA,
-                    action_type=atype, target=target, elapsed_ms=elapsed, error=str(e),
-                )
-
         def _sync_uia_exec():
             from pywinauto import Desktop
             from pywinauto.keyboard import send_keys
@@ -470,8 +379,16 @@ class ActionRouter:
                 # Fast injection: long text uses clipboard paste, short uses type_text
                 if len(value) > 20:
                     import pyperclip
+                    saved = None
+                    try:
+                        saved = pyperclip.paste()
+                    except Exception:
+                        pass
                     pyperclip.copy(value)
                     await keyboard_controller.hotkey("ctrl", "v")
+                    await asyncio.sleep(0.15)
+                    if saved is not None:
+                        pyperclip.copy(saved)
                 else:
                     await keyboard_controller.type_text(value)
 

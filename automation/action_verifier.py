@@ -115,7 +115,7 @@ class ActionVerifier:
 
         try:
             import numpy as np  # type: ignore
-            import cv2  # type: ignore
+            import cv2  # type: ignore  # noqa: F401
             prev_np = np.array(previous_screenshot.convert("RGB"))
             curr_np = np.array(current.convert("RGB"))
             if prev_np.shape != curr_np.shape:

@@ -23,3 +23,58 @@ All notable changes to JARVIS Brain OS. Baseline before the v3 upgrade: commit `
   opt-in (`pytest -m network`). Project ruff config bans `shell=True` / `os.system`.
 
 **Verify**: `python -m pytest -q` (Linux or Windows) and `python -c "import memory, brain"`.
+
+## Phases 1–3 — Safety gateway, intent routing, one architecture
+
+(Delivered together: the gateway, the router and the new LLM layer depend on each other.)
+
+**Phase 1 — Safety & security**
+- `automation/gateway.py` — **ActionGateway**, the only door to side effects. Every operation is registered with a
+  risk level (LOW / MEDIUM / HIGH), previewed, dry-run aware, confirmed (HIGH always; MEDIUM unless
+  `CONFIRM_MEDIUM_RISK=false`), audited to `data/audit.jsonl`, blocked by emergency stop, and can record an undo.
+  Pending confirmations are per session with a 60 s TTL; "yes/confirm/do it" runs them, anything else cancels.
+  Risk overrides in `data/risk_policy.json` can relax MEDIUM but never HIGH.
+- Operations live in the private package `automation/ops/` (`tests/test_gateway_isolation.py` fails if anything
+  else imports it, or if `shell=True` / `os.system` / `create_subprocess_shell` appears anywhere).
+- Shutdown/restart are scheduled with a 30 s delay and `cancel shutdown` support.
+- `process.kill`: exact executable-name or PID match only; never JARVIS's own process tree or protected system
+  processes; the confirmation lists the matched PIDs.
+- No free-form shell: the planner/LLM can't emit `run_command`; `shell.run_named` runs allow-listed argument lists.
+- Dry-run has one source of truth (`settings.DRY_RUN`) plus a per-request override passed to the gateway;
+  `POST /automation/execute {"dry_run": true}` returns the plan only.
+- API: binds 127.0.0.1, bearer token (auto-generated into `.env`) on every route except `/health`, CORS closed by
+  default, per-client rate limit, request IDs, docs hidden unless `DEBUG=true`.
+- Messaging: draft → preview → confirmation → open chat → unique exact contact match → chat-header verification →
+  send; clipboard restored; ambiguous contacts are listed; Discord/Slack say "not supported yet" (no WhatsApp
+  fallback); email opens a Gmail draft for the user to send; no `os.system`.
+- Prompt injection: web pages, file contents and screen text are passed as tool results inside
+  `<untrusted_data>` blocks, and once such content is in context side-effect tools are withdrawn for the rest of
+  the turn. `PRIVACY_MODE=local` keeps file/screen content on Ollama/LM Studio.
+
+**Phase 2 — Intent understanding that doesn't misfire**
+- `brain/router.py`: anchored whole-utterance command grammar (~60 rules) for unambiguous commands — no LLM, ~1 ms.
+- Everything else goes to the LLM agent with **native tool calling**. Questions/statements are only offered
+  read-only tools; side-effect tools are offered for imperative requests only. A `clarify` tool asks instead of guessing.
+- `tests/test_routing_negatives.py`: 120 benign questions (every query from the bug report included) — no
+  side-effect tool is selected, and an adversarial scripted LLM that *tries* to restart/kill/send cannot act.
+
+**Phase 3 — Consolidated architecture**
+- One LLM gateway `core/llm` (OpenAI-compatible: Gemini, Groq, OpenAI, Anthropic, OpenRouter, DeepSeek, Ollama,
+  LM Studio) with tool calling, streaming (text + tool-call deltas), retries/backoff on 429/5xx, fallback chain,
+  shared keep-alive client, async cached connectivity hint. Fixes the dead `stream()` and the Ollama "not found"
+  misdetection. LiteLLM not adopted (two PyPI compromises in 2026).
+- One config (`core/config.py`), one automation stack (engine plans → `computer.run_plan` gateway op), one tool
+  registry (`tools/`, 40+ tools with JSON schemas and risk levels), and a small pipeline (`brain/pipeline.py`)
+  replacing the 670-line `execute_cognitive_pipeline`.
+- Deleted duplicates/placeholders: legacy `system_controller` (read-only file helpers kept in
+  `automation/files_read.py`), `task_manager`, `action_executor`, `safety_manager`, `orchestrator`, `intent_engine`,
+  `model_manager`, `tool_router`, `planner`/`reasoning`/`reflection`/`knowledge` stubs, prompt stores, and the old
+  `tools/*_tool.py` (the old filesystem tool wrote files without any safety check).
+- Per-session state with LRU/TTL (`core/session.py`): model choice, vision cache — switching models in one
+  session no longer changes it for voice/CLI/API.
+- Memory: names only from explicit statements ("I am tired" ≠ name, names containing "a" work), stable sha1 keys,
+  DB initialised once, relevance-ranked & capped facts per turn, `remember / what do you know about me / forget`,
+  optional LLM durable-fact extraction in the background.
+- `.env.example` added (and allowed by `.gitignore`); `chat.py` streams and authenticates.
+
+**Verify**: `python -m pytest -q` (758 tests), `ruff check .`, then try `restart my pc` → confirmation → `yes`.

@@ -25,11 +25,11 @@ logger.add(
     level="INFO",
 )
 
-from voice.state import VoiceState, voice_state_manager
-from voice.voice_manager import voice_manager
-from app.database.connection import db_manager
-from memory.long_term import long_term_memory
-from memory.vector_memory import vector_memory
+from voice.state import VoiceState, voice_state_manager  # noqa: E402
+from voice.voice_manager import voice_manager  # noqa: E402
+from app.database.connection import db_manager  # noqa: E402
+from memory.long_term import long_term_memory  # noqa: E402
+from memory.vector_memory import vector_memory  # noqa: E402
 
 
 def draw_header() -> None:
