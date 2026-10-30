@@ -36,18 +36,29 @@ build-backend = "hatchling.build"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 python_files = "test_*.py"
+addopts = "-m 'not network'"
+markers = [
+    "network: needs live internet access (run with -m network)",
+]
 
 [tool.pyright]
 include = ["."]
 exclude = [".venv", "data", "**/__pycache__"]
-extraPaths = [
-    "C:/Users/UPESH CHOWDARY/AppData/Local/Programs/Python/Python313/Lib/site-packages",
-    "C:/Users/UPESH CHOWDARY/AppData/Local/Programs/Python/Python313/Lib/site-packages/win32",
-    "C:/Users/UPESH CHOWDARY/AppData/Local/Programs/Python/Python313/Lib/site-packages/win32/lib",
-    "C:/Users/UPESH CHOWDARY/AppData/Local/Programs/Python/Python313/Lib/site-packages/Pythonwin"
-]
 reportMissingImports = false
 reportMissingModuleSource = false
 typeCheckingMode = "off"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+extend-exclude = [".venv", "data", "logs"]
+
+[tool.ruff.lint]
+# Correctness defaults + bugbear strip check + bans on shell=True / os.system.
+select = ["E4", "E7", "E9", "F", "B005", "B006", "S602", "S604", "S605"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S"]

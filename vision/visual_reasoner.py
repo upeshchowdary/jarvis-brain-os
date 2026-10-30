@@ -10,7 +10,7 @@ v3: Removed deleted providers (groq.py, qwen.py, llava.py).
 from typing import Dict, Any, List, Optional
 from loguru import logger
 
-from brain.brain_config import brain_config
+from core.config import settings as brain_config
 from vision.providers.base import BaseVisionProvider
 from vision.providers.openai import OpenAIVisionProvider
 from vision.providers.gemini import GeminiVisionProvider

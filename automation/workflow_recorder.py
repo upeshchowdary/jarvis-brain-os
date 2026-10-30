@@ -4,15 +4,13 @@ Records: mouse clicks, keyboard, hotkeys, window changes, URLs, and screenshots.
 Saves to data/workflows/<name>.json in a Vision-replayable format.
 """
 
-import asyncio
 import json
 import time
-import uuid
 from dataclasses import dataclass, field, asdict
-from pathlib import Path
 from typing import List, Optional, Dict, Any
 
 from automation.config import automation_config
+from core.paths import data_dir
 from automation.automation_logger import log_action, automation_logger
 
 try:
@@ -67,7 +65,7 @@ class WorkflowRecorder:
         self._is_recording = False
         self._current_workflow: Optional[Workflow] = None
         self._step_counter = 0
-        self._workflows_dir = Path(automation_config.WORKFLOWS_DIR)
+        self._workflows_dir = data_dir() / "workflows"
         self._workflows_dir.mkdir(parents=True, exist_ok=True)
 
     @property
@@ -118,7 +116,8 @@ class WorkflowRecorder:
         if include_screenshot or automation_config.LOG_SCREENSHOTS:
             try:
                 from automation.screen_observer import screen_observer
-                import io, base64
+                import io
+                import base64
                 img = screen_observer.capture()
                 if img:
                     buf = io.BytesIO()

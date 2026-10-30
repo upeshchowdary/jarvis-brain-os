@@ -1,7 +1,7 @@
 """Unit tests for vision.ocr module."""
 
-from PIL import Image, ImageDraw, ImageFont
-from vision.ocr import ocr_engine, OCREngine
+from PIL import Image, ImageDraw
+from vision.ocr import ocr_engine
 from vision.environment import BoundingBox, OCRTextItem
 
 

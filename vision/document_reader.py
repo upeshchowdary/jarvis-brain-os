@@ -6,7 +6,7 @@ Sections, Paragraphs, Tables, and Footnotes into structured DocumentStructure mo
 
 import os
 import re
-from typing import List, Dict, Any, Optional
+from typing import List, Any
 from loguru import logger
 
 try:
@@ -15,7 +15,7 @@ try:
 except ImportError:
     HAS_PIL = False
 
-from vision.environment import DocumentStructure, TableCell, BoundingBox
+from vision.environment import DocumentStructure, TableCell
 
 
 class DocumentReader:

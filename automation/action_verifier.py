@@ -6,7 +6,6 @@ filesystem, and URL checks.
 
 import asyncio
 from pathlib import Path
-from typing import Optional
 
 from automation.config import automation_config
 from automation.automation_logger import log_action

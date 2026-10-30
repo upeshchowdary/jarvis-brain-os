@@ -9,7 +9,7 @@ from typing import Any, Dict, Optional
 import httpx
 from loguru import logger
 
-from brain.brain_config import brain_config
+from core.config import settings as brain_config
 from vision.providers.base import BaseVisionProvider
 
 _http_client: Optional[httpx.AsyncClient] = None

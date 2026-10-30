@@ -1,6 +1,6 @@
 """Reflection Engine for post-response self-critique, self-evaluation, and self-learning capabilities."""
 
-from typing import Dict, Any, List
+from typing import List
 from pydantic import BaseModel, Field
 from brain.logger import logger
 

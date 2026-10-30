@@ -4,11 +4,11 @@ Allows JARVIS Brain to trigger visual perception, desktop screenshot capture,
 OCR text reading, and UI element analysis as a registered tool.
 """
 
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 from brain.tool_router import BaseBrainTool
-from brain.logger import logger
+from core.logging import logger
 from vision.manager import vision_manager
-from vision.screen_analyzer import analyze_screen, grab_screenshot
+from vision.screen_analyzer import grab_screenshot
 from vision.ocr import ocr_engine
 from vision.ui_detector import ui_detector
 

@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import enum
 import time
-from typing import Callable, List, Optional, Any
+from typing import Callable, List, Optional
 from loguru import logger
 
 

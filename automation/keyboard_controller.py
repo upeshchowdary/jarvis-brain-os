@@ -5,7 +5,6 @@ Never types sensitive data into unknown fields.
 """
 
 import asyncio
-from typing import List
 
 from automation.config import automation_config
 from automation.automation_logger import log_action

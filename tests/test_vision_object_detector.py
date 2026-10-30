@@ -1,7 +1,7 @@
 """Unit tests for vision.object_detector module."""
 
 from PIL import Image, ImageDraw
-from vision.object_detector import object_detector, ObjectDetector
+from vision.object_detector import object_detector
 from vision.environment import DetectedObject
 
 

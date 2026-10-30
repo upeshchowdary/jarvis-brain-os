@@ -1,10 +1,10 @@
 """Chat Processing REST Endpoint delegating to BrainManager Framework."""
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter
 from typing import Dict, Any, Optional
 from pydantic import BaseModel, Field
 from brain.brain_manager import brain_manager, BrainExecutionOutput
-from app.database.connection import db_manager, DatabaseManager
+from app.database.connection import db_manager
 from app.database.models import ChatLogRecord
 
 router = APIRouter(tags=["Chat"])

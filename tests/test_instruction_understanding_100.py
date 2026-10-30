@@ -1,10 +1,9 @@
 """Comprehensive 100-Scenario Test Suite for JARVIS Brain Intent Understanding & Automation Planning."""
 
 import pytest
-import re
 from brain.intent_engine import intent_engine
-from automation.engine.planner import _detect_messaging_app, task_planner
-from automation.engine.messaging_handler import _detect_app_from_text, _heuristic_contact, _heuristic_message
+from automation.engine.planner import _detect_messaging_app
+from automation.engine.messaging_handler import _detect_app_from_text, _heuristic_contact
 
 
 # ══════════════════════════════════════════════════════════════════════════════

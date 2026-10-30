@@ -12,10 +12,12 @@ from __future__ import annotations
 import asyncio
 import queue
 import threading
-import time
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict
 from loguru import logger
-import pyttsx3
+try:
+    import pyttsx3
+except ImportError:  # optional [voice] dependency
+    pyttsx3 = None
 
 from voice.voice_config import voice_config
 from voice.state import VoiceState, voice_state_manager
@@ -37,10 +39,10 @@ class TextToSpeechEngine:
         self._stop_worker = threading.Event()
         self._lock = threading.Lock()
 
-        self._start_worker()
-
     def _start_worker(self) -> None:
-        """Starts dedicated background TTS synthesis thread."""
+        """Starts dedicated background TTS synthesis thread (lazily, on first speech)."""
+        if self._worker_thread is not None and self._worker_thread.is_alive():
+            return
         self._stop_worker.clear()
         self._worker_thread = threading.Thread(target=self._speech_worker, daemon=True, name="JARVIS-TTS")
         self._worker_thread.start()
@@ -83,6 +85,7 @@ class TextToSpeechEngine:
         if priority:
             self.stop()
 
+        self._start_worker()
         self._queue.put(cleaned_text)
 
     async def speak_async(self, text: str, wait_for_completion: bool = True) -> None:
@@ -92,6 +95,7 @@ class TextToSpeechEngine:
 
         cleaned_text = self._prepare_concise_text(text)
         self.stop()
+        self._start_worker()
         self._queue.put(cleaned_text)
 
         if wait_for_completion:
@@ -138,6 +142,8 @@ class TextToSpeechEngine:
     def _speech_worker(self) -> None:
         """Background thread executing speech via pyttsx3."""
         try:
+            if pyttsx3 is None:
+                raise RuntimeError("pyttsx3 is not installed (pip install .[voice])")
             engine = pyttsx3.init()
         except Exception as e:
             logger.error(f"[TTS] Engine initialization failed: {e}")

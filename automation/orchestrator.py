@@ -7,23 +7,21 @@ Routes:
   - Special commands → recording, replay, screenshot, etc.
 """
 
-import asyncio
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from automation.config import automation_config
-from automation.automation_logger import automation_logger, log_action
+from automation.automation_logger import automation_logger
 from automation.action_executor import (
     trigger_emergency_stop,
     clear_emergency_stop,
     is_emergency_stopped,
 )
-from automation.task_manager import task_manager, AutomationTask, TaskStatus
+from automation.task_manager import task_manager, TaskStatus
 from automation.workflow_recorder import workflow_recorder
 from automation.workflow_player import workflow_player
 from automation.screen_observer import screen_observer
-from automation.safety_manager import safety_manager
 
 
 @dataclass

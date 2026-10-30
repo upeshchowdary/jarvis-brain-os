@@ -10,7 +10,7 @@ import json
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Any
+from typing import List, Optional, Any
 
 from automation.automation_logger import automation_logger
 from automation.engine.action_router import ActionLevel, ActionSpec

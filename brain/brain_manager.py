@@ -6,10 +6,9 @@ Refactored with Fast Pipeline Routing:
 
 import asyncio
 import time
-from typing import Dict, Any, Optional, List, AsyncGenerator
+from typing import Dict, Any, Optional, List
 from pydantic import BaseModel, Field
 
-from brain.brain_config import brain_config
 from brain.logger import logger
 from brain.model_manager import model_manager, ModelManager
 from brain.personality_manager import personality_manager, PersonalityManager
@@ -23,7 +22,7 @@ from brain.reflection_engine import reflection_engine, ReflectionEngine, Reflect
 from brain.tool_router import tool_router, ToolRouter, ToolCallSpec
 from brain.knowledge_manager import knowledge_manager, KnowledgeManager
 from memory.long_term import long_term_memory, LongTermMemoryManager
-from memory.vector_memory import vector_memory, VectorMemoryManager
+from memory.vector_memory import vector_memory
 from app.database.connection import db_manager
 
 # Ensure active tools module is imported and registered
@@ -499,7 +498,7 @@ class BrainManager:
                         final_response_text = f"⚠️ Could not inspect item: {insp_res.get('error')}"
 
                 else:
-                    final_response_text = f"I understood your filesystem request but couldn't determine the exact operation. Could you clarify what you'd like to do?"
+                    final_response_text = "I understood your filesystem request but couldn't determine the exact operation. Could you clarify what you'd like to do?"
 
                 self.conversation_manager.add_assistant_message(session.session_id, final_response_text)
                 elapsed_ms = (time.perf_counter() - start_time) * 1000
@@ -660,7 +659,7 @@ class BrainManager:
 
         if vector_docs:
             v_str_list = [f"- {d.content}" for d in vector_docs]
-            memory_block.append(f"[RELEVANT SEMANTIC MEMORIES]:\n" + "\n".join(v_str_list))
+            memory_block.append("[RELEVANT SEMANTIC MEMORIES]:\n" + "\n".join(v_str_list))
 
         if past_conversations:
             past_str_list = []
@@ -670,7 +669,7 @@ class BrainManager:
                 r_text = str(p.get("response_text", ""))[:200]
                 past_str_list.append(f"- [{dt_str}]: User: '{q_text}' -> JARVIS: '{r_text}'")
             if past_str_list:
-                memory_block.append(f"[HISTORICAL PAST CHATS]:\n" + "\n".join(past_str_list))
+                memory_block.append("[HISTORICAL PAST CHATS]:\n" + "\n".join(past_str_list))
 
         if memory_block:
             system_persona += "\n\n" + "\n\n".join(memory_block)

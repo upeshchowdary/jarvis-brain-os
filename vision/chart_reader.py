@@ -4,8 +4,7 @@ Interprets Pie charts, Line graphs, Bar charts, Scatter plots, and Heat maps,
 extracting Titles, Axes, Legends, and estimated series values into ChartData models.
 """
 
-from typing import Dict, Any, List, Optional
-from loguru import logger
+from typing import Any, Optional
 
 try:
     from PIL import Image

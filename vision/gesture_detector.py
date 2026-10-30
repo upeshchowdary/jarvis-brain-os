@@ -4,7 +4,7 @@ Recognizes hand tracking gestures (raised hand, pointing, thumbs up, open palm, 
 and hand side attributes (left/right).
 """
 
-from typing import List, Dict, Any, Optional
+from typing import List, Any
 from loguru import logger
 
 try:

@@ -8,17 +8,15 @@ from brain.prompt_manager import prompt_manager
 from brain.context_manager import context_manager
 from brain.conversation_manager import conversation_manager
 from brain.intent_engine import intent_engine
-from brain.reasoning_engine import reasoning_engine
 from brain.planner import planner
 from brain.reflection_engine import reflection_engine
-from brain.tool_router import tool_router, BaseBrainTool
-from brain.knowledge_manager import knowledge_manager
+from brain.tool_router import tool_router
 from brain.brain_manager import brain_manager
 
 
 def test_brain_config():
     assert brain_config.SYSTEM_NAME == "JARVIS"
-    assert brain_config.DEFAULT_MODEL == "gemini-3.5-flash-lite"
+    assert brain_config.DEFAULT_MODEL == "gemini/gemini-3.5-flash-lite"
 
 
 def test_model_manager_list():

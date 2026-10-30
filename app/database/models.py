@@ -1,7 +1,7 @@
 """Database Models and Table Definitions for SQLite persistence."""
 
 from datetime import datetime, timezone
-from typing import Optional, Dict, Any
+from typing import Optional
 from pydantic import BaseModel, Field
 
 

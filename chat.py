@@ -1,9 +1,7 @@
 """Interactive Terminal Chat Interface for JARVIS AI Operating System."""
 
-import sys
 import asyncio
 import httpx
-import json
 
 BASE_URL = "http://127.0.0.1:8000"
 

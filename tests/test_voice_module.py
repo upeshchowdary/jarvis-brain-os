@@ -3,10 +3,8 @@
 import pytest
 import struct
 import math
-from unittest.mock import MagicMock, patch
 
-from voice.state import VoiceState, VoiceStateManager, voice_state_manager
-from voice.voice_config import voice_config
+from voice.state import VoiceState, VoiceStateManager
 from voice.audio_capture import AudioCaptureManager
 from voice.vad import VoiceActivityDetector
 from voice.wake_word import WakeWordDetector
@@ -14,7 +12,6 @@ from voice.normalizer import CommandNormalizer
 from voice.tts import TextToSpeechEngine
 from voice.barge_in import BargeInMonitor
 from brain.intent_engine import intent_engine
-from automation.engine.planner import task_planner
 
 
 # ══════════════════════════════════════════════════════════════════════════════

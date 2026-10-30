@@ -13,9 +13,12 @@ import asyncio
 import io
 import wave
 import time
-from typing import Optional, Dict, Any
+from typing import Dict, Any
 from loguru import logger
-import speech_recognition as sr
+try:
+    import speech_recognition as sr
+except ImportError:  # optional [voice] dependency
+    sr = None
 
 from voice.voice_config import voice_config
 from voice.state import VoiceState, voice_state_manager
@@ -26,13 +29,13 @@ class SpeechToTextEngine:
     """Orchestrates audio transcription across cloud and local STT providers."""
 
     def __init__(self) -> None:
-        self.recognizer = sr.Recognizer()
+        self.recognizer = sr.Recognizer() if sr else None
         self.sample_rate = voice_config.SAMPLE_RATE
         self.primary_language = voice_config.STT_LANGUAGE
         self.fallback_language = voice_config.STT_FALLBACK_LANGUAGE
         self.timeout = voice_config.STT_TIMEOUT_SECONDS
 
-    def raw_audio_to_audiodata(self, raw_audio: bytes) -> sr.AudioData:
+    def raw_audio_to_audiodata(self, raw_audio: bytes):
         """Wraps raw 16-bit PCM bytes into SpeechRecognition AudioData object."""
         return sr.AudioData(raw_audio, self.sample_rate, 2)
 

@@ -1,10 +1,9 @@
 """Health Check REST Endpoint."""
 
 from datetime import datetime, timezone
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter
 from typing import Dict, Any
 from app.config.settings import settings
-from app.llm.factory import LLMFactory
 
 from brain.brain_manager import brain_manager
 

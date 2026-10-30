@@ -5,9 +5,10 @@ from app.config.settings import settings, LLMProviderType
 
 def test_default_settings_values():
     assert settings.APP_NAME == "JARVIS Brain Engine"
-    assert settings.LLM_PROVIDER in LLMProviderType
-    assert settings.LLM_TEMPERATURE >= 0.0
-    assert settings.LLM_MAX_TOKENS > 0
+    assert settings.DEFAULT_MODEL.split("/", 1)[0] in {p.value for p in LLMProviderType}
+    assert settings.TEMPERATURE >= 0.0
+    assert settings.MAX_TOKENS > 0
+    assert settings.HOST == "127.0.0.1"
 
 
 def test_api_key_resolver():

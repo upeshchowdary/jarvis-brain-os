@@ -7,7 +7,6 @@ All actions support:
 """
 
 import asyncio
-import time
 from typing import Tuple, Optional
 
 from automation.config import automation_config

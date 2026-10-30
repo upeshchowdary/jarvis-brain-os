@@ -3,7 +3,6 @@
 Provides HTTP access to the automation system for testing and integration.
 """
 
-import asyncio
 from typing import Any, Dict, Optional
 from fastapi import APIRouter
 from pydantic import BaseModel, Field

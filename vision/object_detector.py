@@ -4,8 +4,7 @@ Detects physical objects (Laptop, Phone, Monitor, Keyboard, Mouse, Bottle, Chair
 Person, Book, TV, Bag, Clock) with bounding boxes, categories, and confidence metrics.
 """
 
-import uuid
-from typing import List, Dict, Any, Optional
+from typing import List, Any
 from loguru import logger
 
 try:

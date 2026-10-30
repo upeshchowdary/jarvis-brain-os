@@ -332,7 +332,6 @@ Be specific. Use exact app names and URLs when possible."""
         from automation.browser_controller import browser_controller
         from automation.system_controller import system_controller
         from automation.screen_observer import screen_observer
-        from automation.action_executor import action_executor
 
         step_results = []
 

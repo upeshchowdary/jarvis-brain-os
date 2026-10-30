@@ -4,7 +4,7 @@ Re-exports core environment models and defines structured output schema formats
 for JARVIS Vision perception results.
 """
 
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 from pydantic import BaseModel, Field
 
 from vision.environment import (

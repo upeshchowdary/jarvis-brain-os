@@ -1,7 +1,7 @@
 """Intent Engine for classifying structured user intents and extracted parameters."""
 
 import re
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any
 from pydantic import BaseModel, Field
 from brain.brain_config import brain_config
 

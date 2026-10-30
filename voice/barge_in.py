@@ -8,10 +8,9 @@ Features:
 
 from __future__ import annotations
 
-import asyncio
 import threading
 import time
-from typing import List, Optional
+from typing import Optional
 from loguru import logger
 
 from voice.voice_config import voice_config

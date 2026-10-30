@@ -1,7 +1,7 @@
 """Voice Subsystem REST Endpoints for JARVIS."""
 
-from fastapi import APIRouter, HTTPException, UploadFile, File
-from typing import Dict, Any, List, Optional
+from fastapi import APIRouter, HTTPException
+from typing import Dict, Any
 from pydantic import BaseModel, Field
 
 from voice import (
@@ -9,7 +9,6 @@ from voice import (
     voice_state_manager,
     audio_capture,
     tts_engine,
-    stt_engine,
     voice_config,
 )
 

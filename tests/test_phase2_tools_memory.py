@@ -2,7 +2,6 @@
 
 import pytest
 from tools.search_tool import InternetSearchTool
-from tools.scraper_tool import WebScraperTool
 from tools.filesystem_tool import FileSystemTool
 from tools.system_tool import SystemInfoTool
 from memory.short_term import short_term_memory
@@ -10,6 +9,7 @@ from memory.long_term import long_term_memory
 from memory.vector_memory import vector_memory
 
 
+@pytest.mark.network
 @pytest.mark.asyncio
 async def test_internet_search_tool():
     tool = InternetSearchTool()

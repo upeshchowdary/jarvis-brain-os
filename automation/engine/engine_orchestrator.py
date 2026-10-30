@@ -6,16 +6,15 @@ OBSERVE -> PLAN -> ACT -> VERIFY -> (RECOVER) -> ADAPT -> COMPLETE
 
 from __future__ import annotations
 
-import asyncio
 import time
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Any
+from typing import Dict, Any
 
 from automation.automation_logger import automation_logger
-from automation.engine.action_router import action_router, ActionLevel, ActionSpec
+from automation.engine.action_router import action_router
 from automation.engine.context_memory import execution_memory
 from automation.engine.perception import perception_engine
-from automation.engine.planner import task_planner, TaskGraph, TaskNode
+from automation.engine.planner import task_planner
 from automation.engine.recovery import recovery_engine
 from automation.engine.verification import verification_engine
 

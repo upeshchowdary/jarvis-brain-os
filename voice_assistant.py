@@ -14,9 +14,7 @@ Features:
 from __future__ import annotations
 
 import asyncio
-import os
 import sys
-import time
 from loguru import logger
 
 # Configure clean console logging
@@ -29,8 +27,6 @@ logger.add(
 
 from voice.state import VoiceState, voice_state_manager
 from voice.voice_manager import voice_manager
-from voice.audio_capture import audio_capture
-from voice.voice_config import voice_config
 from app.database.connection import db_manager
 from memory.long_term import long_term_memory
 from memory.vector_memory import vector_memory

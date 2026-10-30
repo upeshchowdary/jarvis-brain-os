@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends
 from typing import Dict, Any
 from app.api.dependencies import get_database_manager
 from app.database.connection import DatabaseManager
-from app.tools.registry import tool_registry
+from brain.tool_router import tool_router
 
 router = APIRouter(tags=["Status"])
 
@@ -15,7 +15,7 @@ async def get_system_status(
 ) -> Dict[str, Any]:
     """Return execution metrics, registered tool count, and recent chat history logs."""
     recent_logs = await db.get_recent_logs(limit=10)
-    registered_tools = tool_registry.list_tools()
+    registered_tools = [t["name"] for t in tool_router.discover_tools()]
 
     return {
         "active_modules": [

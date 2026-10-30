@@ -4,7 +4,7 @@ Detects facial regions, head orientation, eye gaze direction, attention scores,
 and expression states without storing or matching user identity PII.
 """
 
-from typing import List, Dict, Any, Optional
+from typing import List, Any
 from loguru import logger
 
 try:

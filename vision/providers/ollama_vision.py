@@ -19,7 +19,7 @@ import httpx
 from loguru import logger
 
 from vision.providers.base import BaseVisionProvider
-from brain.brain_config import brain_config
+from core.config import settings as brain_config
 
 
 # Model names that indicate multimodal support

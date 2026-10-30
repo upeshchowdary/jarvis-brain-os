@@ -14,8 +14,6 @@ Integrates:
 from __future__ import annotations
 
 import asyncio
-import threading
-import time
 from typing import Optional, Dict, Any, Callable
 from loguru import logger
 
@@ -24,12 +22,10 @@ from voice.state import VoiceState, voice_state_manager
 from voice.audio_capture import audio_capture
 from voice.vad import vad_detector
 from voice.wake_word import wake_word_detector
-from voice.normalizer import command_normalizer
 from voice.stt import stt_engine
 from voice.tts import tts_engine
 from voice.barge_in import barge_in_monitor
 from brain.brain_manager import brain_manager, BrainExecutionOutput
-from automation.action_executor import trigger_emergency_stop
 
 
 class VoiceManager:

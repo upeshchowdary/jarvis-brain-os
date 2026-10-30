@@ -10,12 +10,12 @@ import aiosqlite
 import re
 from enum import Enum
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Dict, List, Optional
 from datetime import datetime, timezone
 from pydantic import BaseModel, Field
 
-from brain.brain_config import brain_config
-from brain.logger import logger
+from core.logging import logger
+from core.paths import data_path
 
 
 class MemoryCategory(str, Enum):
@@ -43,7 +43,7 @@ class LongTermMemoryManager:
     """Stores persistent user facts, key-value preferences, and system memories in SQLite."""
 
     def __init__(self, db_path: Optional[Path] = None) -> None:
-        self.db_path = db_path or (brain_config.base_dir / "data" / "jarvis_memory.db")
+        self.db_path = db_path or data_path("jarvis_memory.db")
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
     async def init_db(self) -> None:

@@ -1,8 +1,7 @@
 """Reasoning Engine responsible for step-by-step cognitive analysis without executing tools."""
 
-from typing import List, Dict, Any
+from typing import List
 from brain.prompt_manager import prompt_manager
-from brain.utils import extract_and_clean_json
 from brain.logger import logger
 
 

@@ -10,9 +10,8 @@ Wraps the existing FileSystemTool and adds:
 import asyncio
 import os
 import shutil
-import subprocess
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Optional
 
 from automation.config import automation_config
 from automation.automation_logger import log_action

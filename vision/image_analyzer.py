@@ -4,7 +4,7 @@ Calculates dominant RGB/HEX colors, brightness score, contrast ratio, 4-corner p
 visual complexity, edge density, quadrant breakdowns, and visual warning detection.
 """
 
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, Tuple
 from loguru import logger
 
 try:

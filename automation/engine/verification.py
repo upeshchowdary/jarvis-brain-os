@@ -15,7 +15,7 @@ import asyncio
 import os
 import time
 from dataclasses import dataclass
-from typing import Optional, Dict, Any, Callable, Awaitable
+from typing import Optional, Callable, Awaitable
 
 from automation.automation_logger import automation_logger
 

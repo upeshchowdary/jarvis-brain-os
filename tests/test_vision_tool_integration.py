@@ -2,20 +2,16 @@
 
 import pytest
 import json
-from unittest.mock import MagicMock, AsyncMock, patch, call
+from unittest.mock import MagicMock, AsyncMock, patch
 from PIL import Image
 
 from tools.vision_tool import ScreenVisionTool
 from brain.tool_router import tool_router, ToolCallSpec
 from brain.model_manager import model_manager
-from brain.intent_engine import intent_engine, IntentEngine
-from brain.brain_config import brain_config
-from vision.manager import vision_manager, VisionManager
-from vision.providers.base import BaseVisionProvider
+from brain.intent_engine import IntentEngine
 from vision.providers.gemini import GeminiVisionProvider
 from vision.providers.ollama_vision import OllamaVisionProvider
 from vision.environment import EnvironmentState, UIElement, OCRTextItem, BoundingBox
-from vision.schemas import StructuredVisionResult
 from vision.screen_preprocessor import (
     preprocess_screen,
     build_enriched_prompt,

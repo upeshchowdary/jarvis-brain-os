@@ -4,7 +4,7 @@ import re
 import httpx
 from typing import Dict, Any
 from brain.tool_router import BaseBrainTool
-from brain.logger import logger
+from core.logging import logger
 
 
 class WebScraperTool(BaseBrainTool):

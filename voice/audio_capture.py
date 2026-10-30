@@ -10,13 +10,12 @@ Features:
 
 from __future__ import annotations
 
-import asyncio
 import collections
 import math
 import struct
 import threading
 import time
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Any
 from loguru import logger
 
 from voice.state import VoiceState, voice_state_manager

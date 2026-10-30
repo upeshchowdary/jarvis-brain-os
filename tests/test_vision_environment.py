@@ -8,10 +8,6 @@ from vision.environment import (
     UIElementType,
     UIElement,
     OCRTextItem,
-    DetectedObject,
-    FaceState,
-    GestureType,
-    GestureState,
     EnvironmentState,
 )
 

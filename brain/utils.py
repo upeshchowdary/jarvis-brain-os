@@ -4,7 +4,7 @@ import re
 import json
 import socket
 from datetime import datetime, timezone
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 
 
 def is_internet_available(host: str = "8.8.8.8", port: int = 53, timeout: float = 1.0) -> bool:

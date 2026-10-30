@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import re
 import time
-from typing import List, Optional, Tuple
+from typing import Tuple
 from loguru import logger
 
 from voice.voice_config import voice_config

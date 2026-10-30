@@ -1,6 +1,6 @@
 """Personality Manager for managing system personas and system prompt style injection."""
 
-from typing import Dict, Any, Optional
+from typing import Dict, Optional
 from brain.brain_config import brain_config, PersonalityType
 from brain.logger import logger
 

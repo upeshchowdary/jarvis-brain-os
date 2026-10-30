@@ -22,7 +22,7 @@ import asyncio
 import os
 import subprocess
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from automation.automation_logger import automation_logger
 
@@ -73,7 +73,8 @@ def set_volume_via_keys(direction: str, steps: int = 5) -> bool:
     try:
         import pyautogui
         pyautogui.FAILSAFE = False
-        import win32api, win32con
+        import win32api
+        import win32con
         VK_VOLUME_UP   = 0xAF
         VK_VOLUME_DOWN = 0xAE
         VK_VOLUME_MUTE = 0xAD
@@ -195,7 +196,8 @@ def window_action(title_fragment: str, action: str) -> bool:
 def minimize_active_window() -> bool:
     """Minimize the currently active/focused window."""
     try:
-        import win32gui, win32con
+        import win32gui
+        import win32con
         hwnd = win32gui.GetForegroundWindow()
         win32gui.ShowWindow(hwnd, win32con.SW_MINIMIZE)
         return True
@@ -212,7 +214,8 @@ def minimize_active_window() -> bool:
 def maximize_active_window() -> bool:
     """Maximize the currently active window."""
     try:
-        import win32gui, win32con
+        import win32gui
+        import win32con
         hwnd = win32gui.GetForegroundWindow()
         win32gui.ShowWindow(hwnd, win32con.SW_MAXIMIZE)
         return True
@@ -229,7 +232,8 @@ def maximize_active_window() -> bool:
 def close_active_window() -> bool:
     """Close the currently active window (Alt+F4)."""
     try:
-        import win32gui, win32con
+        import win32gui
+        import win32con
         hwnd = win32gui.GetForegroundWindow()
         win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
         return True
@@ -624,7 +628,7 @@ async def execute_system_action(action_type: str, target: str = "", value: str =
             ok = await loop.run_in_executor(None, lambda: window_action(target, "minimize"))
         else:
             ok = await loop.run_in_executor(None, minimize_active_window)
-        return {"success": ok, "summary": f"Window minimized"}
+        return {"success": ok, "summary": "Window minimized"}
     if a == "maximize_window":
         if t and t not in ("this", "current", "active", "window", ""):
             ok = await loop.run_in_executor(None, lambda: window_action(target, "maximize"))
@@ -747,7 +751,7 @@ async def execute_system_action(action_type: str, target: str = "", value: str =
         return {"success": ok, "summary": f"Settings opened{': ' + (target or v) if (target or v) else ''}"}
     if a == "open_file_explorer":
         ok = await loop.run_in_executor(None, lambda: open_file_explorer(target or v))
-        return {"success": ok, "summary": f"File Explorer opened"}
+        return {"success": ok, "summary": "File Explorer opened"}
     if a == "empty_recycle_bin":
         ok = await loop.run_in_executor(None, empty_recycle_bin)
         return {"success": ok, "summary": "Recycle Bin emptied"}

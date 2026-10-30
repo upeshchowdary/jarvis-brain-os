@@ -1,12 +1,11 @@
 """Async SQLite Database Connection and Telemetry Persistence Manager."""
 
-import sqlite3
 import aiosqlite
 from pathlib import Path
 from typing import Optional, List, Dict, Any
-from app.config.settings import settings
 from app.database.models import ChatLogRecord
 from app.utils.logger import logger
+from core.paths import data_path
 from app.utils.exceptions import DatabaseError
 
 
@@ -14,7 +13,7 @@ class DatabaseManager:
     """Async SQLite Database Connection Manager for telemetry and metrics storage."""
 
     def __init__(self, db_path: Optional[Path] = None) -> None:
-        self.db_path = db_path or (settings.base_dir / "data" / "jarvis.db")
+        self.db_path = db_path or data_path("jarvis.db")
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
     async def init_db(self) -> None:

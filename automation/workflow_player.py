@@ -5,12 +5,12 @@ For each step: observe screen -> find equivalent target -> execute -> verify.
 """
 
 import asyncio
-from typing import Optional, Dict, Any, List
+from typing import Dict, Any
 
 from automation.config import automation_config
 from automation.automation_logger import log_action, automation_logger
-from automation.workflow_recorder import Workflow, WorkflowStep, workflow_recorder
-from automation.action_executor import action_executor, is_emergency_stopped
+from automation.workflow_recorder import WorkflowStep, workflow_recorder
+from automation.action_executor import is_emergency_stopped
 from automation.screen_observer import screen_observer
 from automation.mouse_controller import mouse_controller
 from automation.keyboard_controller import keyboard_controller

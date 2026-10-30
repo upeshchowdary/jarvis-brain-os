@@ -16,9 +16,8 @@ import enum
 import os
 import re
 import time
-import urllib.parse
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Dict, Optional, Any
 
 from automation.automation_logger import automation_logger
 

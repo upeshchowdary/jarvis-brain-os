@@ -1,7 +1,7 @@
 """Tool Router Infrastructure for tool registration, tool discovery, and JSON tool calling."""
 
 from abc import ABC, abstractmethod
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any
 from pydantic import BaseModel, Field
 from brain.logger import logger
 

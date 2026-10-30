@@ -2,9 +2,12 @@
 
 import asyncio
 from typing import Dict, Any, List
-from ddgs import DDGS
+try:
+    from ddgs import DDGS
+except ImportError:  # optional dependency
+    DDGS = None
 from brain.tool_router import BaseBrainTool
-from brain.logger import logger
+from core.logging import logger
 from brain.utils import is_internet_available
 
 

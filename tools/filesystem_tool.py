@@ -1,11 +1,9 @@
 """Workspace File System Tool for reading, writing, and listing project files safely."""
 
-import os
-from pathlib import Path
-from typing import Dict, Any, List
+from typing import Dict, Any
 from brain.tool_router import BaseBrainTool
-from brain.brain_config import brain_config
-from brain.logger import logger
+from core.config import settings as brain_config
+from core.logging import logger
 
 
 class FileSystemTool(BaseBrainTool):

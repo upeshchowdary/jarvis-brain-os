@@ -2,10 +2,7 @@
 
 # pyrefly: ignore [missing-import]
 import pytest
-import asyncio
 from app.database.connection import DatabaseManager
-from memory.short_term import ShortTermMemoryManager
-from memory.long_term import LongTermMemoryManager
 from memory.vector_memory import VectorMemoryManager
 from brain.conversation_manager import ConversationManager
 

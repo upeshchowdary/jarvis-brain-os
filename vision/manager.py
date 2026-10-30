@@ -11,11 +11,10 @@ v3 improvements:
 
 import asyncio
 import time
-from typing import Any, Dict, List, Optional
 
 from loguru import logger
 
-from vision.environment import EnvironmentState, CursorState, WindowInfo, MonitorInfo
+from vision.environment import EnvironmentState
 from vision.screen_capture import screen_capture_engine
 from vision.ocr import ocr_engine
 from vision.screen_memory import screen_memory
@@ -110,11 +109,9 @@ class VisionManager:
 
             try:
                 from vision.ui_detector import ui_detector
-                from vision.image_analyzer import image_analyzer
                 from vision.object_detector import object_detector
                 from vision.face_detector import face_detector
                 from vision.gesture_detector import gesture_detector
-                from vision.layout_analyzer import layout_analyzer
 
                 ui_task = loop.run_in_executor(
                     None, lambda: ui_detector.detect_ui_elements(image, ocr_items=ocr_items)

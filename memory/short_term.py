@@ -1,8 +1,6 @@
 import asyncio
-from typing import List, Dict, Any, Optional
-from brain.brain_config import brain_config
+from typing import List, Dict
 from brain.utils import estimate_token_count
-from brain.logger import logger
 from app.database.connection import db_manager
 
 

@@ -4,19 +4,15 @@ Writes to logs/automation.log with rotation. Format:
 [timestamp] | LEVEL | TASK | ACTION | TARGET | RESULT
 """
 
-import sys
-from pathlib import Path
-from loguru import logger as _base_logger
+from core.logging import logger as _base_logger
+from core.paths import logs_dir
 
 # Create a dedicated automation logger instance
 automation_logger = _base_logger.bind(module="automation")
 
-_log_dir = Path("logs")
-_log_dir.mkdir(exist_ok=True)
-
-# Add file sink with rotation
+# Add file sink with rotation (shared logger is configured first by core.logging)
 _base_logger.add(
-    "logs/automation.log",
+    str(logs_dir() / "automation.log"),
     level="DEBUG",
     rotation="50 MB",
     retention="7 days",

@@ -6,12 +6,11 @@ Provides: retry logic, emergency stop, dry-run, pre/post screenshot, and verific
 
 import asyncio
 import time
-import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, Coroutine, Dict, List, Optional
 
 from automation.config import automation_config
-from automation.automation_logger import log_action, log_task_start, log_task_complete
+from automation.automation_logger import log_action
 from automation.safety_manager import safety_manager
 
 # Emergency stop signal — shared across entire automation system
