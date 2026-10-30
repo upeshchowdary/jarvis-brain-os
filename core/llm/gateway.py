@@ -285,8 +285,10 @@ class LLMGateway:
             payload["response_format"] = response_format
         return payload
 
-    async def _post(self, provider: ProviderSpec, payload: Dict[str, Any], timeout: Optional[float]) -> Dict[str, Any]:
+    async def _post(self, provider: ProviderSpec, payload: Dict[str, Any], timeout: Optional[float],
+                    retries: Optional[int] = None) -> Dict[str, Any]:
         url = f"{provider.base_url()}/chat/completions"
+        max_retries = settings.MAX_RETRIES if retries is None else max(0, retries)
         self._last_request = time.monotonic()
         attempt = 0
         keys_left = len(provider.keys()) - 1
@@ -305,7 +307,7 @@ class LLMGateway:
             except (_RetryableError, httpx.TransportError) as exc:
                 if isinstance(exc, httpx.ConnectError) and provider.local:
                     raise RuntimeError(f"{provider.name} is not running at {provider.base_url()}") from exc
-                if attempt >= settings.MAX_RETRIES:
+                if attempt >= max_retries:
                     raise RuntimeError(str(exc) or exc.__class__.__name__) from exc
                 delay = 0.4 * (2 ** attempt)
                 retry_after = getattr(getattr(exc, "response", None), "headers", {}).get("retry-after") if hasattr(exc, "response") else None
@@ -329,15 +331,19 @@ class LLMGateway:
         timeout: Optional[float] = None,
         response_format: Optional[Dict[str, Any]] = None,
         fallbacks: bool = True,
+        retries: Optional[int] = None,
     ) -> LLMResponse:
-        """``fallbacks=False`` tries only ``model`` (callers that run their own fallback order, e.g. the intent step)."""
+        """``fallbacks=False`` tries only ``model`` (callers that run their own fallback order, e.g. the intent step).
+
+        ``retries`` overrides ``settings.MAX_RETRIES`` for 429 / 5xx / network errors (0 = fail fast, no backoff sleep).
+        """
         errors: List[str] = []
         chain = await self.candidates(model, purpose, local_only, fallbacks)
         for index, (prov_name, mod) in enumerate(chain):
             provider = PROVIDERS[prov_name]
             started = time.perf_counter()
             try:
-                data = await self._post(provider, self._payload(mod, messages, tools, tool_choice, temperature, max_tokens, False, prov_name, response_format), timeout)
+                data = await self._post(provider, self._payload(mod, messages, tools, tool_choice, temperature, max_tokens, False, prov_name, response_format), timeout, retries)
                 choice = (data.get("choices") or [{}])[0]
                 message = choice.get("message") or {}
                 elapsed = (time.perf_counter() - started) * 1000

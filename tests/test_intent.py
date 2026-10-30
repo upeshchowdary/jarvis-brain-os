@@ -1,5 +1,6 @@
 """Intent step: standalone rewrite + classification, retries, fallback model, legacy routing."""
 
+import asyncio
 import json
 import time
 
@@ -228,3 +229,122 @@ async def test_legacy_fallback_is_logged_at_warning(monkeypatch):
     finally:
         intent_mod.logger.remove(sink)
     assert any("legacy" in r["message"] and r["level"].name == "WARNING" for r in seen)
+
+
+# ── Fix round 1: latency bound, action notes, length handling, prompt layout ──
+
+class SlowLLM:
+    """Never answers in time."""
+
+    def __init__(self):
+        self.calls = []
+
+    async def chat(self, messages, *, model=None, **kw):
+        self.calls.append(model)
+        await asyncio.sleep(5)
+        return text(json.dumps(NEXT_DO))
+
+
+async def test_deadline_returns_legacy_within_bound(monkeypatch):
+    monkeypatch.setattr(intent_mod, "DEADLINE_SECONDS", 0.3)
+    slow = SlowLLM()
+    monkeypatch.setattr(intent_mod, "llm", slow)
+    started = time.perf_counter()
+    got = await analyze("open chrome", [], None)
+    elapsed = time.perf_counter() - started
+    assert got.source == "legacy" and got.kind == "action"
+    assert elapsed < 0.3 + 0.5
+    assert slow.calls == [INTENT_MODEL]
+
+
+def test_deadline_and_per_call_timeout_values():
+    assert intent_mod.DEADLINE_SECONDS <= 3.0
+    assert intent_mod.TIMEOUT_SECONDS <= 2.0
+
+
+async def test_429_on_primary_goes_to_fallback_once_without_sleeping(monkeypatch):
+    """Real gateway, mocked HTTP: Groq 429 → no in-gateway retry/sleep → Gemini answers."""
+    import httpx
+
+    from core import connectivity
+    from core.llm import gateway as gateway_module
+    from core.llm import llm as real_llm
+
+    monkeypatch.setattr(settings, "GROQ_API_KEY", "groq-key")
+    monkeypatch.setattr(settings, "GEMINI_API_KEY", "gem-key")
+    monkeypatch.setattr(settings, "GEMINI_API_KEYS", [])
+    monkeypatch.setattr(gateway_module, "_KEY_CURSOR", {})
+    slept = []
+
+    async def fake_sleep(delay):
+        slept.append(delay)
+
+    monkeypatch.setattr(gateway_module.asyncio, "sleep", fake_sleep)
+    seen = []
+
+    def handler(request):
+        seen.append(request.url.host)
+        if request.url.host == "api.groq.com":
+            return httpx.Response(429, text="rate limited", headers={"retry-after": "5"})
+        body = {"model": "gemini-3.5-flash-lite", "choices": [{"message": {"role": "assistant",
+                "content": json.dumps(NEXT_DO)}, "finish_reason": "stop"}]}
+        return httpx.Response(200, json=body)
+
+    connectivity.set_state_for_tests(True)
+    real_llm.set_transport(httpx.MockTransport(handler))
+    try:
+        got = await analyze("next do", whatsapp_turns(), whatsapp_task())
+    finally:
+        real_llm.set_transport(None)
+        connectivity.set_state_for_tests(None)
+    assert seen == ["api.groq.com", "generativelanguage.googleapis.com"]
+    assert slept == []
+    assert got.source == "llm" and got.request == NEXT_DO["request"]
+
+
+async def test_intent_calls_disable_gateway_retries(monkeypatch):
+    fake = use(monkeypatch, [text(json.dumps(NEXT_DO))])
+    await analyze("next do", [], None)
+    kw = fake.calls[0]["kwargs"]
+    assert kw["retries"] == 0 and kw["timeout"] == intent_mod.TIMEOUT_SECONDS
+
+
+async def test_length_finish_skips_same_model_retry(monkeypatch):
+    from core.llm import LLMResponse
+
+    truncated = LLMResponse(content='{"request": "Send a Wha', provider="fake", model="fake-1", finish_reason="length")
+    fake = use(monkeypatch, [truncated, text(json.dumps(NEXT_DO))])
+    got = await analyze("next do", whatsapp_turns(), whatsapp_task())
+    assert [c["model"] for c in fake.calls] == [INTENT_MODEL, FALLBACK_MODEL]
+    assert got.source == "llm"
+
+
+async def test_long_reply_keeps_action_notes(monkeypatch):
+    fake = use(monkeypatch, [text(json.dumps(NEXT_DO))])
+    notes = "[did: open_app(whatsapp) ✓, send_message(to=Nithesh, text=hi) ✗]"
+    reply = "Here is a long explanation. " * 30 + notes
+    assert len(reply) > 600
+    turns = [Turn("voice", "s1", "open whatsapp and msg nithesh say hi", reply, time.time())]
+    await analyze("next do", turns, whatsapp_task())
+    dynamic = fake.calls[0]["messages"][-1]["content"]
+    assert notes in dynamic
+    jarvis_line = next(line for line in dynamic.splitlines() if "JARVIS:" in line)
+    assert jarvis_line.rstrip().endswith(notes)
+    assert len(jarvis_line) < len(reply)  # the prose before the notes was clipped
+
+
+def test_examples_use_the_real_context_layout():
+    system = intent_mod.SYSTEM_PROMPT
+    assert "Examples (illustrative only — not part of this conversation)" in system
+    # Same layout as build_messages: multi-line Task.summary() and the conversation heading.
+    assert "Recent conversation (oldest first):" in system
+    assert "\nPlan:\n" in system and "\nRecent steps:\n" in system and "\nTask: " in system
+    real = intent_mod.build_messages("next do", whatsapp_turns(), whatsapp_task())[1]["content"]
+    for heading in ("Current task:", "Recent conversation (oldest first):", "New message: "):
+        assert heading in real and heading in system
+
+
+def test_correction_example_present():
+    system = intent_mod.SYSTEM_PROMPT
+    assert "not windows but in the chrome browser tabs" in system
+    assert "Switch to the Instagram tab in Google Chrome" in system

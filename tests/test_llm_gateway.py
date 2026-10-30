@@ -269,6 +269,32 @@ async def test_fallbacks_false_with_unconfigured_provider_makes_no_request(gw):
     assert seen == []
 
 
+async def test_retries_zero_fails_fast_without_sleeping(gw, monkeypatch):
+    slept = []
+
+    async def fake_sleep(delay):
+        slept.append(delay)
+
+    monkeypatch.setattr(gateway_module.asyncio, "sleep", fake_sleep)
+    seen = gw(lambda r: httpx.Response(429, text="slow down", headers={"retry-after": "5"}))
+    with pytest.raises(LLMUnavailable):
+        await llm.chat([{"role": "user", "content": "x"}], model="groq/llama-test", fallbacks=False, retries=0)
+    assert len(seen) == 1 and slept == []
+
+
+async def test_retries_default_unchanged(gw, monkeypatch):
+    slept = []
+
+    async def fake_sleep(delay):
+        slept.append(delay)
+
+    monkeypatch.setattr(gateway_module.asyncio, "sleep", fake_sleep)
+    seen = gw(lambda r: httpx.Response(429, text="slow down"))
+    with pytest.raises(LLMUnavailable):
+        await llm.chat([{"role": "user", "content": "x"}], model="groq/llama-test", fallbacks=False)
+    assert len(seen) == settings.MAX_RETRIES + 1 and len(slept) == settings.MAX_RETRIES
+
+
 async def test_warm_up_hits_each_configured_cloud_provider_once(gw, monkeypatch):
     monkeypatch.setattr(settings, "INTENT_MODEL", "groq/llama-test")
     monkeypatch.setattr(settings, "ACTION_MODEL", "gemini/gemini-test")
