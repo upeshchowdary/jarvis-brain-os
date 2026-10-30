@@ -237,10 +237,12 @@ class LLMGateway:
                 out.append(label)
         return out
 
-    async def candidates(self, model: Optional[str], purpose: str = "chat", local_only: bool = False) -> List[Tuple[str, str]]:
+    async def candidates(self, model: Optional[str], purpose: str = "chat", local_only: bool = False,
+                         fallbacks: bool = True) -> List[Tuple[str, str]]:
+        """Providers to try, in order. ``fallbacks=False`` → only the requested model (if configured)."""
         primary = model or (settings.FAST_MODEL if purpose == "fast" else settings.DEFAULT_MODEL)
         chain: List[Tuple[str, str]] = []
-        for spec in [primary, *settings.LLM_FALLBACKS]:
+        for spec in [primary, *(settings.LLM_FALLBACKS if fallbacks else [])]:
             pair = resolve_model(spec)
             if pair not in chain:
                 chain.append(pair)
@@ -326,9 +328,11 @@ class LLMGateway:
         local_only: bool = False,
         timeout: Optional[float] = None,
         response_format: Optional[Dict[str, Any]] = None,
+        fallbacks: bool = True,
     ) -> LLMResponse:
+        """``fallbacks=False`` tries only ``model`` (callers that run their own fallback order, e.g. the intent step)."""
         errors: List[str] = []
-        chain = await self.candidates(model, purpose, local_only)
+        chain = await self.candidates(model, purpose, local_only, fallbacks)
         for index, (prov_name, mod) in enumerate(chain):
             provider = PROVIDERS[prov_name]
             started = time.perf_counter()

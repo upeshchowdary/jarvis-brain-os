@@ -31,7 +31,7 @@ class FakeLLM:
 
     async def chat(self, messages, *, model=None, tools=None, local_only=False, **kw) -> LLMResponse:
         self.calls.append({"messages": [dict(m) for m in messages], "tools": [t["function"]["name"] for t in (tools or [])],
-                           "model": model, "local_only": local_only})
+                           "model": model, "local_only": local_only, "kwargs": dict(kw)})
         return self._next(messages, tools)
 
     async def stream_events(self, messages, *, model=None, tools=None, local_only=False, **kw):

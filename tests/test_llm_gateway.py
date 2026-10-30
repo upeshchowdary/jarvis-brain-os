@@ -253,6 +253,22 @@ async def test_response_format_passthrough(gw):
     assert json.loads(seen[0].content)["response_format"] == fmt
 
 
+async def test_fallbacks_false_calls_only_the_requested_model(gw):
+    seen = gw(lambda r: httpx.Response(400, text="bad request"))
+    with pytest.raises(LLMUnavailable):
+        await llm.chat([{"role": "user", "content": "x"}], model="groq/llama-test", fallbacks=False)
+    assert len(seen) == 1 and str(seen[0].url).startswith("https://api.groq.com")
+    assert await llm.candidates("groq/llama-test", fallbacks=False) == [("groq", "llama-test")]
+    assert len(await llm.candidates("gemini/gemini-test")) == 3  # default: the full fallback chain
+
+
+async def test_fallbacks_false_with_unconfigured_provider_makes_no_request(gw):
+    seen = gw(lambda r: ok("x"))
+    with pytest.raises(LLMUnavailable):
+        await llm.chat([{"role": "user", "content": "x"}], model="openai/gpt-x", fallbacks=False)
+    assert seen == []
+
+
 async def test_warm_up_hits_each_configured_cloud_provider_once(gw, monkeypatch):
     monkeypatch.setattr(settings, "INTENT_MODEL", "groq/llama-test")
     monkeypatch.setattr(settings, "ACTION_MODEL", "gemini/gemini-test")

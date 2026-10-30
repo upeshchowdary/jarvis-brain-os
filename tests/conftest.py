@@ -20,6 +20,9 @@ os.environ["DRY_RUN"] = "false"
 os.environ["CONFIRM_MEDIUM_RISK"] = "true"
 os.environ["CONFIRM_HIGH_RISK"] = "true"
 os.environ["ROUTER_USE_LLM"] = "true"
+# Intent step off by default (no extra LLM call per turn); tests/test_intent.py enables it explicitly.
+os.environ["INTENT_MODEL"] = ""
+os.environ["INTENT_FALLBACK_MODEL"] = ""
 # No real provider keys in tests: every LLM call is mocked.
 for _key in ("GROQ_API_KEY", "GEMINI_API_KEY", "GEMINI_API_KEYS", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
              "OPENROUTER_API_KEY", "DEEPSEEK_API_KEY"):
