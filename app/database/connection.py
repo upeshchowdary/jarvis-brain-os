@@ -168,7 +168,7 @@ class DatabaseManager:
             params.append(channel)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         sql = f"""
-        SELECT id, user_query, response_text, created_at, channel FROM chat_logs {where}
+        SELECT id, session_id, user_query, response_text, created_at, channel FROM chat_logs {where}
         ORDER BY created_at DESC, id DESC LIMIT ?;
         """
         try:

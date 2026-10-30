@@ -7,7 +7,7 @@ SQLite, and ``warm_up()`` indexes whatever Chroma is missing once the model has 
 """
 
 import asyncio
-import math
+import re
 import threading
 import time
 from collections import OrderedDict
@@ -23,9 +23,30 @@ from core.paths import data_path
 
 EmbeddingFunction = Callable[[List[str]], List[List[float]]]
 
-COLLECTION_NAME = "jarvis_memory"
 QUERY_CACHE_SIZE = 256
 INDEX_BATCH = 64
+BACKFILL_LIMIT = 5000  # most recent chat turns embedded by warm_up() if Chroma lacks them
+
+STOP_WORDS = {
+    "the", "a", "an", "is", "are", "was", "were", "be", "what", "how", "why", "who", "where", "when", "which",
+    "can", "could", "you", "me", "my", "your", "this", "that", "it", "to", "in", "on", "of", "for", "with",
+    "do", "did", "does", "i", "we", "about", "have", "has", "had", "and", "or", "at", "by", "from", "please",
+}
+
+
+def collection_name(model: str) -> str:
+    """One Chroma collection per embedding model: switching EMBEDDING_MODEL starts a fresh index."""
+    slug = re.sub(r"[^a-z0-9._-]+", "-", model.lower()).strip("-._")
+    return f"jarvis_memory_{slug}"[:500]
+
+
+def turn_text(query: str, response: str) -> str:
+    """How a chat turn is indexed and shown."""
+    return f"User: {query} | JARVIS: {response[:300]}"
+
+
+def content_words(text: str) -> List[str]:
+    return [w for w in re.findall(r"\w+", text.lower()) if len(w) > 1 and w not in STOP_WORDS]
 
 
 class VectorDocument(BaseModel):
@@ -36,6 +57,16 @@ class VectorDocument(BaseModel):
     importance: float = Field(default=0.8, ge=0.0, le=1.0)
     created_at: float = Field(default_factory=time.time)
     score: float = 0.0
+
+
+def turn_document(chat_id: int, query: str, response: str, *, created_at: str, channel: str = "text",
+                  session_id: Optional[str] = None) -> VectorDocument:
+    """The vector document for one chat turn (id ``chat_{chat_id}``)."""
+    meta: Dict[str, Any] = {"chat_id": chat_id, "created_at": created_at, "channel": channel}
+    if session_id:
+        meta["session_id"] = session_id
+    return VectorDocument(id=f"chat_{chat_id}", content=turn_text(query, response), metadata=meta,
+                          memory_type="conversation", created_at=_epoch(created_at) or time.time())
 
 
 def _epoch(value: Any) -> Optional[float]:
@@ -62,6 +93,7 @@ class VectorMemoryManager:
         self._collection_lock = threading.Lock()
         self._embed_fn: Optional[EmbeddingFunction] = None
         self._embed_error: Optional[str] = None
+        self._runtime_warned = False
         self._query_cache: "OrderedDict[str, List[float]]" = OrderedDict()
         self._cache_lock = threading.Lock()
         self._warm_task: Optional[asyncio.Task] = None
@@ -72,6 +104,7 @@ class VectorMemoryManager:
         """Use ``fn`` instead of the fastembed model (tests install a fake here; None = load the model)."""
         self._embed_fn = fn
         self._embed_error = None
+        self._runtime_warned = False
         with self._cache_lock:
             self._query_cache.clear()
 
@@ -99,21 +132,31 @@ class VectorMemoryManager:
         return vector
 
     async def warm_up(self) -> None:
-        """Open Chroma, load the embedding model and run a dummy query off the event loop, then index any
-        documents Chroma is missing. On failure semantic search stays off and keyword search is used."""
+        """Open Chroma, load the embedding model and run a dummy query off the event loop, then index the
+        documents and recent chat turns Chroma is missing. The model is published only once all of that
+        succeeded; on any failure semantic search is off (logged once) and keyword search is used."""
         try:
             await asyncio.to_thread(self._ensure_collection)
-            fn = self._embed_fn
-            if fn is None:
-                fn = await asyncio.to_thread(self._load_model)
+            fn = self._embed_fn or await asyncio.to_thread(self._load_model)
             await asyncio.to_thread(fn, ["warm-up"])
-            if self._embed_fn is None:
-                self._embed_fn = fn
-            indexed = await asyncio.to_thread(self._index_missing_sync)
-            logger.info(f"[VectorMemory] semantic search ready ({settings.EMBEDDING_MODEL}); indexed {indexed} documents")
+            turns = await db_manager.recent_chats(BACKFILL_LIMIT)
+            indexed = await asyncio.to_thread(self._index_missing_sync, fn, turns)
         except Exception as exc:
+            self._embed_fn = None
             self._embed_error = str(exc) or type(exc).__name__
             logger.warning(f"[VectorMemory] semantic search unavailable ({self._embed_error}); keyword search only")
+            return
+        self._embed_fn = fn
+        logger.info(f"[VectorMemory] semantic search ready ({settings.EMBEDDING_MODEL}); indexed {indexed} documents")
+
+    def _runtime_failure(self, action: str, exc: Exception) -> None:
+        """A Chroma/embedding error after warm-up: WARNING the first time, debug afterwards."""
+        if self._runtime_warned:
+            logger.debug(f"[VectorMemory] {action} failed: {exc}")
+            return
+        self._runtime_warned = True
+        logger.warning(f"[VectorMemory] {action} failed ({exc}); semantic results may be missing, "
+                       "keyword search still works (further failures logged at debug)")
 
     def start_warm_up(self) -> Optional[asyncio.Task]:
         """Run ``warm_up()`` as a background task (at most one at a time). Needs a running loop."""
@@ -132,11 +175,12 @@ class VectorMemoryManager:
                 from chromadb.config import Settings as ChromaSettings
 
                 path = self._persist_dir or str(data_path("chroma_db"))
+                name = collection_name(settings.EMBEDDING_MODEL)
                 self._client = chromadb.PersistentClient(path=path, settings=ChromaSettings(anonymized_telemetry=False))
                 self._collection = self._client.get_or_create_collection(
-                    COLLECTION_NAME, configuration={"hnsw": {"space": "cosine"}}, embedding_function=None,
+                    name, configuration={"hnsw": {"space": "cosine"}}, embedding_function=None,
                 )
-                logger.info(f"[VectorMemory] ChromaDB collection '{COLLECTION_NAME}' opened at {path}")
+                logger.info(f"[VectorMemory] ChromaDB collection '{name}' opened at {path}")
         return self._collection
 
     @staticmethod
@@ -148,8 +192,8 @@ class VectorMemoryManager:
         meta["ts"] = float(doc.created_at)  # numeric, so time windows can filter on it
         return meta
 
-    def _upsert_sync(self, docs: List[VectorDocument]) -> None:
-        fn = self._embed_fn
+    def _upsert_sync(self, docs: List[VectorDocument], fn: Optional[EmbeddingFunction] = None) -> None:
+        fn = fn or self._embed_fn
         if fn is None or not docs:
             return
         collection = self._ensure_collection()
@@ -160,13 +204,20 @@ class VectorMemoryManager:
             metadatas=[self._chroma_metadata(d) for d in docs],
         )
 
-    def _index_missing_sync(self) -> int:
+    def _index_missing_sync(self, fn: EmbeddingFunction, turns: List[Dict[str, Any]]) -> int:
+        """Embed the in-memory documents and chat turns (chat_logs rows) that Chroma doesn't have yet."""
         collection = self._ensure_collection()
         present = set(collection.get(include=[])["ids"])
-        missing = [d for d in list(self._documents.values()) if d.id not in present]
-        for start in range(0, len(missing), INDEX_BATCH):
-            self._upsert_sync(missing[start:start + INDEX_BATCH])
-        return len(missing)
+        missing = {d.id: d for d in list(self._documents.values()) if d.id not in present}
+        for row in turns:
+            doc = turn_document(row["id"], row["user_query"], row["response_text"], created_at=row["created_at"],
+                                channel=row.get("channel") or "text", session_id=row.get("session_id"))
+            if doc.id not in present and doc.id not in missing:
+                missing[doc.id] = doc
+        docs = list(missing.values())
+        for start in range(0, len(docs), INDEX_BATCH):
+            self._upsert_sync(docs[start:start + INDEX_BATCH], fn)
+        return len(docs)
 
     async def _index(self, docs: List[VectorDocument]) -> None:
         if self._embed_fn is None:
@@ -174,7 +225,7 @@ class VectorMemoryManager:
         try:
             await asyncio.to_thread(self._upsert_sync, docs)
         except Exception as exc:
-            logger.debug(f"[VectorMemory] indexing skipped: {exc}")
+            self._runtime_failure("indexing", exc)
 
     def _query_sync(self, query: str, limit: int, where: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
         fn = self._embed_fn
@@ -211,7 +262,7 @@ class VectorMemoryManager:
         try:
             return await asyncio.to_thread(self._query_sync, query, limit, where)
         except Exception as exc:
-            logger.debug(f"[VectorMemory] vector query failed: {exc}")
+            self._runtime_failure("vector query", exc)
             return []
 
     # ── Documents ────────────────────────────────────────────────────────
@@ -247,7 +298,7 @@ class VectorMemoryManager:
             try:
                 self._upsert_sync([doc])
             except Exception as exc:
-                logger.debug(f"[VectorMemory] indexing skipped: {exc}")
+                self._runtime_failure("indexing", exc)
             return
         self._background(db_manager.save_vector_document(doc_id, content, metadata or {}))
         self._background(self._index([doc]))
@@ -286,52 +337,54 @@ class VectorMemoryManager:
         query: str,
         top_k: int = 5,
         memory_type_filter: Optional[str] = None,
+        exclude_session: Optional[str] = None,
     ) -> List[VectorDocument]:
-        """Semantic similarity search when Chroma is ready, otherwise composite keyword ranking.
+        """Most similar documents, scored 0..1: cosine similarity when Chroma is ready, otherwise the share of
+        the query's content words found in the document. ``exclude_session`` drops that session's documents.
         Blocking when semantic: async callers should run it via ``asyncio.to_thread``."""
         if not query:
             return []
 
+        def wanted(meta: Dict[str, Any], memory_type: Optional[str]) -> bool:
+            if memory_type_filter and memory_type != memory_type_filter:
+                return False
+            return not (exclude_session and meta.get("session_id") == exclude_session)
+
         # Strategy 1: Chroma (only once warm: this sync path never opens Chroma or loads the model)
-        if self._collection is not None and self._embed_fn is not None and self._documents:
+        if self._collection is not None and self._embed_fn is not None:
             try:
                 where = {"memory_type": memory_type_filter} if memory_type_filter else None
+                fetch = top_k * 3 if exclude_session else top_k
                 results: List[VectorDocument] = []
-                for hit in self._query_sync(query, min(top_k, len(self._documents)), where):
-                    doc = self._documents.get(hit["id"])
-                    if doc:
-                        # cosine distance (0..2) -> similarity (0..1)
-                        sim = max(0.0, min(1.0, 1.0 - (hit["distance"] / 2.0)))
-                        results.append(doc.model_copy(update={"score": round(sim, 4)}))
-                if results:
-                    return results
+                for hit in self._query_sync(query, fetch, where):
+                    meta = hit["metadata"]
+                    if not wanted(meta, meta.get("memory_type")):
+                        continue
+                    doc = self._documents.get(hit["id"]) or VectorDocument(
+                        id=hit["id"], content=hit["text"] or "", metadata=meta,
+                        memory_type=str(meta.get("memory_type", "semantic")),
+                        importance=float(meta.get("importance", 0.8)), created_at=float(meta.get("ts", time.time())),
+                    )
+                    sim = max(0.0, min(1.0, 1.0 - hit["distance"]))  # cosine distance -> cosine similarity
+                    results.append(doc.model_copy(update={"score": round(sim, 4)}))
+                return results[:top_k]
             except Exception as e:
-                logger.debug(f"[VectorMemory] ChromaDB query failed ({e}), using keyword fallback")
+                self._runtime_failure("vector search", e)
 
-        # Strategy 2: Heuristic keyword & recency ranked fallback
-        if not self._documents:
+        # Strategy 2: keyword fallback — share of the query's content words present in the document
+        q_words = set(content_words(query))
+        if not q_words:
             return []
-
-        q_words = set(query.lower().split())
-        now = time.time()
         scored_results: List[VectorDocument] = []
-
         for doc in list(self._documents.values()):  # may run in a worker thread
-            if memory_type_filter and doc.memory_type != memory_type_filter:
+            if not wanted(doc.metadata, doc.memory_type):
                 continue
+            overlap = len(q_words.intersection(content_words(doc.content)))
+            if overlap:
+                scored_results.append(doc.model_copy(update={"score": round(overlap / len(q_words), 4)}))
 
-            doc_words = set(doc.content.lower().split())
-            overlap = len(q_words.intersection(doc_words))
-            if overlap > 0:
-                base_sim = overlap / math.sqrt(len(q_words) * len(doc_words))
-                age_days = (now - doc.created_at) / 86400.0
-                recency_score = math.exp(-0.1 * age_days)
-                final_score = round(base_sim * 0.6 + recency_score * 0.2 + doc.importance * 0.2, 4)
-                scored_results.append(doc.model_copy(update={"score": final_score}))
-
-        scored_results.sort(key=lambda x: x.score, reverse=True)
+        scored_results.sort(key=lambda x: (x.score, x.created_at), reverse=True)
         return scored_results[:top_k]
-
     def _clear_index_sync(self) -> None:
         collection = self._ensure_collection()
         ids = collection.get(include=[])["ids"]

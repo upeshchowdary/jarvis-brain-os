@@ -6,20 +6,14 @@ empty and search degrades to FTS5 only.
 """
 
 import asyncio
-import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 from app.database.connection import db_manager
-from memory.vector_memory import vector_memory
+from memory.vector_memory import content_words, turn_document, turn_text, vector_memory
 
 RRF_K = 60
-_STOP_WORDS = {
-    "the", "a", "an", "is", "are", "was", "were", "be", "what", "how", "why", "who", "where", "when", "which",
-    "can", "could", "you", "me", "my", "your", "this", "that", "it", "to", "in", "on", "of", "for", "with",
-    "do", "did", "does", "i", "we", "about", "have", "has", "had", "and", "or", "at", "by", "from", "please",
-}
 
 
 @dataclass
@@ -31,19 +25,11 @@ class Hit:
     source: str  # fts | vector | fts+vector | recent
 
 
-def turn_text(query: str, response: str) -> str:
-    """How a chat turn is indexed and shown."""
-    return f"User: {query} | JARVIS: {response[:300]}"
-
-
-async def index_turn(chat_id: int, query: str, response: str, *, created_at: str, channel: str = "text") -> None:
+async def index_turn(chat_id: int, query: str, response: str, *, created_at: str, channel: str = "text",
+                     session_id: Optional[str] = None) -> None:
     """Add one chat turn (already in chat_logs, hence in FTS) to the vector index."""
-    await vector_memory.add_document_async(
-        doc_id=f"chat_{chat_id}",
-        content=turn_text(query, response),
-        metadata={"chat_id": chat_id, "created_at": created_at, "channel": channel},
-        memory_type="conversation",
-    )
+    doc = turn_document(chat_id, query, response, created_at=created_at, channel=channel, session_id=session_id)
+    await vector_memory.add_document_async(doc.id, doc.content, doc.metadata, memory_type=doc.memory_type)
 
 
 def _utc(dt: Optional[datetime]) -> Optional[datetime]:
@@ -53,8 +39,7 @@ def _utc(dt: Optional[datetime]) -> Optional[datetime]:
 
 
 def _terms(query: str) -> List[str]:
-    words = [w for w in re.findall(r"\w+", query.lower()) if len(w) > 1 and w not in _STOP_WORDS]
-    return list(dict.fromkeys(words))
+    return list(dict.fromkeys(content_words(query)))
 
 
 async def search(query: str, limit: int = 10, since_utc: Optional[datetime] = None,

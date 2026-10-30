@@ -130,7 +130,9 @@ class Settings(BaseSettings):
     MAX_HISTORY_MESSAGES: int = 20
     MAX_CONVERSATION_TOKENS: int = 4096
     MAX_FACTS_PER_TURN: int = 12
-    MEMORY_RECALL_MIN_SCORE: float = 0.35
+    # Cosine similarity a past turn/fact needs to be recalled into the prompt. Calibrated for bge-base-en-v1.5:
+    # unrelated queries peak around 0.53 against real turns, related ones start around 0.65.
+    MEMORY_RECALL_MIN_SCORE: float = Field(default=0.6, ge=0.0, le=1.0)
     EMBEDDING_MODEL: str = "BAAI/bge-base-en-v1.5"  # local fastembed (ONNX, CPU) model for semantic memory
     SESSION_TTL_SECONDS: float = 6 * 3600
     MAX_SESSIONS: int = 200

@@ -4,17 +4,22 @@ Embeddings are always the deterministic fake from conftest (or a stand-in define
 """
 
 import asyncio
+import importlib
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import pytest
+from loguru import logger
 
 from app.database.connection import DatabaseManager
 from app.database.models import ChatLogRecord
 from memory import search as memory_search
 from memory.vector_memory import vector_memory
 from tests.conftest import fake_embedding
+
+# `memory` re-exports the singleton under the submodule's name, so fetch the module itself.
+vector_memory_module = importlib.import_module("memory.vector_memory")
 
 
 @pytest.fixture
@@ -23,21 +28,23 @@ async def db(tmp_path, monkeypatch):
     fresh = DatabaseManager(db_path=tmp_path / "search.db")
     await fresh.init_db()
     monkeypatch.setattr(memory_search, "db_manager", fresh)
+    monkeypatch.setattr(vector_memory_module, "db_manager", fresh)
     await vector_memory.clear_async()
     yield fresh
     await vector_memory.clear_async()
 
 
 async def log_turn(db: DatabaseManager, query: str, response: str, *, created_at: Optional[datetime] = None,
-                   channel: str = "text", index: bool = True) -> int:
+                   channel: str = "text", index: bool = True, session_id: str = "s1") -> int:
     when = (created_at or datetime.now(timezone.utc)).isoformat()
     chat_id = await db.log_chat_telemetry(ChatLogRecord(
-        session_id="s1", user_query=query, intent="conversation", confidence=0.9, provider="test", model="test",
+        session_id=session_id, user_query=query, intent="conversation", confidence=0.9, provider="test", model="test",
         latency_ms=1.0, response_text=response, created_at=when, channel=channel,
     ))
     assert chat_id
     if index:
-        await memory_search.index_turn(chat_id, query, response, created_at=when, channel=channel)
+        await memory_search.index_turn(chat_id, query, response, created_at=when, channel=channel,
+                                       session_id=session_id)
     return chat_id
 
 
@@ -152,3 +159,90 @@ async def test_persist_indexes_every_turn_with_channel(db, monkeypatch):
     assert [h.text for h in turns] == ["User: open the Spotify app | JARVIS: Opened Spotify."]
     hits = await memory_search.search("Spotify")
     assert hits[0].chat_id == turns[0].chat_id and hits[0].source == "fts+vector"
+
+
+@pytest.fixture
+def warnings_logged():
+    records = []
+    sink = logger.add(lambda m: records.append(m.record["message"]), level="WARNING")
+    yield records
+    logger.remove(sink)
+
+
+async def test_recall_threshold_keeps_related_drops_unrelated_and_own_session(db):
+    from brain.pipeline import brain
+
+    await log_turn(db, "remind me about the dentist appointment on friday", "Reminder set for the dentist appointment.",
+                   session_id="other")
+    await log_turn(db, "play some lofi music", "Playing lofi beats.", session_id="other")
+    await log_turn(db, "is my dentist appointment on friday", "Your dentist appointment is at 3 PM.",
+                   session_id="current")
+    await vector_memory.warm_up()  # opens Chroma for the sync recall path
+
+    query = "when is my dentist appointment on friday"
+    for mode in ("semantic", "keyword fallback"):
+        _, memories = await brain._memory_context(query, False, "current")
+        assert any("Reminder set for the dentist appointment" in m for m in memories), (mode, memories)
+        assert not any("lofi" in m for m in memories), (mode, memories)
+        assert not any("3 PM" in m for m in memories), (mode, memories)  # already in this session's history
+        vector_memory.set_embedding_function(None)  # second round: no embeddings -> keyword scoring
+
+
+async def test_runtime_failure_warns_once_and_search_keeps_fts(db, warnings_logged):
+    broken = {"on": False}
+
+    def flaky(texts):
+        if broken["on"]:
+            raise RuntimeError("embedding dimension mismatch")
+        return fake_embedding(texts)
+
+    vector_memory.set_embedding_function(flaky)
+    await vector_memory.warm_up()
+    await log_turn(db, "message Nithesh on WhatsApp", "Sent it to Nithesh.")
+    broken["on"] = True
+
+    for _ in range(3):
+        hits = await memory_search.search("Nithesh again")
+        assert hits and "Nithesh" in hits[0].text and hits[0].source == "fts"
+    await log_turn(db, "call Nithesh tomorrow", "Okay.")  # indexing fails too
+
+    vector_failures = [m for m in warnings_logged if "[VectorMemory]" in m]
+    assert len(vector_failures) == 1, vector_failures
+
+
+async def test_warm_up_indexing_failure_leaves_consistent_state(db, warnings_logged):
+    def docs_fail(texts):
+        if texts != ["warm-up"]:
+            raise RuntimeError("cannot index")
+        return fake_embedding(texts)
+
+    vector_memory.set_embedding_function(None)
+    await log_turn(db, "message Nithesh on WhatsApp", "Sent it to Nithesh.", index=False)  # needs backfill
+    vector_memory._load_model = lambda: docs_fail
+    try:
+        await vector_memory.warm_up()
+    finally:
+        del vector_memory._load_model
+
+    assert not vector_memory.embeddings_ready
+    assert len([m for m in warnings_logged if "semantic search unavailable" in m]) == 1
+    hits = await memory_search.search("Nithesh")
+    assert hits and all(h.source == "fts" for h in hits)
+
+
+async def test_warm_up_backfills_turns_logged_before_indexing(db):
+    old = await log_turn(db, "message Nithesh on WhatsApp", "Sent it to Nithesh.", index=False)
+
+    await vector_memory.warm_up()
+
+    raw = await vector_memory.query("Nithesh WhatsApp", 5)
+    assert [r["metadata"]["chat_id"] for r in raw] == [old]
+    assert raw[0]["metadata"]["session_id"] == "s1"
+    hits = await memory_search.search("Nithesh")
+    assert hits[0].chat_id == old and hits[0].source == "fts+vector"
+
+
+def test_collection_is_scoped_by_embedding_model():
+    a = vector_memory_module.collection_name("BAAI/bge-base-en-v1.5")
+    b = vector_memory_module.collection_name("BAAI/bge-small-en-v1.5")
+    assert a != b and a.startswith("jarvis_memory_") and "/" not in a

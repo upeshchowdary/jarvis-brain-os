@@ -171,7 +171,7 @@ class Brain:
         offered: Dict[str, Tool] = {t.name: t for t in select_tools(query, base, recent)}
 
         t = time.perf_counter()
-        facts, memories = await self._memory_context(query, allow_actions)
+        facts, memories = await self._memory_context(query, allow_actions, ctx.session_id)
         timing["memory_ms"] = round((time.perf_counter() - t) * 1000, 1)
 
         model = model_override or state.model_override
@@ -318,7 +318,7 @@ class Brain:
             "usage": resp.usage,
         }
 
-    async def _memory_context(self, query: str, is_command: bool):
+    async def _memory_context(self, query: str, is_command: bool, session_id: Optional[str] = None):
         from memory.long_term import long_term_memory
 
         try:
@@ -331,7 +331,8 @@ class Brain:
             try:
                 from memory.vector_memory import vector_memory
 
-                for doc in await asyncio.to_thread(vector_memory.search_similar, query, 3):
+                # Other sessions only: this session's turns are already in the history.
+                for doc in await asyncio.to_thread(vector_memory.search_similar, query, 3, None, session_id):
                     if doc.score >= settings.MEMORY_RECALL_MIN_SCORE:
                         memories.append(doc.content[:300])
             except Exception:
@@ -374,7 +375,7 @@ class Brain:
             chat_id = await db_manager.log_chat_telemetry(record)
             if chat_id:
                 await index_turn(chat_id, result.query, result.response, created_at=record.created_at,
-                                 channel=record.channel)
+                                 channel=record.channel, session_id=result.session_id)
         except Exception as exc:  # never let bookkeeping break a turn
             logger.debug(f"[Brain] post-turn persistence skipped: {exc}")
         if result.route == "agent" and result.intent == "conversation":
