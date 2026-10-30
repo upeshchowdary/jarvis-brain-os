@@ -56,6 +56,46 @@ async def test_voice_confirmation_flow(monkeypatch):
     restart.assert_called_once()
 
 
+async def test_voice_loop_does_not_starve_event_loop(monkeypatch):
+    """A live mic must not freeze the API server sharing the same event loop."""
+    import asyncio
+    import threading
+
+    from voice.audio_capture import AudioCaptureManager
+
+    mic = AudioCaptureManager()
+    silence = b"\x00\x00" * 512
+    mic._push_frame(silence)
+    monkeypatch.setattr(vm_module, "audio_capture", mic)
+    monkeypatch.setattr(vm_module, "tts_engine", MagicMock(is_speaking=False))
+    monkeypatch.setattr(voice_manager, "_is_running", True)
+    # Safety net: if the loop starves the event loop, only another thread can end it.
+    starved = threading.Event()
+
+    def stop_from_thread():
+        starved.set()
+        voice_manager._is_running = False
+
+    guard = threading.Timer(1.5, stop_from_thread)
+    guard.start()
+
+    ticks = 0
+
+    async def ticker():
+        nonlocal ticks
+        for _ in range(10):
+            mic._push_frame(silence)  # a live mic keeps delivering frames
+            await asyncio.sleep(0.01)
+            ticks += 1
+        voice_manager._is_running = False
+
+    try:
+        await asyncio.gather(voice_manager._voice_loop(), ticker())
+    finally:
+        guard.cancel()
+    assert not starved.is_set() and ticks == 10
+
+
 async def test_stt_falls_back_to_google_and_filters_hallucinations(monkeypatch):
     from voice import stt as stt_mod
 

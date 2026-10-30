@@ -47,11 +47,30 @@ class ProviderSpec:
             "lmstudio": settings.LM_STUDIO_BASE_URL.rstrip("/").replace("localhost", "127.0.0.1"),
         }[self.name]
 
+    def keys(self) -> List[str]:
+        return [] if self.local else settings.api_keys_for(self.name)
+
     def api_key(self) -> Optional[str]:
-        return None if self.local else settings.api_key_for(self.name)
+        keys = self.keys()
+        return keys[_KEY_CURSOR.get(self.name, 0) % len(keys)] if keys else None
+
+    def rotate_key(self) -> None:
+        """Move to the provider's next key; the choice sticks for later calls."""
+        if len(self.keys()) > 1:
+            _KEY_CURSOR[self.name] = (_KEY_CURSOR.get(self.name, 0) + 1) % len(self.keys())
+            logger.warning(f"[LLM] {self.name}: switching to API key #{_KEY_CURSOR[self.name] + 1} of {len(self.keys())}")
 
     def configured(self) -> bool:
         return self.local or bool(self.api_key())
+
+
+# Index of the key currently in use per provider (only matters when a provider has several keys).
+_KEY_CURSOR: Dict[str, int] = {}
+
+
+def _key_exhausted(status: int, body: str) -> bool:
+    """True when a response means *this key* is out of quota or rejected, so another key may work."""
+    return status in (401, 403, 429) or (status == 400 and "api key" in body.lower())
 
 
 PROVIDERS: Dict[str, ProviderSpec] = {
@@ -86,13 +105,18 @@ class ToolCall:
     name: str
     arguments: Dict[str, Any]
     raw_arguments: str = ""
+    # Provider data that must be echoed back verbatim, e.g. Gemini's thought_signature.
+    extra_content: Optional[Dict[str, Any]] = None
 
     def to_message(self) -> Dict[str, Any]:
-        return {
+        msg: Dict[str, Any] = {
             "id": self.id,
             "type": "function",
             "function": {"name": self.name, "arguments": self.raw_arguments or json.dumps(self.arguments)},
         }
+        if self.extra_content:
+            msg["extra_content"] = self.extra_content
+        return msg
 
 
 @dataclass
@@ -139,12 +163,33 @@ def _parse_arguments(raw: Any) -> Dict[str, Any]:
         return extract_and_clean_json(str(raw))
 
 
+# Gemini's documented placeholder for function calls the model didn't produce itself.
+_PLACEHOLDER_SIGNATURE = {"google": {"thought_signature": "skip_thought_signature_validator"}}
+
+
+def _sign_tool_calls(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Give unsigned tool calls (fast-path injections, other providers' calls) Gemini's placeholder.
+
+    Gemini 3 rejects a request whose history holds a tool call without a thought_signature.
+    Returns new message dicts; the caller's list is left untouched.
+    """
+    out = []
+    for msg in messages:
+        calls = msg.get("tool_calls")
+        if msg.get("role") == "assistant" and calls and any(not c.get("extra_content") for c in calls):
+            msg = {**msg, "tool_calls": [c if c.get("extra_content") else {**c, "extra_content": _PLACEHOLDER_SIGNATURE}
+                                         for c in calls]}
+        out.append(msg)
+    return out
+
+
 def _parse_tool_calls(message: Dict[str, Any]) -> List[ToolCall]:
     calls = []
     for i, tc in enumerate(message.get("tool_calls") or []):
         fn = tc.get("function") or {}
         raw = fn.get("arguments") or ""
-        calls.append(ToolCall(tc.get("id") or f"call_{i}", fn.get("name", ""), _parse_arguments(raw), raw if isinstance(raw, str) else json.dumps(raw)))
+        calls.append(ToolCall(tc.get("id") or f"call_{i}", fn.get("name", ""), _parse_arguments(raw),
+                              raw if isinstance(raw, str) else json.dumps(raw), tc.get("extra_content")))
     return calls
 
 
@@ -213,10 +258,10 @@ class LLMGateway:
             headers["X-Title"] = "JARVIS"
         return headers
 
-    def _payload(self, model: str, messages, tools, tool_choice, temperature, max_tokens, stream) -> Dict[str, Any]:
+    def _payload(self, model: str, messages, tools, tool_choice, temperature, max_tokens, stream, provider: str = "") -> Dict[str, Any]:
         payload: Dict[str, Any] = {
             "model": model,
-            "messages": messages,
+            "messages": _sign_tool_calls(messages) if provider == "gemini" else messages,
             "temperature": settings.TEMPERATURE if temperature is None else temperature,
             "max_tokens": max_tokens or settings.MAX_TOKENS,
             "stream": stream,
@@ -229,9 +274,14 @@ class LLMGateway:
     async def _post(self, provider: ProviderSpec, payload: Dict[str, Any], timeout: Optional[float]) -> Dict[str, Any]:
         url = f"{provider.base_url()}/chat/completions"
         attempt = 0
+        keys_left = len(provider.keys()) - 1
         while True:
             try:
                 resp = await self._client().post(url, json=payload, headers=self._headers(provider), timeout=timeout or settings.TIMEOUT_SECONDS)
+                if keys_left > 0 and _key_exhausted(resp.status_code, resp.text):
+                    provider.rotate_key()
+                    keys_left -= 1
+                    continue
                 if resp.status_code == 429 or resp.status_code >= 500:
                     raise _RetryableError(f"HTTP {resp.status_code}: {resp.text[:200]}")
                 if resp.status_code != 200:
@@ -269,7 +319,7 @@ class LLMGateway:
             provider = PROVIDERS[prov_name]
             started = time.perf_counter()
             try:
-                data = await self._post(provider, self._payload(mod, messages, tools, tool_choice, temperature, max_tokens, False), timeout)
+                data = await self._post(provider, self._payload(mod, messages, tools, tool_choice, temperature, max_tokens, False, prov_name), timeout)
                 choice = (data.get("choices") or [{}])[0]
                 message = choice.get("message") or {}
                 elapsed = (time.perf_counter() - started) * 1000
@@ -313,49 +363,59 @@ class LLMGateway:
         chain = await self.candidates(model, purpose, local_only)
         for index, (prov_name, mod) in enumerate(chain):
             provider = PROVIDERS[prov_name]
+            keys_left = len(provider.keys()) - 1
             started = time.perf_counter()
             produced = False
             text_parts: List[str] = []
             calls: Dict[int, Dict[str, Any]] = {}
             finish = None
             try:
-                payload = self._payload(mod, messages, tools, None, temperature, max_tokens, True)
-                async with self._client().stream(
-                    "POST", f"{provider.base_url()}/chat/completions", json=payload,
-                    headers=self._headers(provider), timeout=timeout or settings.TIMEOUT_SECONDS,
-                ) as resp:
-                    if resp.status_code != 200:
-                        body = (await resp.aread()).decode("utf-8", "replace")[:300]
-                        raise RuntimeError(f"HTTP {resp.status_code}: {body}")
-                    async for line in resp.aiter_lines():
-                        if not line.startswith("data:"):
-                            continue
-                        chunk_str = line[5:].strip()
-                        if chunk_str == "[DONE]":
-                            break
-                        try:
-                            chunk = json.loads(chunk_str)
-                        except ValueError:
-                            continue
-                        choice = (chunk.get("choices") or [{}])[0]
-                        delta = choice.get("delta") or {}
-                        finish = choice.get("finish_reason") or finish
-                        if delta.get("content"):
-                            produced = True
-                            text_parts.append(delta["content"])
-                            yield "text", delta["content"]
-                        for tc in delta.get("tool_calls") or []:
-                            produced = True
-                            slot = calls.setdefault(int(tc.get("index", len(calls))), {"id": "", "name": "", "args": ""})
-                            slot["id"] = tc.get("id") or slot["id"]
-                            fn = tc.get("function") or {}
-                            slot["name"] = fn.get("name") or slot["name"]
-                            slot["args"] += fn.get("arguments") or ""
+                payload = self._payload(mod, messages, tools, None, temperature, max_tokens, True, prov_name)
+                rotated = True
+                while rotated:
+                    rotated = False
+                    async with self._client().stream(
+                        "POST", f"{provider.base_url()}/chat/completions", json=payload,
+                        headers=self._headers(provider), timeout=timeout or settings.TIMEOUT_SECONDS,
+                    ) as resp:
+                        if resp.status_code != 200:
+                            body = (await resp.aread()).decode("utf-8", "replace")[:300]
+                            if keys_left > 0 and _key_exhausted(resp.status_code, body):
+                                provider.rotate_key()
+                                keys_left -= 1
+                                rotated = True
+                                continue
+                            raise RuntimeError(f"HTTP {resp.status_code}: {body}")
+                        async for line in resp.aiter_lines():
+                            if not line.startswith("data:"):
+                                continue
+                            chunk_str = line[5:].strip()
+                            if chunk_str == "[DONE]":
+                                break
+                            try:
+                                chunk = json.loads(chunk_str)
+                            except ValueError:
+                                continue
+                            choice = (chunk.get("choices") or [{}])[0]
+                            delta = choice.get("delta") or {}
+                            finish = choice.get("finish_reason") or finish
+                            if delta.get("content"):
+                                produced = True
+                                text_parts.append(delta["content"])
+                                yield "text", delta["content"]
+                            for tc in delta.get("tool_calls") or []:
+                                produced = True
+                                slot = calls.setdefault(int(tc.get("index", len(calls))), {"id": "", "name": "", "args": "", "extra": None})
+                                slot["id"] = tc.get("id") or slot["id"]
+                                slot["extra"] = tc.get("extra_content") or slot["extra"]
+                                fn = tc.get("function") or {}
+                                slot["name"] = fn.get("name") or slot["name"]
+                                slot["args"] += fn.get("arguments") or ""
                 elapsed = (time.perf_counter() - started) * 1000
                 metrics.observe(f"llm.{prov_name}", elapsed)
                 metrics.incr(f"llm.calls.{prov_name}")
                 tool_calls = [
-                    ToolCall(c["id"] or f"call_{i}", c["name"], _parse_arguments(c["args"]), c["args"])
+                    ToolCall(c["id"] or f"call_{i}", c["name"], _parse_arguments(c["args"]), c["args"], c["extra"])
                     for i, c in sorted(calls.items()) if c["name"]
                 ]
                 yield "done", LLMResponse("".join(text_parts).strip(), prov_name, mod, tool_calls, round(elapsed, 1), {}, finish, index > 0)

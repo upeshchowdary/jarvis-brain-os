@@ -150,7 +150,7 @@ def test_questions_are_not_imperative(query):
 
 
 def test_model_aliases():
-    assert resolve_alias("groq") == "groq/llama-3.3-70b-versatile"
+    assert resolve_alias("groq") == "groq/openai/gpt-oss-120b"
     assert resolve_alias("ollama vision").startswith("ollama/")
     assert resolve_alias("qwen 2b").startswith("ollama/")
     assert resolve_alias("gpt-4o") == "openai/gpt-4o"

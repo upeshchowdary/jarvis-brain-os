@@ -176,9 +176,11 @@ class VoiceManager:
         while self._is_running:
             try:
                 if tts_engine.is_speaking:
+                    audio_capture.skip_to_live()  # never feed JARVIS's own voice into the VAD
                     await asyncio.sleep(0.05)
                     continue
-                chunk = audio_capture.read_chunk(timeout=0.1)
+                # Never block here: this loop shares the event loop with the API server.
+                chunk = audio_capture.read_chunk(timeout=0)
                 if chunk is None:
                     await asyncio.sleep(0.02)
                     continue

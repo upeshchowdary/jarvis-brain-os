@@ -69,7 +69,7 @@ class Settings(BaseSettings):
     DEFAULT_MODEL: str = "gemini/gemini-3.5-flash-lite"
     FAST_MODEL: str = "gemini/gemini-3.5-flash-lite"
     LLM_FALLBACKS: StrList = Field(
-        default_factory=lambda: ["groq/llama-3.3-70b-versatile", "openai/gpt-4o-mini", "ollama/qwen3.5:latest"]
+        default_factory=lambda: ["groq/openai/gpt-oss-120b", "openai/gpt-4o-mini", "ollama/qwen3.5:latest"]
     )
     GEMINI_MODEL: str = "gemini-3.5-flash-lite"
     TEMPERATURE: float = Field(default=0.2, ge=0.0, le=2.0)
@@ -80,6 +80,9 @@ class Settings(BaseSettings):
 
     GROQ_API_KEY: Optional[str] = None
     GEMINI_API_KEY: Optional[str] = None
+    # Extra Gemini keys (comma separated). The gateway rotates to the next one when a key
+    # hits its quota (429) or is rejected (401/403).
+    GEMINI_API_KEYS: StrList = Field(default_factory=list)
     OPENAI_API_KEY: Optional[str] = None
     ANTHROPIC_API_KEY: Optional[str] = None
     OPENROUTER_API_KEY: Optional[str] = None
@@ -98,6 +101,9 @@ class Settings(BaseSettings):
     # ── Safety ──────────────────────────────────────────────────────────
     DRY_RUN: bool = False
     CONFIRM_MEDIUM_RISK: bool = True
+    # false = high-risk actions (shutdown, kill, delete, send, shell…) run without asking.
+    # Emergency stop, dry run, the audit log, undo and the shutdown countdown still apply.
+    CONFIRM_HIGH_RISK: bool = True
     CONFIRMATION_TTL_SECONDS: float = Field(default=60.0, ge=5.0)
     POWER_ACTION_DELAY_SECONDS: int = Field(default=30, ge=5)
     PROTECTED_PROCESSES: StrList = Field(default_factory=lambda: [
@@ -146,7 +152,7 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
     LOG_FILE_PATH: str = "logs/jarvis.log"
 
-    @field_validator("CORS_ORIGINS", "LLM_FALLBACKS", "PROTECTED_PROCESSES", mode="before")
+    @field_validator("CORS_ORIGINS", "LLM_FALLBACKS", "PROTECTED_PROCESSES", "GEMINI_API_KEYS", mode="before")
     @classmethod
     def _split_list(cls, v: Any) -> Any:
         if isinstance(v, str):
@@ -182,6 +188,17 @@ class Settings(BaseSettings):
             "openrouter": self.OPENROUTER_API_KEY,
             "deepseek": self.DEEPSEEK_API_KEY,
         }.get(provider)
+
+    def api_keys_for(self, provider: str) -> List[str]:
+        """Every key for a provider, primary first, without duplicates."""
+        keys = [self.api_key_for(provider)]
+        if provider == "gemini":
+            keys += self.GEMINI_API_KEYS
+        out: List[str] = []
+        for key in keys:
+            if key and key not in out:
+                out.append(key)
+        return out
 
     def get_api_key_for_provider(self, provider: LLMProviderType | str) -> Optional[str]:
         return self.api_key_for(provider.value if isinstance(provider, LLMProviderType) else provider)

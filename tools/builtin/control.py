@@ -259,6 +259,7 @@ class AutomationStatus(Tool):
         return ToolResult.ok(
             f"Emergency stop: {'ACTIVE' if gateway.is_stopped else 'clear'}. Dry-run: {'on' if settings.DRY_RUN else 'off'}. "
             f"Medium-risk confirmation: {'on' if settings.CONFIRM_MEDIUM_RISK else 'off'}. "
+            f"High-risk confirmation: {'on' if settings.CONFIRM_HIGH_RISK else 'off'}. "
             f"Pending confirmation: {pending.preview if pending else 'none'}."
         )
 

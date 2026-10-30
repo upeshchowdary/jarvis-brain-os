@@ -64,6 +64,20 @@ async def test_medium_risk_confirmation_is_configurable(monkeypatch):
     assert (await gateway.execute(ActionRequest("test.medium"), "m2")).status == "executed"
 
 
+async def test_high_risk_confirmation_is_configurable(monkeypatch):
+    calls = []
+    register("test.high3", Risk.HIGH, calls)
+    monkeypatch.setattr(settings, "CONFIRM_HIGH_RISK", False)
+    res = await gateway.execute(ActionRequest("test.high3"), "h1")
+    assert res.status == "executed" and len(calls) == 1
+    # Emergency stop and dry run still apply when nothing asks first.
+    gateway.emergency_stop("test")
+    assert (await gateway.execute(ActionRequest("test.high3"), "h1")).status == "blocked"
+    gateway.resume()
+    assert (await gateway.execute(ActionRequest("test.high3"), "h1", dry_run=True)).status == "dry_run"
+    assert len(calls) == 1
+
+
 async def test_dry_run_never_executes(monkeypatch):
     calls = []
     register("test.dry", Risk.HIGH, calls)

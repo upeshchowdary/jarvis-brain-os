@@ -241,7 +241,7 @@ class ActionGateway:
     @staticmethod
     def needs_confirmation(risk: Risk) -> bool:
         if risk >= Risk.HIGH:
-            return True
+            return settings.CONFIRM_HIGH_RISK
         if risk == Risk.MEDIUM:
             return settings.CONFIRM_MEDIUM_RISK
         return False

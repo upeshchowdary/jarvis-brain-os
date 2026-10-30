@@ -8,11 +8,14 @@ import pytest
 from core import connectivity
 from core.config import settings
 from core.llm import LLMUnavailable, llm, resolve_model
+from core.llm import gateway as gateway_module
 
 
 @pytest.fixture
 def gw(monkeypatch):
     monkeypatch.setattr(settings, "GEMINI_API_KEY", "gem-key")
+    monkeypatch.setattr(settings, "GEMINI_API_KEYS", [])
+    monkeypatch.setattr(gateway_module, "_KEY_CURSOR", {})
     monkeypatch.setattr(settings, "GROQ_API_KEY", "groq-key")
     monkeypatch.setattr(settings, "ANTHROPIC_API_KEY", "ant-key")
     monkeypatch.setattr(settings, "DEFAULT_MODEL", "gemini/gemini-test")
@@ -89,6 +92,93 @@ async def test_fallback_chain_on_errors(gw):
     gw(handler)
     res = await llm.chat([{"role": "user", "content": "x"}])
     assert res.provider == "groq" and res.fallback_used is True
+
+
+async def test_gemini_thought_signature_is_sent_back(gw):
+    """Gemini 3 rejects a follow-up turn unless each tool call's thought_signature is echoed back."""
+    extra = {"google": {"thought_signature": "sig-123"}}
+    tc = [{"id": "c1", "type": "function", "extra_content": extra, "function": {"name": "get_time_date", "arguments": "{}"}}]
+    gw(lambda r: ok("", tool_calls=tc))
+    res = await llm.chat([{"role": "user", "content": "time?"}], tools=[{"type": "function", "function": {"name": "get_time_date"}}])
+    assert res.assistant_message()["tool_calls"][0]["extra_content"] == extra
+
+
+async def test_streamed_thought_signature_is_sent_back(gw):
+    extra = {"google": {"thought_signature": "sig-456"}}
+    chunk = {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "c2", "extra_content": extra,
+                                                    "function": {"name": "get_time_date", "arguments": "{}"}}]}}]}
+    body = f"data: {json.dumps(chunk)}\n\ndata: [DONE]\n\n"
+    gw(lambda r: httpx.Response(200, text=body, headers={"content-type": "text/event-stream"}))
+    events = [e async for e in llm.stream_events([{"role": "user", "content": "x"}])]
+    assert events[-1][1].assistant_message()["tool_calls"][0]["extra_content"] == extra
+
+
+async def test_unsigned_tool_calls_get_placeholder_signature_for_gemini_only(gw):
+    """Tool calls JARVIS injected itself (fast path) or got from another provider carry no signature."""
+    signed = {"google": {"thought_signature": "real"}}
+    history = [
+        {"role": "user", "content": "x"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "fast_0", "type": "function", "function": {"name": "screen_look", "arguments": "{}"}},
+            {"id": "c1", "type": "function", "extra_content": signed, "function": {"name": "web_search", "arguments": "{}"}},
+        ]},
+        {"role": "tool", "tool_call_id": "fast_0", "content": "screen"},
+        {"role": "tool", "tool_call_id": "c1", "content": "results"},
+    ]
+    seen = gw(lambda r: ok("answer"))
+    await llm.chat(history)
+    sent = json.loads(seen[0].content)["messages"][1]["tool_calls"]
+    assert sent[0]["extra_content"]["google"]["thought_signature"] == "skip_thought_signature_validator"
+    assert sent[1]["extra_content"] == signed
+    assert "extra_content" not in history[1]["tool_calls"][0]  # caller's messages are not mutated
+    seen.clear()
+    await llm.chat(history, model="groq/llama-test")
+    assert "extra_content" not in json.loads(seen[0].content)["messages"][1]["tool_calls"][0]
+
+
+async def test_gemini_rotates_to_next_key_on_quota(gw, monkeypatch):
+    monkeypatch.setattr(settings, "GEMINI_API_KEYS", ["gem-key", "gem-2", "gem-3"])
+
+    def handler(request):
+        if request.headers["authorization"] == "Bearer gem-3":
+            return ok("third key works")
+        return httpx.Response(429, text="quota exceeded")
+
+    seen = gw(handler)
+    res = await llm.chat([{"role": "user", "content": "x"}])
+    assert res.content == "third key works" and res.provider == "gemini" and res.fallback_used is False
+    assert [r.headers["authorization"] for r in seen] == ["Bearer gem-key", "Bearer gem-2", "Bearer gem-3"]
+    # The working key sticks for the next call.
+    seen.clear()
+    await llm.chat([{"role": "user", "content": "y"}])
+    assert seen[0].headers["authorization"] == "Bearer gem-3"
+
+
+async def test_all_gemini_keys_exhausted_falls_back(gw, monkeypatch):
+    monkeypatch.setattr(settings, "GEMINI_API_KEYS", ["gem-2"])
+
+    def handler(request):
+        if "googleapis" in str(request.url):
+            return httpx.Response(429, text="quota exceeded")
+        return ok("from groq")
+
+    gw(handler)
+    res = await llm.chat([{"role": "user", "content": "x"}])
+    assert res.provider == "groq" and res.fallback_used is True
+
+
+async def test_streaming_rotates_key(gw, monkeypatch):
+    monkeypatch.setattr(settings, "GEMINI_API_KEYS", ["gem-2"])
+    body = f"data: {json.dumps({'choices': [{'delta': {'content': 'ok'}}]})}\n\ndata: [DONE]\n\n"
+
+    def handler(request):
+        if request.headers["authorization"] == "Bearer gem-key":
+            return httpx.Response(403, text="key rejected")
+        return httpx.Response(200, text=body, headers={"content-type": "text/event-stream"})
+
+    seen = gw(handler)
+    events = [e async for e in llm.stream_events([{"role": "user", "content": "x"}])]
+    assert events[-1][1].content == "ok" and events[-1][1].provider == "gemini" and len(seen) == 2
 
 
 async def test_all_fail_raises(gw):

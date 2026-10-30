@@ -18,9 +18,10 @@ os.environ["JARVIS_API_TOKEN"] = "test-token"
 os.environ["BACKGROUND_SERVICES"] = "false"
 os.environ["DRY_RUN"] = "false"
 os.environ["CONFIRM_MEDIUM_RISK"] = "true"
+os.environ["CONFIRM_HIGH_RISK"] = "true"
 os.environ["ROUTER_USE_LLM"] = "true"
 # No real provider keys in tests: every LLM call is mocked.
-for _key in ("GROQ_API_KEY", "GEMINI_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
+for _key in ("GROQ_API_KEY", "GEMINI_API_KEY", "GEMINI_API_KEYS", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
              "OPENROUTER_API_KEY", "DEEPSEEK_API_KEY"):
     os.environ[_key] = ""
 

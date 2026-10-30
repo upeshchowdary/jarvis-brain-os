@@ -880,7 +880,8 @@ async function loadSystem() {
   state.serverDryRun = Boolean(c.dry_run);
   facts($("safetyFacts"), [
     ["Dry run for everything", c.dry_run ? "On" : "Off"],
-    ["Ask before medium risk", c.confirm_medium_risk ? "Yes" : "No, only high risk asks"],
+    ["Ask before medium risk", c.confirm_medium_risk ? "Yes" : "No"],
+    ["Ask before high risk", c.confirm_high_risk === false ? "No: actions run without asking" : "Yes"],
     ["Private mode", c.privacy_mode === "local" ? "On: files and screen go to local models only" : "Off"],
     ["Emergency stop", state.stopped ? "Active" : "Clear"],
   ]);
