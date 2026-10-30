@@ -18,7 +18,7 @@ For every request the gateway:
 3. **enforces dry-run** — `settings.DRY_RUN` or a per-request override returns the plan and decisions only;
 4. **asks for confirmation** — HIGH always; MEDIUM unless `CONFIRM_MEDIUM_RISK=false`. The pending action is
    stored per session for 60 s. "yes / confirm / do it / go ahead" runs it; anything else cancels it;
-5. **checks the emergency stop** — "emergency stop" / dashboard button / voice "stop" blocks everything and
+5. **checks the emergency stop** — "emergency stop" / the console's Stop everything button / voice "stop" blocks everything and
    clears pending actions until "resume";
 6. **audits** — append-only `data/audit.jsonl` (time, session, source, operation, target, risk, decision, result);
 7. **records undo** — file operations store their inverse so "undo that" works.
@@ -69,10 +69,11 @@ Risk overrides (`data/risk_policy.json`, e.g. `{"ui.type": "low"}`) can relax ME
 ## 5. API surface
 
 * Binds to 127.0.0.1 by default.
-* Every route except `/health` requires `Authorization: Bearer <JARVIS_API_TOKEN>` (random 256-bit token generated
+* Every route except `/health` and the static web pages requires `Authorization: Bearer <JARVIS_API_TOKEN>` (random 256-bit token generated
   into `.env` on first run, compared in constant time).
 * CORS is closed unless `CORS_ORIGINS` is set; per-client rate limit; request IDs; interactive docs hidden unless
-  `DEBUG=true`; the dashboard is served with a strict Content-Security-Policy and renders untrusted text as text.
+  `DEBUG=true`; the site and console are served with a strict Content-Security-Policy (`script-src 'self'`, no inline
+  script or eval, no framing) and render untrusted text only as text (`tests/test_web_ui.py` enforces both).
 
 ## 6. Tests
 

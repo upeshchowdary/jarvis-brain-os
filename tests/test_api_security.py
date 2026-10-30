@@ -9,7 +9,7 @@ from app.main import app
 from automation.gateway import gateway
 from core.config import Settings, settings
 
-PUBLIC = {"/health", "/dashboard"}
+PUBLIC = {"/health", "/", "/console", "/dashboard", "/web/{asset:path}"}  # static pages; their data calls need the token
 
 
 def _walk(routes):

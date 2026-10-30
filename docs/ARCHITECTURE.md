@@ -1,7 +1,8 @@
 # Architecture
 
 ```
-app/            FastAPI app: routes (chat, stream, automation, productivity, voice, events, metrics), auth, dashboard
+app/            FastAPI app: routes (chat, stream, automation, productivity, voice, events, metrics), auth,
+                web (site at /, console at /console; static files in app/static/web, strict CSP)
 brain/          pipeline.py (turn handling), router.py (fast path + utterance shape), prompts.py, conversation & persona
 core/           config (single source), paths (data/), logging (request IDs), llm/ (provider gateway),
                 session (per-session LRU/TTL state), events (bus), metrics, connectivity
@@ -61,7 +62,7 @@ needs no wake word.
 
 Started with the API when `BACKGROUND_SERVICES=true`: reminder scheduler (1 s tick, SQLite), health monitor (30 s),
 clipboard history (1 s), workflow triggers (2 s), MCP client connections. Notifications go to Windows toasts, the
-voice (if running) and the dashboard event stream.
+voice (if running) and the console's live activity stream (`/events`).
 
 ## Data (`data/`, git-ignored)
 

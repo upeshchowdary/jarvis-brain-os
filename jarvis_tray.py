@@ -28,7 +28,7 @@ def _icon_image():
 
 
 def register_hotkey(url: str) -> None:
-    """Win+J opens the dashboard (uses pynput if installed)."""
+    """Win+J opens the console (uses pynput if installed)."""
     try:
         from pynput import keyboard  # type: ignore
     except ImportError:
@@ -43,7 +43,7 @@ def run_tray(url: str, on_quit: Callable[[], None]) -> None:
 
     register_hotkey(url)
     menu = pystray.Menu(
-        pystray.MenuItem("Open dashboard", lambda: webbrowser.open(url), default=True),
+        pystray.MenuItem("Open console", lambda: webbrowser.open(url), default=True),
         pystray.MenuItem("Start voice", lambda: _post("/voice/start")),
         pystray.MenuItem("Stop voice", lambda: _post("/voice/stop")),
         pystray.MenuItem("Emergency stop", lambda: _post("/automation/stop")),

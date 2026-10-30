@@ -2,7 +2,7 @@
 
 A fast, voice-first personal AI assistant that can actually operate your Windows PC — **safely**.
 
-Talk to it ("Hey JARVIS, organize my downloads") or type in the dashboard. It answers questions with any LLM you
+Talk to it ("Hey JARVIS, organize my downloads"), or type or speak in the web console. It answers questions with any LLM you
 like (Gemini, Groq, OpenAI, Claude, OpenRouter, DeepSeek, or fully local with Ollama / LM Studio), and performs
 real actions — apps, windows, volume, files, reminders, routines, browser tasks, messages — through a single
 safety gateway that previews risky actions and asks before doing them.
@@ -52,8 +52,8 @@ Open `.env` and set at least one key (e.g. `GEMINI_API_KEY=…`), then:
 python jarvis.py --open
 ```
 
-The dashboard opens at <http://127.0.0.1:8000/dashboard>. Paste the API token printed in the console (it is also saved
-in `.env` as `JARVIS_API_TOKEN`). Done.
+The console opens at <http://127.0.0.1:8000/console>. Paste the API token printed in the terminal (it is also saved
+in `.env` as `JARVIS_API_TOKEN`). Done. The project's own page is at <http://127.0.0.1:8000/>.
 
 Optional extras:
 
@@ -66,6 +66,25 @@ Optional extras:
 | Browser agent | `playwright install chromium` |
 | Terminal chat | `python chat.py` (streams tokens) |
 | Use JARVIS from Claude Desktop / Cursor | see [MCP](#mcp) |
+
+---
+
+## The console
+
+`/console` is where you work with JARVIS from a browser. Phone widths are supported.
+
+| View | What you do there |
+|---|---|
+| **Talk** | Type or press the mic and speak. Replies stream in. Each reply shows how it was handled (fast path or model, risk, time), and risky actions get Approve and Cancel buttons. Turns spoken to the PC microphone appear here too. |
+| **Waiting for you** | Every action waiting for approval, from voice, schedules, routines or other apps. |
+| **Today** | Reminders ("in 20 minutes", "every weekday at 8"), to-dos, notes, and your briefing. |
+| **Routines** | Rehearse (dry run) or run routines and recorded workflows. |
+| **Activity log** | Everything JARVIS did or refused, filtered by risk, plus "Undo last file change". |
+| **System** | Latency per step, models and fallbacks, safety settings, and the PC microphone on or off. |
+
+**Stop everything** in the top bar halts all automation until you resume. The **Dry run** switch rehearses
+whatever you send from that console. Browser speech recognition works in Chrome and Edge. In other browsers the
+mic button switches on the PC microphone instead.
 
 ---
 
@@ -101,7 +120,7 @@ Proactive: low-battery / high-CPU / full-disk alerts, reminder toasts, scheduled
 ## How it works
 
 ```
- voice (wake word → VAD → faster-whisper)   chat.py   dashboard   REST API   MCP clients
+ voice (wake word → VAD → faster-whisper)   chat.py   console    REST API   MCP clients
                        │                       │          │          │          │
                        └───────────────┬───────┴──────────┴──────────┴──────────┘
                                        ▼
@@ -141,7 +160,7 @@ More: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · [docs/SAFETY.md](docs/SAFE
 | MEDIUM | clicking/typing in apps, writing/renaming files, email drafts, browser agent | asks first (`CONFIRM_MEDIUM_RISK=false` to relax) |
 | HIGH | shutdown/restart/sleep, kill process, delete (Recycle Bin), move files, send messages, shell, wifi off | **always** asks |
 
-Everything is logged to `data/audit.jsonl` and visible in the dashboard. Dry-run (`DRY_RUN=true` or "enable dry run")
+Everything is logged to `data/audit.jsonl` and visible in the console's activity log. Dry-run (`DRY_RUN=true` or "enable dry run")
 simulates everything. Web pages, files and screen text are treated as untrusted data and can't trigger actions.
 `PRIVACY_MODE=local` keeps file and screen content on your machine (Ollama / LM Studio only). The API listens on
 127.0.0.1 only and requires the token.
@@ -183,7 +202,8 @@ JARVIS speaks the [Model Context Protocol](https://modelcontextprotocol.io):
 
 ## API
 
-Every route except `/health` needs `Authorization: Bearer <JARVIS_API_TOKEN>`.
+Every route except `/health` and the static web pages (`/`, `/console`, `/web/*`) needs
+`Authorization: Bearer <JARVIS_API_TOKEN>`.
 
 | Route | Purpose |
 |---|---|
@@ -202,12 +222,12 @@ Every route except `/health` needs `Authorization: Bearer <JARVIS_API_TOKEN>`.
 | Problem | Fix |
 |---|---|
 | "I can't reach a language model" | add an API key to `.env`, or start Ollama (`ollama serve`) and `ollama pull qwen3.5` |
-| Dashboard says token rejected | copy `JARVIS_API_TOKEN` from `.env` (no quotes) |
+| Console says the token was rejected | copy `JARVIS_API_TOKEN` from `.env` (no quotes) |
 | Volume/brightness/windows do nothing | install the Windows extras: `pip install -e ".[windows]"` |
 | Voice doesn't hear me | check `/voice/devices`, select the mic with `POST /voice/device/select`; lower `ENERGY_THRESHOLD` |
 | Whisper is slow | use `WHISPER_MODEL=tiny.en` or a CUDA GPU; or `STT_ENGINE=google` |
 | A command was misunderstood | rephrase as a command ("open …", "set …"); questions are always answered, never executed |
-| Something went wrong | say "emergency stop", check the audit log in the dashboard, "undo that" for file operations |
+| Something went wrong | say "emergency stop" (or press Stop everything), check the console's activity log, "undo that" for file operations |
 
 ---
 

@@ -82,10 +82,10 @@ def create_app() -> FastAPI:
         app.include_router(r, dependencies=protected)
 
     from app.api.routes.extras import router as extras_router
-    from app.api.routes.dashboard import router as dashboard_router
+    from app.api.routes.web import router as web_router
 
     app.include_router(extras_router, dependencies=protected)
-    app.include_router(dashboard_router)  # static page only; it calls the API with the token
+    app.include_router(web_router)  # static site + console; every data call they make needs the token
     return app
 
 

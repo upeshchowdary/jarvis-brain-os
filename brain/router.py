@@ -298,7 +298,8 @@ def _replay(m: re.Match) -> RouteDecision:
 
 
 # Reminders, notes, to-dos, briefing, weather, clipboard (Phase 5).
-@rule(r"(?:remind me|set (?:a |an )?reminder|set (?:an )?alarm)(?: for| to| at| in| on| every)? (?P<rest>.{3,200})", "reminder")
+# Time words ("in 10 minutes", "at 6 pm", "every weekday") stay in <rest> so the time parser sees them.
+@rule(r"(?:remind me|set (?:a |an )?reminder|set (?:an )?alarm)(?: for| to)? (?P<rest>.{3,200})", "reminder")
 def _reminder(m: re.Match) -> Optional[RouteDecision]:
     from services.timeparse import parse_when
 

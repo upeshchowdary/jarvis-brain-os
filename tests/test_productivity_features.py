@@ -273,7 +273,7 @@ def test_productivity_api(sync_client):
     assert any(t["text"] == "pay rent" for t in sync_client.get("/todos").json()["todos"])
     names = [r["name"] for r in sync_client.get("/routines").json()["routines"]]
     assert "study mode" in names
-    page = sync_client.get("/dashboard")
+    page = sync_client.get("/console")
     assert page.status_code == 200 and "Content-Security-Policy" in page.headers and "JARVIS" in page.text
 
 
@@ -281,3 +281,22 @@ def test_env_example_lists_every_secret():
     text = open(os.path.join(os.path.dirname(__file__), "..", ".env.example"), encoding="utf-8").read()
     for key in ("GEMINI_API_KEY", "GROQ_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "PRIVACY_MODE", "HOST", "DRY_RUN"):
         assert key in text
+
+
+@pytest.mark.parametrize("utterance,text", [
+    ("remind me in 10 minutes to stretch", "stretch"),
+    ("remind me to stretch in 10 minutes", "stretch"),
+    ("remind me at 6 pm to submit the report", "submit the report"),
+    ("remind me every weekday at 9 to open class links", "open class links"),
+    ("set a reminder for tomorrow 9am to call mom", "call mom"),
+    ("remind me on friday to pay rent", "pay rent"),
+])
+def test_reminder_phrasings_take_the_fast_path(utterance, text):
+    """Time words after "remind me" ("in", "at", "on", "every") must reach the time parser."""
+    from brain.router import fast_route
+    from services.timeparse import parse_when, strip_time_phrase
+
+    decision = fast_route(utterance)
+    assert decision is not None and decision.tool == "set_reminder"
+    when = parse_when(decision.args["when"])
+    assert when is not None and strip_time_phrase(decision.args["text"], when) == text

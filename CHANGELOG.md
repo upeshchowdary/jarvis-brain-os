@@ -149,3 +149,40 @@ Every action-taking feature runs through the ActionGateway with the right risk l
 - The document reader prefers pypdf (BSD) over PyMuPDF (AGPL), which is no longer a dependency.
 
 **Verify**: `pip install -e ".[dev]" && python -m pytest -q && ruff check . && pyright`.
+
+## Web interface — project site and console
+
+- **Project site at `/`**: what JARVIS is, the safety model with the risk table, what you can say, how a command
+  travels, supported models, setup steps with copy buttons. Its live element follows one sentence through
+  JARVIS (heard → understood → checked → result). The example sentences use real responses. Once this browser is
+  connected, your own sentence runs on your PC as a **dry run** (`/automation/execute`, `dry_run: true`), and any
+  pending action it creates is cancelled.
+- **Console at `/console`** (replaces `/dashboard`, which now redirects with 308):
+  - **Talk**: streaming replies with a safe Markdown renderer, per-turn trace (route, risk, latency, tools),
+    inline approve/cancel with a countdown, per-conversation model choice, new conversation, and a per-console
+    dry-run switch.
+  - **Voice in the browser**: speech recognition via the Web Speech API, with a live mic level that stretches the
+    JARVIS wordmark and transcript. Replies are read aloud (speech synthesis). Turns spoken to the PC microphone
+    appear in the thread live.
+  - **Rail**: "Waiting for you" (every pending approval, from any source) and the live activity feed (`/events` SSE,
+    auto-reconnect).
+  - **Today**: reminders (natural-language times, with errors shown inline), to-dos, notes with search, and the
+    briefing.
+  - **Routines**: routines and recorded workflows, rehearse (dry run) or run, with approvals inline.
+  - **Activity log**: the audit trail, filtered by risk, with "Undo last file change".
+  - **System**: uptime, turns, share answered without a model, tool count, per-stage latency (p50 bar, p95 tick),
+    models and fallbacks, safety settings, PC microphone start/stop, device and level.
+  - **Shell**: Stop everything / Resume, connection state, light/dark/system theme, and a phone layout with a
+    bottom bar.
+- **Design**: one self-hosted typeface, Hubot Sans (SIL OFL 1.1; licence at `/web/fonts/OFL.txt`), used on its
+  width axis. Colour is reserved for JARVIS's own activity (ion) and for risk.
+- **Security**: pages and assets come from `app/api/routes/web.py` with `script-src 'self'` (no inline script, no
+  eval), `frame-ancestors 'none'`, `nosniff` and a microphone-only permissions policy. Assets are restricted to
+  `app/static/web` by path and type. The token stays in the browser and is sent only as the Authorization header;
+  untrusted text is only ever set as text.
+- **Router fix**: "remind me in 10 minutes to …", "remind me on friday to …" and "set a reminder for tomorrow 9am
+  to …" lost their time word and fell through to the language model. They now take the fast path (regression
+  tests added).
+
+**Verify**: `pytest tests/test_web_ui.py` (CSP, no inline code, assets and traversal, and that every API path the UI
+calls exists), then `python jarvis.py --open`.

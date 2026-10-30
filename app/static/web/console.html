@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>JARVIS console</title>
+  <meta name="theme-color" content="#000000">
+  <link rel="icon" href="/web/mark.svg" type="image/svg+xml">
+  <link rel="preload" href="/web/fonts/hubot-sans-latin-wdth-normal.woff2" as="font" type="font/woff2" crossorigin>
+  <script src="/web/js/theme.js"></script>
+  <link rel="stylesheet" href="/web/css/base.css">
+  <link rel="stylesheet" href="/web/css/console.css">
+  <script src="/web/js/console.js" defer></script>
+</head>
+<body class="console">
+  <svg width="0" height="0" class="visually-hidden" aria-hidden="true">
+    <symbol id="i-talk" viewBox="0 0 24 24"><path d="M4 5.5h16v10H9.5L5 19.5v-4H4z"/></symbol>
+    <symbol id="i-today" viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="15" rx="2"/><path d="M4 9.5h16M8.5 3v4M15.5 3v4"/></symbol>
+    <symbol id="i-routines" viewBox="0 0 24 24"><path d="M5 7h10M5 12h14M5 17h8"/><path d="M18 5.5l2 1.5-2 1.5"/></symbol>
+    <symbol id="i-log" viewBox="0 0 24 24"><path d="M7 4h10l3 3v13H4V4h3z"/><path d="M8 10h8M8 14h8M8 18h5"/></symbol>
+    <symbol id="i-system" viewBox="0 0 24 24"><path d="M4 18V12M9 18V6M14 18v-8M19 18V9"/></symbol>
+    <symbol id="i-mic" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21"/></symbol>
+    <symbol id="i-send" viewBox="0 0 24 24"><path d="M4 12l16-8-6 16-2.5-6.5z"/></symbol>
+    <symbol id="i-stop" viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="2"/></symbol>
+    <symbol id="i-theme" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 4v16" /><path d="M12 4a8 8 0 0 1 0 16z" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+    <symbol id="i-undo" viewBox="0 0 24 24"><path d="M8 7L4 11l4 4"/><path d="M4 11h10a6 6 0 0 1 0 12h-3"/></symbol>
+    <symbol id="i-speaker" viewBox="0 0 24 24"><path d="M4 9.5h4l5-4v13l-5-4H4z"/><path d="M16.5 9a4 4 0 0 1 0 6M19 6.5a7.5 7.5 0 0 1 0 11"/></symbol>
+  </svg>
+
+  <!-- Connect: the token never leaves this browser except as the Authorization header to this PC. -->
+  <main class="gate" id="gate" hidden>
+    <form class="gate-card" id="gateForm" autocomplete="off">
+      <svg class="mark gate-mark" viewBox="0 0 26 26" aria-hidden="true"><circle cx="13" cy="13" r="11.6" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M5.5 13h3.2l1.9-4.2 3 8.4 1.9-4.2h5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <h1 class="gate-title">Connect to JARVIS</h1>
+      <p class="gate-text">Paste the API token from the terminal where JARVIS started, or from <code>JARVIS_API_TOKEN</code> in your <code>.env</code> file. It stays in this browser.</p>
+      <label class="label" for="tokenInput">API token</label>
+      <input class="field" id="tokenInput" type="password" autocomplete="off" spellcheck="false" aria-describedby="gateError" required>
+      <p class="gate-error" id="gateError" role="alert"></p>
+      <button class="btn btn-primary gate-btn" type="submit">Connect</button>
+      <a class="gate-back" href="/">About JARVIS</a>
+    </form>
+  </main>
+
+  <div class="shell" id="app" hidden>
+    <header class="bar">
+      <a class="wordmark" href="/" title="About JARVIS">
+        <svg class="mark" id="barMark" viewBox="0 0 26 26" aria-hidden="true"><circle cx="13" cy="13" r="11.6" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M5.5 13h3.2l1.9-4.2 3 8.4 1.9-4.2h5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span class="wordmark-text" id="wordmark">JARVIS</span>
+      </a>
+      <p class="link-state" id="linkState" data-state="connecting"><span class="link-dot" aria-hidden="true"></span><span id="linkText">Connecting</span></p>
+      <p class="pc-voice" id="pcVoice" hidden><svg class="icon"><use href="#i-mic"/></svg><span id="pcVoiceText">Listening on this PC</span></p>
+      <div class="bar-end">
+        <button class="switch" id="dryRun" type="button" role="switch" aria-checked="false" title="Plan actions without doing them. Applies to what you send from this console.">
+          <span class="switch-track" aria-hidden="true"><span class="switch-thumb"></span></span><span class="switch-label">Dry run</span>
+        </button>
+        <button class="btn btn-quiet icon-btn" id="themeBtn" type="button" aria-label="Theme: follows your system"><svg class="icon"><use href="#i-theme"/></svg></button>
+        <button class="btn btn-stop" id="stopBtn" type="button"><svg class="icon"><use href="#i-stop"/></svg><span>Stop everything</span></button>
+      </div>
+    </header>
+
+    <div class="stopped" id="stoppedBanner" role="alert" hidden>
+      <p><strong>Automation is stopped.</strong> Nothing will run, and nothing new can wait for approval, until you resume.</p>
+      <button class="btn btn-sm" id="resumeBtn" type="button">Resume automation</button>
+    </div>
+
+    <nav class="side" aria-label="Console">
+      <a class="side-link" href="#talk" data-view="talk"><svg class="icon"><use href="#i-talk"/></svg><span>Talk</span><span class="count" id="navPending" hidden></span></a>
+      <a class="side-link" href="#today" data-view="today"><svg class="icon"><use href="#i-today"/></svg><span>Today</span></a>
+      <a class="side-link" href="#routines" data-view="routines"><svg class="icon"><use href="#i-routines"/></svg><span>Routines</span></a>
+      <a class="side-link" href="#log" data-view="log"><svg class="icon"><use href="#i-log"/></svg><span>Activity log</span></a>
+      <a class="side-link" href="#system" data-view="system"><svg class="icon"><use href="#i-system"/></svg><span>System</span></a>
+      <button class="side-link side-foot" id="disconnectBtn" type="button"><svg class="icon"><use href="#i-x"/></svg><span>Disconnect</span></button>
+    </nav>
+
+    <main class="main" id="main">
+      <!-- ── Talk ─────────────────────────────────────────────────────── -->
+      <section class="view view-talk" id="view-talk" aria-labelledby="talk-title">
+        <div class="talk">
+          <div class="view-head">
+            <h1 class="view-title" id="talk-title">Talk</h1>
+            <div class="view-tools">
+              <label class="visually-hidden" for="modelSelect">Model for this conversation</label>
+              <select class="field field-sm" id="modelSelect" title="Model for this conversation"><option value="">Default model</option></select>
+              <button class="btn btn-sm" id="newChatBtn" type="button" aria-label="New conversation"><svg class="icon"><use href="#i-plus"/></svg><span class="btn-text">New conversation</span></button>
+            </div>
+          </div>
+
+          <div class="thread" id="thread">
+            <div class="thread-empty" id="threadEmpty">
+              <p class="empty-lead">Ask a question or give a command.</p>
+              <p class="empty-sub">Questions are answered. Commands run through the safety gateway, and anything risky waits for you here.</p>
+              <div class="suggestions" role="group" aria-label="Try one">
+                <button type="button" class="chip" data-say="what can you do?">what can you do?</button>
+                <button type="button" class="chip" data-say="give me my briefing">give me my briefing</button>
+                <button type="button" class="chip" data-say="set volume to 30">set volume to 30</button>
+                <button type="button" class="chip" data-say="remind me in 10 minutes to stretch">remind me in 10 minutes to stretch</button>
+                <button type="button" class="chip" data-say="automation status">automation status</button>
+              </div>
+            </div>
+          </div>
+
+          <form class="composer" id="composer" autocomplete="off">
+            <p class="voice-line" id="voiceLine" aria-live="polite" hidden></p>
+            <div class="composer-row">
+              <label class="visually-hidden" for="input">Message to JARVIS</label>
+              <textarea class="composer-input" id="input" rows="1" maxlength="8000" placeholder="Ask or tell JARVIS…"></textarea>
+              <button class="btn icon-btn mic" id="micBtn" type="button" aria-pressed="false" aria-label="Speak"><svg class="icon"><use href="#i-mic"/></svg></button>
+              <button class="btn btn-primary icon-btn" id="sendBtn" type="submit" aria-label="Send"><svg class="icon"><use href="#i-send"/></svg></button>
+            </div>
+            <div class="composer-foot">
+              <button class="switch switch-sm" id="speakReplies" type="button" role="switch" aria-checked="false"><span class="switch-track" aria-hidden="true"><span class="switch-thumb"></span></span><span class="switch-label">Read replies aloud</span></button>
+              <span class="composer-hint" id="composerHint">Enter sends, Shift+Enter adds a line</span>
+            </div>
+          </form>
+        </div>
+
+        <aside class="rail" aria-label="Approvals and activity">
+          <section class="panel approvals" aria-labelledby="approvals-title">
+            <div class="panel-head"><h2 class="panel-title" id="approvals-title">Waiting for you</h2><span class="panel-count" id="pendingCount">0</span></div>
+            <ul class="approval-list" id="approvalList"></ul>
+            <p class="panel-empty" id="approvalEmpty">Nothing is waiting for approval.</p>
+          </section>
+          <section class="panel live" aria-labelledby="live-title">
+            <div class="panel-head"><h2 class="panel-title" id="live-title">Live activity</h2></div>
+            <ol class="feed" id="feed" aria-live="off"></ol>
+            <p class="panel-empty" id="feedEmpty">Actions, reminders and voice commands show up here as they happen.</p>
+          </section>
+        </aside>
+      </section>
+
+      <!-- ── Today ────────────────────────────────────────────────────── -->
+      <section class="view view-today" id="view-today" aria-labelledby="today-title" hidden>
+        <div class="view-head">
+          <h1 class="view-title" id="today-title">Today</h1>
+          <div class="view-tools"><button class="btn btn-sm" id="briefingBtn" type="button">Get my briefing</button></div>
+        </div>
+        <div class="briefing" id="briefing" hidden></div>
+        <div class="today-grid">
+          <section class="panel" aria-labelledby="rem-title">
+            <div class="panel-head"><h2 class="panel-title" id="rem-title">Reminders</h2><span class="panel-count" id="remCount">0</span></div>
+            <form class="add-form two" id="remForm">
+              <label class="visually-hidden" for="remText">Reminder</label>
+              <input class="field" id="remText" placeholder="Submit the report" required maxlength="500">
+              <label class="visually-hidden" for="remWhen">When</label>
+              <input class="field" id="remWhen" placeholder="today at 6 pm" required maxlength="200" aria-describedby="remHelp">
+              <button class="btn" type="submit">Add reminder</button>
+            </form>
+            <p class="field-help" id="remHelp">Times like “in 20 minutes”, “tomorrow 9am” or “every weekday at 8”.</p>
+            <p class="form-error" id="remError" role="alert"></p>
+            <ul class="rows" id="remList"></ul>
+            <p class="panel-empty" id="remEmpty">No reminders scheduled.</p>
+          </section>
+          <section class="panel" aria-labelledby="todo-title">
+            <div class="panel-head"><h2 class="panel-title" id="todo-title">To-do</h2><span class="panel-count" id="todoCount">0</span></div>
+            <form class="add-form" id="todoForm">
+              <label class="visually-hidden" for="todoText">New to-do</label>
+              <input class="field" id="todoText" placeholder="Buy milk" required maxlength="5000">
+              <button class="btn" type="submit">Add to-do</button>
+            </form>
+            <ul class="rows" id="todoList"></ul>
+            <p class="panel-empty" id="todoEmpty">Your list is clear.</p>
+          </section>
+          <section class="panel panel-wide" aria-labelledby="notes-title">
+            <div class="panel-head"><h2 class="panel-title" id="notes-title">Notes</h2><span class="panel-count" id="noteCount">0</span></div>
+            <form class="add-form" id="noteForm">
+              <label class="visually-hidden" for="noteText">New note</label>
+              <input class="field" id="noteText" placeholder="The Wi-Fi password is on the router" required maxlength="5000">
+              <button class="btn" type="submit">Save note</button>
+            </form>
+            <label class="visually-hidden" for="noteSearch">Search notes</label>
+            <input class="field field-sm note-search" id="noteSearch" type="search" placeholder="Search notes">
+            <ul class="rows notes" id="noteList"></ul>
+            <p class="panel-empty" id="noteEmpty">No notes yet.</p>
+          </section>
+        </div>
+      </section>
+
+      <!-- ── Routines ─────────────────────────────────────────────────── -->
+      <section class="view view-routines" id="view-routines" aria-labelledby="routines-title" hidden>
+        <div class="view-head">
+          <h1 class="view-title" id="routines-title">Routines</h1>
+          <div class="view-tools">
+            <button class="switch switch-sm" id="rehearse" type="button" role="switch" aria-checked="true"><span class="switch-track" aria-hidden="true"><span class="switch-thumb"></span></span><span class="switch-label">Rehearse first (dry run)</span></button>
+          </div>
+        </div>
+        <section class="panel" aria-labelledby="rt-title">
+          <div class="panel-head"><h2 class="panel-title" id="rt-title">Routines</h2><span class="panel-count" id="rtCount">0</span></div>
+          <p class="panel-sub">Several steps run with one sentence, like “start study mode”. Edit them in <code>data/routines</code>.</p>
+          <ul class="rows" id="routineList"></ul>
+          <p class="panel-empty" id="routineEmpty">No routines yet. Add a YAML file to <code>data/routines</code>.</p>
+        </section>
+        <section class="panel" aria-labelledby="wf-title">
+          <div class="panel-head"><h2 class="panel-title" id="wf-title">Recorded workflows</h2><span class="panel-count" id="wfCount">0</span></div>
+          <p class="panel-sub">Say “start recording workflow morning setup”, do the steps, then “stop recording”.</p>
+          <ul class="rows" id="workflowList"></ul>
+          <p class="panel-empty" id="workflowEmpty">No recorded workflows yet.</p>
+        </section>
+        <div class="run-output" id="runOutput" role="status" hidden></div>
+      </section>
+
+      <!-- ── Activity log ─────────────────────────────────────────────── -->
+      <section class="view view-log" id="view-log" aria-labelledby="log-title" hidden>
+        <div class="view-head">
+          <h1 class="view-title" id="log-title">Activity log</h1>
+          <div class="view-tools">
+            <div class="segmented" role="group" aria-label="Filter by risk" id="riskFilter">
+              <button type="button" aria-pressed="true" data-risk="">All</button>
+              <button type="button" aria-pressed="false" data-risk="high">High</button>
+              <button type="button" aria-pressed="false" data-risk="medium">Medium</button>
+              <button type="button" aria-pressed="false" data-risk="low">Low</button>
+            </div>
+            <button class="btn btn-sm" id="undoBtn" type="button"><svg class="icon"><use href="#i-undo"/></svg>Undo last file change</button>
+          </div>
+        </div>
+        <p class="log-note" id="logNote" role="status"></p>
+        <div class="panel table-panel">
+          <table class="log-table">
+            <thead><tr><th scope="col">Time</th><th scope="col">Action</th><th scope="col">Details</th><th scope="col">Risk</th><th scope="col">Decision</th><th scope="col">From</th></tr></thead>
+            <tbody id="logBody"></tbody>
+          </table>
+          <p class="panel-empty" id="logEmpty">Nothing has run yet. Every action JARVIS takes or refuses is recorded here.</p>
+        </div>
+      </section>
+
+      <!-- ── System ───────────────────────────────────────────────────── -->
+      <section class="view view-system" id="view-system" aria-labelledby="system-title" hidden>
+        <div class="view-head">
+          <h1 class="view-title" id="system-title">System</h1>
+          <div class="view-tools"><span class="fresh" id="sysFresh"></span><button class="btn btn-sm" id="sysRefresh" type="button">Refresh</button></div>
+        </div>
+        <dl class="kpis" id="kpis">
+          <div><dt>Running for</dt><dd id="kUptime">—</dd></div>
+          <div><dt>Turns answered</dt><dd id="kTurns">—</dd></div>
+          <div><dt>Answered without a model</dt><dd id="kFast">—</dd></div>
+          <div><dt>Tools available</dt><dd id="kTools">—</dd></div>
+        </dl>
+        <div class="system-grid">
+          <section class="panel" aria-labelledby="lat-title">
+            <div class="panel-head"><h2 class="panel-title" id="lat-title">How long each step takes</h2></div>
+            <p class="panel-sub">Median bar, 95th percentile tick, over the last 500 of each.</p>
+            <div class="latency" id="latency"></div>
+            <p class="panel-empty" id="latEmpty">No timings yet. Send a message and they appear here.</p>
+          </section>
+          <section class="panel" aria-labelledby="model-title">
+            <div class="panel-head"><h2 class="panel-title" id="model-title">Models</h2></div>
+            <dl class="facts" id="modelFacts"></dl>
+          </section>
+          <section class="panel" aria-labelledby="safe-title">
+            <div class="panel-head"><h2 class="panel-title" id="safe-title">Safety settings</h2></div>
+            <dl class="facts" id="safetyFacts"></dl>
+            <p class="panel-sub">Change these in <code>.env</code> and restart JARVIS.</p>
+          </section>
+          <section class="panel" aria-labelledby="voice-title">
+            <div class="panel-head"><h2 class="panel-title" id="voice-title">Voice on this PC</h2><span class="voice-state" id="voiceState">—</span></div>
+            <p class="panel-sub">Hands-free “Hey JARVIS” through the PC's microphone, transcribed locally.</p>
+            <div class="meter" id="meter" aria-hidden="true"><span class="meter-fill" id="meterFill"></span><span class="meter-mark" id="meterMark"></span></div>
+            <div class="voice-controls">
+              <label class="visually-hidden" for="deviceSelect">Microphone</label>
+              <select class="field field-sm" id="deviceSelect"><option value="">Default microphone</option></select>
+              <button class="btn btn-sm" id="pcListenBtn" type="button">Start listening</button>
+            </div>
+            <p class="form-error" id="voiceError" role="alert"></p>
+          </section>
+          <section class="panel" aria-labelledby="browser-title">
+            <div class="panel-head"><h2 class="panel-title" id="browser-title">This browser</h2></div>
+            <dl class="facts" id="browserFacts"></dl>
+            <div class="voice-controls"><button class="btn btn-sm" id="disconnectBtn2" type="button">Disconnect this browser</button></div>
+          </section>
+        </div>
+      </section>
+    </main>
+  </div>
+</body>
+</html>

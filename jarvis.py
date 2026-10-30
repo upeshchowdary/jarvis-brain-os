@@ -1,8 +1,8 @@
 """JARVIS launcher.
 
-    python jarvis.py              # API + dashboard (http://127.0.0.1:8000/dashboard)
+    python jarvis.py              # API + console (http://127.0.0.1:8000/console)
     python jarvis.py --voice      # + hands-free voice ("hey jarvis …")
-    python jarvis.py --tray       # + system-tray icon and Win+J hotkey for the dashboard
+    python jarvis.py --tray       # + system-tray icon and Win+J hotkey for the console
 """
 
 from __future__ import annotations
@@ -21,12 +21,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run JARVIS")
     parser.add_argument("--voice", action="store_true", help="start the hands-free voice loop")
     parser.add_argument("--tray", action="store_true", help="show a system-tray icon (needs pystray + pillow)")
-    parser.add_argument("--open", action="store_true", help="open the dashboard in the browser")
+    parser.add_argument("--open", action="store_true", help="open the console in the browser")
     args = parser.parse_args()
 
     token = ensure_api_token()
-    url = f"http://{settings.HOST}:{settings.PORT}/dashboard"
-    print(f"JARVIS → {url}\nAPI token (also in .env): {token[:6]}…  — paste it into the dashboard once.")
+    url = f"http://{settings.HOST}:{settings.PORT}/console"
+    print(f"JARVIS → {url}\nAPI token (also in .env): {token[:6]}…  — paste it into the console once.")
 
     config = uvicorn.Config("app.main:app", host=settings.HOST, port=settings.PORT, log_level="warning")
     server = uvicorn.Server(config)
@@ -38,7 +38,7 @@ def main() -> None:
                 from voice.voice_manager import voice_manager
 
                 if not await voice_manager.start():
-                    print("Voice could not start (microphone?). Text and dashboard still work.")
+                    print("Voice could not start (microphone?). Text and console still work.")
                 else:
                     print("🎙  Voice online — say “Hey JARVIS …”")
 

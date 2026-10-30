@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>JARVIS — voice control for your PC</title>
+  <meta name="description" content="JARVIS is a voice assistant for Windows that answers questions, carries out commands and asks before anything risky. It runs on your machine with free or local models.">
+  <meta name="theme-color" content="#000000">
+  <link rel="icon" href="/web/mark.svg" type="image/svg+xml">
+  <link rel="preload" href="/web/fonts/hubot-sans-latin-wdth-normal.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="/web/css/base.css">
+  <link rel="stylesheet" href="/web/css/site.css">
+  <script src="/web/js/site.js" defer></script>
+</head>
+<body class="site">
+  <a class="skip" href="#main">Skip to content</a>
+
+  <header class="nav">
+    <a class="wordmark" href="/" aria-label="JARVIS home">
+      <svg class="mark" viewBox="0 0 26 26" aria-hidden="true"><circle cx="13" cy="13" r="11.6" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M5.5 13h3.2l1.9-4.2 3 8.4 1.9-4.2h5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <span>JARVIS</span>
+    </a>
+    <nav aria-label="Sections">
+      <a href="#safety">Safety</a>
+      <a href="#say">What to say</a>
+      <a href="#how">How it works</a>
+      <a href="#setup">Set up</a>
+    </nav>
+    <p class="presence" id="presence" hidden><span class="presence-dot" aria-hidden="true"></span><span id="presenceText">Running on this PC</span></p>
+    <a class="btn btn-primary" href="/console">Open the console</a>
+  </header>
+
+  <main id="main">
+    <section class="hero" aria-labelledby="hero-title">
+      <h1 id="hero-title" class="hero-title">Tell your PC what&nbsp;to&nbsp;do.</h1>
+      <div class="hero-body">
+        <div class="hero-copy">
+          <p class="lede">JARVIS is a voice assistant for Windows. It answers questions, carries out commands in milliseconds and stops to ask before anything it can't undo. It runs on your machine, with free or fully local models.</p>
+          <div class="hero-actions">
+            <a class="btn btn-primary btn-lg" href="/console">Open the console</a>
+            <a class="btn btn-lg" href="#setup">Set it up in ten minutes</a>
+          </div>
+        </div>
+
+        <figure class="trace" data-ui aria-labelledby="trace-title">
+          <figcaption class="trace-head">
+            <h2 id="trace-title" class="trace-title">Follow one sentence</h2>
+            <p class="trace-note" id="traceNote">Pick a sentence to see how JARVIS handles it.</p>
+          </figcaption>
+          <form class="trace-form" id="traceForm" autocomplete="off">
+            <label class="visually-hidden" for="traceInput">A sentence for JARVIS</label>
+            <input class="field trace-input" id="traceInput" name="q" value="set volume to 30" maxlength="300" spellcheck="false">
+            <button class="btn btn-primary" type="submit" id="traceRun">Run it</button>
+          </form>
+          <div class="trace-chips" role="group" aria-label="Example sentences">
+            <button type="button" class="chip" data-example="volume">set volume to 30</button>
+            <button type="button" class="chip" data-example="restart">restart my pc</button>
+            <button type="button" class="chip" data-example="router">how do I reboot my router?</button>
+            <button type="button" class="chip" data-example="remind">remind me at 6 pm to submit the report</button>
+            <button type="button" class="chip" data-example="whatsapp">tell Rahul on WhatsApp I'll be late</button>
+          </div>
+          <ol class="lane" id="lane" aria-live="polite">
+            <li class="stage" data-stage="heard"><span class="stage-name">Heard</span><span class="stage-value" data-v>—</span><span class="stage-sub" data-s></span></li>
+            <li class="stage" data-stage="understood"><span class="stage-name">Understood</span><span class="stage-value" data-v>—</span><span class="stage-sub" data-s></span></li>
+            <li class="stage" data-stage="checked"><span class="stage-name">Checked</span><span class="stage-value" data-v>—</span><span class="stage-sub" data-s></span></li>
+            <li class="stage" data-stage="done"><span class="stage-name">Result</span><span class="stage-value" data-v>—</span><span class="stage-sub" data-s></span></li>
+          </ol>
+          <blockquote class="reply" id="reply"><p id="replyText">JARVIS's reply appears here.</p></blockquote>
+        </figure>
+      </div>
+    </section>
+
+    <section class="safety" id="safety" aria-labelledby="safety-title">
+      <div class="safety-copy">
+        <h2 id="safety-title" class="h2">Questions never turn into actions.</h2>
+        <p class="statement">JARVIS sorts every sentence before it does anything. A question only gets tools that read, so “How do I reboot my router?” gets an explanation and never a reboot.</p>
+        <ul class="proofs">
+          <li><strong>Checked on every build.</strong> 120 everyday questions run against a model that tries to restart, kill and send. None of them may act.</li>
+          <li><strong>One door for every action.</strong> Volume, files, apps, messages and power all pass through the same safety gateway, which previews, asks, logs and can undo.</li>
+          <li><strong>A real off switch.</strong> Say “emergency stop” or press Stop everything. All automation halts and waiting actions are cleared until you resume.</li>
+        </ul>
+      </div>
+      <div class="risk-board" data-ui>
+        <h3 class="board-title">What happens at each risk level</h3>
+        <table class="risk-table">
+          <thead><tr><th scope="col">Risk</th><th scope="col">For example</th><th scope="col">JARVIS</th></tr></thead>
+          <tbody>
+            <tr><td><span class="risk risk-low">Low</span></td><td>Open Spotify, volume 40, snap the window left, take a screenshot</td><td>Does it now</td></tr>
+            <tr><td><span class="risk risk-medium">Medium</span></td><td>Type into an app, rename files, draft an email, run the browser agent</td><td>Shows the plan and asks</td></tr>
+            <tr><td><span class="risk risk-high">High</span></td><td>Shut down, end a process, send a message, move files, turn Wi-Fi off</td><td>Always asks, every time</td></tr>
+          </tbody>
+        </table>
+        <p class="board-foot">Deleted files go to the Recycle Bin. Shutdowns wait 30 seconds and “cancel shutdown” stops them. Every decision is written to the activity log.</p>
+      </div>
+    </section>
+
+    <section class="say" id="say" aria-labelledby="say-title">
+      <div class="say-head">
+        <h2 id="say-title" class="h2">What you can say</h2>
+        <p class="say-intro">Speak after “Hey JARVIS”, or type in the console. Common commands skip the language model and finish in a few milliseconds.</p>
+      </div>
+      <dl class="say-list">
+        <div class="say-group"><dt>Ask anything</dt><dd>“explain recursion with an example”</dd><dd>“what's the latest AI news?”</dd></div>
+        <div class="say-group"><dt>Your PC</dt><dd>“volume 40”</dd><dd>“lock the screen”</dd><dd>“battery level”</dd></div>
+        <div class="say-group"><dt>Apps and web</dt><dd>“open spotify”</dd><dd>“play lofi beats on youtube”</dd></div>
+        <div class="say-group"><dt>Reminders</dt><dd>“remind me at 6 pm to submit the report”</dd><dd>“set a timer for 10 minutes”</dd></div>
+        <div class="say-group"><dt>Routines</dt><dd>“start study mode”</dd><dd>“run the shutdown routine”</dd></div>
+        <div class="say-group"><dt>Files, with undo</dt><dd>“organize my downloads folder”</dd><dd>“zip the report folder”</dd><dd>“undo that”</dd></div>
+        <div class="say-group"><dt>Documents</dt><dd>“summarize syllabus.pdf”</dd><dd>“according to my notes folder, when is the physics exam?”</dd></div>
+        <div class="say-group"><dt>Messages, previewed first</dt><dd>“tell Rahul on WhatsApp I'll be 10 minutes late”</dd></div>
+        <div class="say-group"><dt>Your screen</dt><dd>“what's this error on my screen?”</dd></div>
+        <div class="say-group"><dt>The browser for you</dt><dd>“find the cheapest flight from Hyderabad to Goa next Friday”</dd></div>
+        <div class="say-group"><dt>Code</dt><dd>“git status of jarvis”</dd><dd>“run the tests in jarvis”</dd></div>
+        <div class="say-group"><dt>Memory</dt><dd>“remember that my exam is on Friday”</dd><dd>“what do you know about me?”</dd></div>
+      </dl>
+    </section>
+
+    <section class="how" id="how" aria-labelledby="how-title">
+      <h2 id="how-title" class="h2">How a command travels</h2>
+      <ol class="track">
+        <li class="track-step">
+          <h3>Hear</h3>
+          <p>A wake word, voice detection and faster-whisper turn speech into text on your PC.</p>
+        </li>
+        <li class="track-step">
+          <h3>Route</h3>
+          <p>About 70 exact sentence patterns catch everyday commands in about a millisecond. Everything else goes to a language model with only the tools that fit.</p>
+        </li>
+        <li class="track-step">
+          <h3>Check</h3>
+          <p>The safety gateway sets the risk, writes a preview, asks when it must, and honours dry run and the stop switch.</p>
+        </li>
+        <li class="track-step">
+          <h3>Act</h3>
+          <p>Windows UI Automation first, then the keyboard, then the mouse; reading the screen with vision only as a last resort.</p>
+        </li>
+        <li class="track-step">
+          <h3>Reply</h3>
+          <p>Words stream as they are written, and the voice starts speaking at the first sentence.</p>
+        </li>
+      </ol>
+    </section>
+
+    <section class="models" id="models" aria-labelledby="models-title">
+      <h2 id="models-title" class="h2">Your models, your machine</h2>
+      <ul class="model-wall" aria-label="Supported model providers">
+        <li>Gemini</li><li>Groq</li><li>OpenAI</li><li>Claude</li><li>OpenRouter</li><li>DeepSeek</li><li class="local">Ollama</li><li class="local">LM Studio</li>
+      </ul>
+      <div class="models-notes">
+        <p>Use one free key, or none: Ollama and LM Studio run entirely on your PC. If a provider fails, JARVIS moves to the next one you listed.</p>
+        <p>With private mode on, anything read from your files or your screen is sent only to a local model.</p>
+        <p>Claude Desktop, Cursor and other MCP apps can use JARVIS as a tool, but they can never approve their own risky actions.</p>
+      </div>
+    </section>
+
+    <section class="setup" id="setup" aria-labelledby="setup-title">
+      <div class="setup-head">
+        <h2 id="setup-title" class="h2">Set it up in ten minutes</h2>
+        <p>You need Windows 10 or 11, Python 3.12 or newer, and either one free API key (Gemini or Groq) or Ollama for fully offline use.</p>
+      </div>
+      <ol class="steps">
+        <li><p>Get the code and open its folder.</p><div class="cmd"><pre><code>git clone https://github.com/upeshchowdary/jarvis-brain-os.git</code></pre><button class="btn btn-sm copy" type="button">Copy</button></div><div class="cmd"><pre><code>cd jarvis-brain-os</code></pre><button class="btn btn-sm copy" type="button">Copy</button></div></li>
+        <li><p>Create an environment and install everything.</p><div class="cmd"><pre><code>python -m venv .venv</code></pre><button class="btn btn-sm copy" type="button">Copy</button></div><div class="cmd"><pre><code>.venv\Scripts\activate</code></pre><button class="btn btn-sm copy" type="button">Copy</button></div><div class="cmd"><pre><code>pip install -e ".[all]"</code></pre><button class="btn btn-sm copy" type="button">Copy</button></div></li>
+        <li><p>Copy the settings file, then add one key to <code>.env</code>, for example <code>GEMINI_API_KEY</code>.</p><div class="cmd"><pre><code>copy .env.example .env</code></pre><button class="btn btn-sm copy" type="button">Copy</button></div></li>
+        <li><p>Start JARVIS. The console opens and asks for the token printed in the terminal.</p><div class="cmd"><pre><code>python jarvis.py --open --voice</code></pre><button class="btn btn-sm copy" type="button">Copy</button></div></li>
+      </ol>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <p class="foot-word" aria-hidden="true">JARVIS</p>
+    <div class="foot-row">
+      <p>Runs on 127.0.0.1 and answers only to your token.</p>
+      <nav aria-label="Project links">
+        <a href="https://github.com/upeshchowdary/jarvis-brain-os">Source on GitHub</a>
+        <a href="https://github.com/upeshchowdary/jarvis-brain-os/blob/main/docs/SAFETY.md">Safety model</a>
+        <a href="https://github.com/upeshchowdary/jarvis-brain-os/blob/main/docs/ARCHITECTURE.md">Architecture</a>
+        <a href="/web/fonts/OFL.txt">Hubot Sans font licence</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>
