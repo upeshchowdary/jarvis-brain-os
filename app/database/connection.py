@@ -49,6 +49,13 @@ class DatabaseManager:
             metadata TEXT DEFAULT '{}',
             updated_at TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS tasks (
+            id TEXT PRIMARY KEY,
+            status TEXT,
+            data TEXT,
+            updated_at REAL
+        );
         """
         try:
             async with aiosqlite.connect(str(self.db_path)) as db:
@@ -265,6 +272,34 @@ class DatabaseManager:
                     return docs
         except Exception as exc:
             logger.error(f"Error reading vector documents from SQLite: {exc}")
+            return []
+
+    async def save_task(self, task: Dict[str, Any]) -> bool:
+        """Insert or update a task (the full task dict is stored as JSON)."""
+        import json
+        query = """
+        INSERT INTO tasks (id, status, data, updated_at) VALUES (?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET status = excluded.status, data = excluded.data, updated_at = excluded.updated_at;
+        """
+        try:
+            async with aiosqlite.connect(str(self.db_path)) as db:
+                await db.execute(query, (task["id"], task.get("status"), json.dumps(task), task.get("updated_at", 0.0)))
+                await db.commit()
+            return True
+        except Exception as exc:
+            logger.error(f"Error saving task: {exc}")
+            return False
+
+    async def load_recent_tasks(self, limit: int = 5) -> List[Dict[str, Any]]:
+        """Most recently updated tasks first."""
+        import json
+        query = "SELECT data FROM tasks ORDER BY updated_at DESC LIMIT ?;"
+        try:
+            async with aiosqlite.connect(str(self.db_path)) as db:
+                async with db.execute(query, (limit,)) as cursor:
+                    return [json.loads(row[0]) for row in await cursor.fetchall()]
+        except Exception as exc:
+            logger.error(f"Error loading tasks: {exc}")
             return []
 
     async def clear_vector_documents(self) -> bool:

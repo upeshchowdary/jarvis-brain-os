@@ -36,6 +36,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     ensure_api_token()
     await db_manager.init_db()
+    from brain.task_state import tasks
+
+    await tasks.load()
     await long_term_memory.init_db()
     await vector_memory.load_from_db()
     if settings.BACKGROUND_SERVICES:

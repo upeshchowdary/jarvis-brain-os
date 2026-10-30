@@ -13,6 +13,7 @@ from tools.builtin import (  # noqa: F401
     productivity,
     research,
     routines_tools,
+    task_tools,
     vision,
     web,
     workflows,
