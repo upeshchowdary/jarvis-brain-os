@@ -1,6 +1,5 @@
 """PC-wide current task, cross-channel recent turns, and the task_plan tool."""
 
-import asyncio
 import time
 
 import pytest
@@ -61,7 +60,7 @@ async def test_task_persists_and_reloads():
     t = TaskTracker()
     t.start("persist me", "voice")
     t.record_step("app_open", {"name": "x"}, "ok", True)
-    await asyncio.sleep(0.2)  # let the fire-and-forget save run
+    await t.flush()
     t2 = TaskTracker()
     await t2.load()
     cur = t2.current()
@@ -99,3 +98,65 @@ async def test_task_plan_tool_sets_and_marks(monkeypatch):
     assert res.success and "one" in res.message
     await tool.run(ctx, action="done", index=0)
     assert task_state.tasks.current().plan[0].status == "done"
+
+
+async def test_load_skips_bad_rows(monkeypatch):
+    good = {"id": "g1", "goal": "good", "status": "active", "channel": "text", "updated_at": time.time(),
+            "plan": [{"subgoal": "a", "status": "todo", "future": 1}], "steps": [], "extra": 1}
+
+    async def rows(limit=5):
+        return [{"goal": "no id"}, good]
+
+    monkeypatch.setattr(db_manager, "load_recent_tasks", rows)
+    t = TaskTracker()
+    await t.load()
+    assert t.current().goal == "good"
+    assert t.current().plan[0].subgoal == "a"
+
+
+async def test_load_never_raises(monkeypatch):
+    async def boom(limit=5):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(db_manager, "load_recent_tasks", boom)
+    await TaskTracker().load()
+
+
+async def test_task_plan_tool_error_paths(monkeypatch):
+    monkeypatch.setattr(task_state, "tasks", TaskTracker())
+    tool = registry.get("task_plan")
+    ctx = ToolContext()
+    assert not (await tool.run(ctx, action="set", subgoals=["x"])).success  # no active task
+    task_state.tasks.start("g", "text")
+    assert not (await tool.run(ctx, action="set", subgoals="abc")).success
+    assert not (await tool.run(ctx, action="set", subgoals=[1, "b"])).success
+    assert not (await tool.run(ctx, action="set", subgoals=[])).success
+    await tool.run(ctx, action="set", subgoals=["a", "b"])
+    for bad in (5, -1, "x", None):
+        assert not (await tool.run(ctx, action="done", index=bad)).success
+    assert [p.status for p in task_state.tasks.current().plan] == ["todo", "todo"]
+
+
+async def test_revise_keeps_statuses(monkeypatch):
+    monkeypatch.setattr(task_state, "tasks", TaskTracker())
+    task_state.tasks.start("g", "text")
+    tool = registry.get("task_plan")
+    ctx = ToolContext()
+    await tool.run(ctx, action="set", subgoals=["open app", "find chat", "send"])
+    await tool.run(ctx, action="done", index=0)
+    await tool.run(ctx, action="revise", subgoals=["Open  App", "search contact", "send"])
+    plan = task_state.tasks.current().plan
+    assert [p.status for p in plan] == ["done", "todo", "todo"]
+    assert any("→" in ln and "search contact" in ln for ln in task_state.tasks.current().summary().splitlines())
+
+
+async def test_rapid_mutations_persist_latest():
+    await db_manager.init_db()
+    t = TaskTracker()
+    t.start("rapid", "voice")
+    for i in range(10):
+        t.record_step("tool", {"i": i}, f"r{i}", True)
+    await t.flush()
+    t2 = TaskTracker()
+    await t2.load()
+    assert len(t2.current().steps) == 10

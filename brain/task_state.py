@@ -12,7 +12,7 @@ import threading
 import time
 import uuid
 from collections import deque
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Deque, Dict, List, Optional
 
 from app.utils.logger import logger
@@ -58,10 +58,15 @@ class Task:
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "Task":
+        """Tolerant of unknown keys (older/newer rows); raises KeyError only if id/goal are missing."""
+        def pick(kind: type, raw: Dict[str, Any]) -> Any:
+            names = {f.name for f in fields(kind)}
+            return kind(**{k: v for k, v in raw.items() if k in names})
+
         return cls(
-            id=d["id"], goal=d["goal"], status=d.get("status", "shelved"), channel=d.get("channel", "text"),
-            plan=[PlanItem(**p) for p in d.get("plan", [])],
-            steps=[TaskStep(**s) for s in d.get("steps", [])],
+            id=str(d["id"]), goal=str(d["goal"]), status=d.get("status", "shelved"), channel=d.get("channel", "text"),
+            plan=[pick(PlanItem, p) for p in d.get("plan", [])],
+            steps=[pick(TaskStep, x) for x in d.get("steps", [])],
             created_at=d.get("created_at", 0.0), updated_at=d.get("updated_at", 0.0),
         )
 
@@ -87,6 +92,10 @@ class TaskTracker:
         self._current: Optional[Task] = None
         self._last: Optional[Task] = None  # most recent task that is no longer current
         self._loop: Optional[asyncio.AbstractEventLoop] = None  # set by load(); lets worker threads save
+        self._seq = 0  # bumped per scheduled save; an older snapshot never overwrites a newer one
+        self._saved_seq: Dict[str, int] = {}
+        self._save_lock: Optional[asyncio.Lock] = None
+        self._pending: set = set()  # strong refs to in-flight saves
 
     # -- reads (no I/O) -------------------------------------------------
     def current(self) -> Optional[Task]:
@@ -121,12 +130,17 @@ class TaskTracker:
             del t.steps[:-50]
             self._touch(t)
 
-    def set_plan(self, subgoals: List[str]) -> None:
+    def set_plan(self, subgoals: List[str], keep_status: bool = False) -> None:
+        """Replace the plan. With keep_status, items whose text matches an existing one keep their status."""
+        def norm(x: str) -> str:
+            return " ".join(x.lower().split())
+
         with self._lock:
             t = self._current
             if not t:
                 return
-            t.plan = [PlanItem(s.strip()) for s in subgoals if s and s.strip()]
+            old = {norm(p.subgoal): p.status for p in t.plan} if keep_status else {}
+            t.plan = [PlanItem(s.strip(), old.get(norm(s), "todo")) for s in subgoals if s and s.strip()]
             self._touch(t)
 
     def mark_plan(self, index: int, status: str) -> None:
@@ -167,15 +181,19 @@ class TaskTracker:
         """Restore the newest unfinished task from the DB (current if recent enough, else last shelved)."""
         from app.database.connection import db_manager
 
-        self._loop = asyncio.get_running_loop()
         try:
+            self._loop = asyncio.get_running_loop()
             rows = await db_manager.load_recent_tasks(limit=5)
         except Exception as exc:  # never block startup
             logger.warning(f"Could not load tasks: {exc}")
             return
         with self._lock:
             for data in rows:  # newest first
-                t = Task.from_dict(data)
+                try:
+                    t = Task.from_dict(data)
+                except Exception as exc:  # a bad row must not stop startup
+                    logger.warning(f"Skipping unreadable task row: {exc}")
+                    continue
                 if t.status in ("done", "failed"):
                     continue
                 if time.time() - t.updated_at <= settings.TASK_IDLE_SECONDS:
@@ -201,20 +219,36 @@ class TaskTracker:
         """Fire-and-forget; safe from worker threads and when no loop exists (then it is skipped)."""
         if t is None:
             return
+        self._seq += 1
+        args = (t.to_dict(), self._seq)
+        try:
+            task = asyncio.get_running_loop().create_task(self._save(*args))
+        except RuntimeError:
+            if not (self._loop and self._loop.is_running()):
+                return
+            try:
+                task = asyncio.run_coroutine_threadsafe(self._save(*args), self._loop)
+            except Exception:
+                return
+        self._pending.add(task)
+        task.add_done_callback(self._pending.discard)
+
+    async def _save(self, data: Dict[str, Any], seq: int) -> None:
         from app.database.connection import db_manager
 
-        data = t.to_dict()
-        try:
-            loop = asyncio.get_running_loop()
-            loop.create_task(db_manager.save_task(data))
-            return
-        except RuntimeError:
-            pass
-        if self._loop and self._loop.is_running():
-            try:
-                asyncio.run_coroutine_threadsafe(db_manager.save_task(data), self._loop)
-            except Exception:
-                pass
+        if self._save_lock is None:
+            self._save_lock = asyncio.Lock()
+        async with self._save_lock:  # one write at a time, in order
+            if self._saved_seq.get(data["id"], 0) > seq:
+                return  # a newer snapshot already landed
+            self._saved_seq[data["id"]] = seq
+            await db_manager.save_task(data)
+
+    async def flush(self) -> None:
+        """Wait for scheduled saves to finish (tests / shutdown)."""
+        while self._pending:
+            futs = [p if isinstance(p, asyncio.Future) else asyncio.wrap_future(p) for p in list(self._pending)]
+            await asyncio.gather(*futs, return_exceptions=True)
 
 
 @dataclass

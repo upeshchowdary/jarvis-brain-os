@@ -29,16 +29,19 @@ class TaskPlan(Tool):
     async def run(self, ctx: ToolContext, action: str = "", subgoals: Optional[List[str]] = None,
                   index: Optional[int] = None, **_: Any) -> ToolResult:
         tracker = task_state.tasks
-        if not tracker.current():
+        task = tracker.current()
+        if not task:
             return ToolResult.error("There is no active task to plan.")
         if action in ("set", "revise"):
-            if not subgoals:
-                return ToolResult.error("Give the subgoals for the plan.")
-            tracker.set_plan(subgoals)
+            if not isinstance(subgoals, list) or not subgoals or not all(isinstance(x, str) and x.strip() for x in subgoals):
+                return ToolResult.error("subgoals must be a non-empty list of non-empty strings.")
+            tracker.set_plan(subgoals, keep_status=(action == "revise"))
         elif action in ("done", "failed"):
-            if index is None:
-                return ToolResult.error("Which plan item (index)?")
-            tracker.mark_plan(int(index), action)
+            if isinstance(index, bool) or not isinstance(index, int):
+                return ToolResult.error("index must be an integer plan position (0-based).")
+            if not 0 <= index < len(task.plan):
+                return ToolResult.error(f"index {index} is out of range; the plan has {len(task.plan)} item(s).")
+            tracker.mark_plan(index, action)
         else:
             return ToolResult.error(f"Unknown action '{action}'.")
         return ToolResult.ok(tracker.current().summary(max_steps=0))
