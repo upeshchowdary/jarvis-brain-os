@@ -36,11 +36,10 @@ from typing import Any, Dict, Optional
 
 from loguru import logger
 
-from brain.brain_config import brain_config
+from core.config import settings as brain_config
 
 # Vision providers
 from vision.providers.gemini import GeminiVisionProvider
-from vision.providers.groq_vision import GroqVisionProvider
 from vision.providers.ollama_vision import OllamaVisionProvider
 
 # OpenCV preprocessing

@@ -2,20 +2,13 @@
 
 import pytest
 import json
-from unittest.mock import MagicMock, AsyncMock, patch, call
+from unittest.mock import MagicMock, AsyncMock, patch
 from PIL import Image
 
-from tools.vision_tool import ScreenVisionTool
-from brain.tool_router import tool_router, ToolCallSpec
-from brain.model_manager import model_manager
-from brain.intent_engine import intent_engine, IntentEngine
-from brain.brain_config import brain_config
-from vision.manager import vision_manager, VisionManager
-from vision.providers.base import BaseVisionProvider
+from tools import load_builtin_tools
+from tools.builtin.vision import classify_visual_query_type
 from vision.providers.gemini import GeminiVisionProvider
 from vision.providers.ollama_vision import OllamaVisionProvider
-from vision.environment import EnvironmentState, UIElement, OCRTextItem, BoundingBox
-from vision.schemas import StructuredVisionResult
 from vision.screen_preprocessor import (
     preprocess_screen,
     build_enriched_prompt,
@@ -39,28 +32,18 @@ def sample_pil_image():
 # ---------------------------------------------------------------------------
 
 def test_vision_tool_registration():
-    """Verify ScreenVisionTool is registered in ToolRouter."""
-    discovered = tool_router.discover_tools()
-    tool_names = [t["name"] for t in discovered]
-    assert "screen_vision" in tool_names
-
-
-def test_model_capabilities_registry():
-    """Verify ModelManager capability registry accurately identifies multimodal vision models."""
-    assert model_manager.supports_vision("qwen3-vl:8b") is True
-    assert model_manager.supports_vision("gemini-2.0-flash") is True
-    assert model_manager.supports_vision("gpt-4o-mini") is True
-    assert model_manager.supports_vision("llama-3.3-70b-versatile") is False
-    assert model_manager.supports_vision("qwen2.5") is False
+    """The screen vision tool is registered, read-only, and marked untrusted + sensitive."""
+    tool = load_builtin_tools().get("screen_look")
+    assert tool is not None
+    assert tool.side_effect is False and tool.untrusted_output and tool.sensitive_output
 
 
 def test_classify_visual_query_type():
-    """Verify IntentEngine categorizes visual query types correctly."""
-    assert IntentEngine.classify_visual_query_type("What is in the image on my screen?") == "IMAGE_DESCRIPTION"
-    assert IntentEngine.classify_visual_query_type("Read the text on screen") == "OCR"
-    assert IntentEngine.classify_visual_query_type("Where is the submit button?") == "UI_ANALYSIS"
-    assert IntentEngine.classify_visual_query_type("What error message popped up?") == "ERROR_ANALYSIS"
-    assert IntentEngine.classify_visual_query_type("What is on my screen?") == "SCREEN_DESCRIPTION"
+    assert classify_visual_query_type("What is in the image on my screen?") == "IMAGE_DESCRIPTION"
+    assert classify_visual_query_type("Read the text on screen") == "OCR"
+    assert classify_visual_query_type("Where is the submit button?") == "UI_ANALYSIS"
+    assert classify_visual_query_type("What error message popped up?") == "ERROR_ANALYSIS"
+    assert classify_visual_query_type("What is on my screen?") == "SCREEN_DESCRIPTION"
 
 
 # ---------------------------------------------------------------------------
@@ -253,80 +236,32 @@ async def test_gemini_vision_provider_missing_key(sample_pil_image):
     assert "not configured" in result["error"]
 
 
-@pytest.mark.asyncio
-async def test_screen_vision_tool_execution_full(sample_pil_image):
-    """Test ScreenVisionTool full execution mode."""
-    tool = ScreenVisionTool()
+async def test_screen_look_tool_uses_analyzer_and_caches(sample_pil_image):
+    """screen_look captures, analyses, wraps the description for the LLM and caches it per session."""
+    from tools import ToolContext
 
+    tool = load_builtin_tools().get("screen_look")
+    fake = AsyncMock(return_value={"description": "VS Code open on desktop.", "vision_label": "VISION", "provider": "gemini"})
     with patch("vision.screen_analyzer.grab_screenshot", return_value=sample_pil_image), \
-         patch("vision.manager.vision_manager.capture_environment_state", new_callable=AsyncMock) as mock_cap:
-
-        mock_env = EnvironmentState(
-            active_application="Code",
-            active_window="main.py",
-            summary="VS Code open on desktop.",
-            confidence=0.98,
-        )
-        mock_cap.return_value = mock_env
-
-        res = await tool.execute(query="What is on my screen?", mode="full")
-        assert res["success"] is True
-        assert res["mode"] == "full"
-        assert res["data"]["active_application"] == "Code"
-        assert res["data"]["description"] == "VS Code open on desktop."
+         patch("vision.screen_analyzer.analyze_screen", fake), \
+         patch("vision.screen_capture.screen_capture_engine.get_active_window_info", return_value=None):
+        ctx = ToolContext(session_id="vision_cache_test")
+        res = await tool.run(ctx, question="What is on my screen?")
+        assert res.success and res.content_for_llm == "VS Code open on desktop."
+        again = await tool.run(ctx, question="and what else?")
+        assert again.data == {"cached": True}
+        assert fake.await_count == 1
 
 
-@pytest.mark.asyncio
-async def test_screen_vision_tool_execution_ocr_only(sample_pil_image):
-    """Test ScreenVisionTool ocr_only execution mode."""
-    tool = ScreenVisionTool()
+async def test_screen_look_privacy_local_forces_ollama(sample_pil_image, monkeypatch):
+    from core.config import settings
+    from tools import ToolContext
 
-    dummy_ocr = [
-        OCRTextItem(text="Hello JARVIS", bounds=BoundingBox(x=10, y=10, width=50, height=20))
-    ]
-
-    with patch("tools.vision_tool.grab_screenshot", return_value=sample_pil_image), \
-         patch("tools.vision_tool.ocr_engine.extract_text_items", return_value=dummy_ocr):
-
-        res = await tool.execute(mode="ocr_only")
-        assert res["success"] is True
-        assert res["mode"] == "ocr_only"
-        assert "Hello JARVIS" in res["extracted_text"]
-
-
-@pytest.mark.asyncio
-async def test_screen_vision_tool_execution_ui_only(sample_pil_image):
-    """Test ScreenVisionTool ui_only execution mode."""
-    tool = ScreenVisionTool()
-
-    dummy_ui = [
-        UIElement(id="btn_1", label="Submit", bounds=BoundingBox(x=100, y=100, width=80, height=30))
-    ]
-
-    with patch("tools.vision_tool.grab_screenshot", return_value=sample_pil_image), \
-         patch("tools.vision_tool.ocr_engine.extract_text_items", return_value=[]), \
-         patch("tools.vision_tool.ui_detector.detect_ui_elements", return_value=dummy_ui):
-
-        res = await tool.execute(mode="ui_only")
-        assert res["success"] is True
-        assert res["mode"] == "ui_only"
-        assert res["ui_elements_count"] == 1
-        assert res["ui_elements"][0]["label"] == "Submit"
-
-
-@pytest.mark.asyncio
-async def test_tool_router_dispatch_screen_vision():
-    """Verify ToolRouter dispatches 'screen_vision' spec correctly."""
-    spec = ToolCallSpec(tool="screen_vision", arguments={"mode": "ocr_only"})
-
-    dummy_ocr = [
-        OCRTextItem(text="Test dispatch", bounds=BoundingBox(x=0, y=0, width=10, height=10))
-    ]
-
-    with patch("tools.vision_tool.grab_screenshot", return_value=Image.new("RGB", (100, 100))), \
-         patch("tools.vision_tool.ocr_engine.extract_text_items", return_value=dummy_ocr):
-
-        res = await tool_router.route_and_execute(spec)
-        assert res["success"] is True
-        assert res["data"]["mode"] == "ocr_only"
-        assert "Test dispatch" in res["data"]["extracted_text"]
+    monkeypatch.setattr(settings, "PRIVACY_MODE", "local")
+    tool = load_builtin_tools().get("screen_look")
+    fake = AsyncMock(return_value={"description": "desk", "vision_label": "V"})
+    with patch("vision.screen_analyzer.grab_screenshot", return_value=sample_pil_image), \
+         patch("vision.screen_analyzer.analyze_screen", fake), \
+         patch("vision.screen_capture.screen_capture_engine.get_active_window_info", return_value=None):
+        await tool.run(ToolContext(session_id="privacy_vision"), question="what is this", refresh=True)
+    assert fake.await_args.kwargs["active_model"].startswith("ollama/")

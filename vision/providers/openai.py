@@ -2,7 +2,7 @@
 
 import time
 import httpx
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 from vision.providers.base import BaseVisionProvider
 from loguru import logger
 

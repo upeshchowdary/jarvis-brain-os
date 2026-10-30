@@ -5,10 +5,8 @@ Falls back to graceful errors when windows are not found.
 """
 
 import asyncio
-import sys
 from typing import List, Optional
 
-from automation.config import automation_config
 from automation.automation_logger import log_action
 
 try:
@@ -18,14 +16,13 @@ except ImportError:
     HAS_GW = False
 
 # Reuse existing WindowInfo model from vision layer
-from vision.environment import WindowInfo, BoundingBox
 
 
 class WindowController:
     """Manages application windows: find, focus, minimize, maximize, close, list."""
 
     def __init__(self, dry_run: bool = False) -> None:
-        self.dry_run = dry_run or automation_config.DRY_RUN
+        self.dry_run = dry_run  # global dry-run is enforced by the gateway
 
     def _require_gw(self) -> None:
         if not HAS_GW:

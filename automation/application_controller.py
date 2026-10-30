@@ -13,13 +13,19 @@ import asyncio
 import difflib
 import json
 import os
+import shlex
 import subprocess
 import sys
 import time
-import winreg
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
-from automation.config import automation_config
+if sys.platform == "win32":
+    import winreg
+else:  # Non-Windows: registry discovery is skipped, the package still imports.
+    winreg = None  # type: ignore[assignment]
+
+from core.paths import data_path
+
 from automation.automation_logger import log_action
 from automation.window_controller import window_controller
 
@@ -33,14 +39,41 @@ except ImportError:
 class DynamicSystemAppManager:
     """Discovers, indexes, and resolves 100% of installed applications on this Windows PC."""
 
+    CACHE_MAX_AGE_SECONDS = 24 * 3600
+
     def __init__(self) -> None:
+        # Discovery is lazy: nothing is scanned at import time.
         self._apps_cache: Dict[str, Dict[str, str]] = {}
         self._last_index_time: float = 0.0
+        self._loaded = False
+
+    @property
+    def cache_file(self):
+        return data_path("app_index.json")
+
+    def _ensure_index(self) -> None:
+        if self._loaded:
+            return
+        self._loaded = True
+        try:
+            payload = json.loads(self.cache_file.read_text(encoding="utf-8"))
+            if time.time() - float(payload.get("indexed_at", 0)) < self.CACHE_MAX_AGE_SECONDS:
+                self._apps_cache = payload.get("apps", {})
+                self._last_index_time = float(payload["indexed_at"])
+                if self._apps_cache:
+                    return
+        except (OSError, ValueError, KeyError):
+            pass
         self.refresh_index()
 
     def refresh_index(self) -> int:
         """Scan system and index desktop, Store, and UWP apps with verified executable paths."""
+        self._loaded = True
         apps: Dict[str, Dict[str, str]] = {}
+        if sys.platform != "win32":
+            self._apps_cache = apps
+            self._last_index_time = time.time()
+            return 0
 
         # ── Priority 1: Windows Registry "App Paths" (HKCU & HKLM) ───────
         # These are 100% genuine executable binary paths registered in Windows
@@ -183,19 +216,31 @@ class DynamicSystemAppManager:
 
         self._apps_cache = apps
         self._last_index_time = time.time()
+        try:
+            self.cache_file.write_text(
+                json.dumps({"indexed_at": self._last_index_time, "apps": apps}), encoding="utf-8"
+            )
+        except OSError:
+            pass
         return len(apps)
 
     def find_app(self, query: str) -> Optional[Dict[str, str]]:
-        """Find an installed app by exact name, alias, substring, or fuzzy match."""
+        """Find an installed app by exact name, alias, prefix, substring, or fuzzy match."""
+        self._ensure_index()
         q = query.lower().strip().replace(".exe", "")
+        if not q:
+            return None
 
         # 1. Exact match
         if q in self._apps_cache:
             return self._apps_cache[q]
 
-        # 2. Substring matching
+        # 2. Prefix, then substring matching (very short keys excluded to avoid false hits)
         for k, v in self._apps_cache.items():
-            if q == k or q in k or k in q:
+            if k.startswith(q) and len(q) >= 3:
+                return v
+        for k, v in self._apps_cache.items():
+            if len(k) >= 4 and (q in k or k in q.split()):
                 return v
 
         # 3. Fuzzy matching for slight typos
@@ -207,6 +252,7 @@ class DynamicSystemAppManager:
 
     def list_installed_apps(self) -> List[str]:
         """Return a sorted list of unique application names found on the PC."""
+        self._ensure_index()
         names = {v["name"] for v in self._apps_cache.values()}
         return sorted(names)
 
@@ -219,7 +265,7 @@ class ApplicationController:
     """Launch, detect, and control any application on the user's computer."""
 
     def __init__(self, dry_run: bool = False) -> None:
-        self.dry_run = dry_run or automation_config.DRY_RUN
+        self.dry_run = dry_run  # global dry-run is enforced by the gateway
         self.app_manager = dynamic_app_manager
 
     def is_running(self, process_name: str) -> bool:
@@ -277,14 +323,10 @@ class ApplicationController:
                         lambda: os.startfile(launch_cmd)
                     )
                 else:
+                    argv = [launch_cmd, *shlex.split(args, posix=False)]
                     await asyncio.get_event_loop().run_in_executor(
                         None,
-                        lambda: subprocess.Popen(
-                            f'"{launch_cmd}" {args}',
-                            shell=True,
-                            stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL,
-                        )
+                        lambda: subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL),
                     )
             elif app_type == "protocol":
                 # Protocol URI (ms-settings:, ms-windows-store:, mailto:)
@@ -302,17 +344,17 @@ class ApplicationController:
                         stderr=subprocess.DEVNULL,
                     )
                 )
-            else:
-                # Direct shell command fallback
-                full_cmd = launch_cmd if not args else f"{launch_cmd} {args}"
+            elif app_type == "startmenu" or launch_cmd.startswith("shell:"):
                 await asyncio.get_event_loop().run_in_executor(
                     None,
-                    lambda: subprocess.Popen(
-                        full_cmd,
-                        shell=True,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                    )
+                    lambda: subprocess.Popen(["explorer.exe", launch_cmd], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL),
+                )
+            else:
+                # Bare executable names (notepad.exe, wt.exe): resolved via PATH, no shell.
+                argv = [launch_cmd, *shlex.split(args, posix=False)] if args else [launch_cmd]
+                await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda: subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL),
                 )
 
             # 2. Brief window confirmation (up to 1.5s non-blocking)
@@ -338,13 +380,7 @@ class ApplicationController:
             return {"success": False, "error": str(e), "app": display_name}
 
     async def close_app(self, name: str, force: bool = False) -> dict:
-        """Close an application gracefully, or force-kill if needed."""
-        from automation.safety_manager import safety_manager
-        action_name = "close_app_force" if force else "close_window"
-        allowed, reason = safety_manager.is_allowed(action_name, name)
-        if not allowed:
-            return {"success": False, "error": f"Blocked by safety manager: {reason}"}
-
+        """Close an application window gracefully (force-killing is the gateway's process.kill op)."""
         log_action("app", "close", name, dry_run=self.dry_run)
         if self.dry_run:
             return {"success": True, "dry_run": True, "action": "close_app", "app": name}
@@ -356,20 +392,6 @@ class ApplicationController:
         win_res = await window_controller.close_window(display_name)
         if win_res["success"]:
             return {"success": True, "action": "close_app", "app": display_name}
-
-        # 2. Fallback to process kill if requested or window close failed
-        if HAS_PSUTIL and force:
-            clean_name = name.lower().replace(".exe", "")
-            killed = 0
-            for proc in psutil.process_iter(["name", "pid"]):
-                try:
-                    if clean_name in (proc.info["name"] or "").lower():
-                        proc.terminate()
-                        killed += 1
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
-                    pass
-            if killed > 0:
-                return {"success": True, "action": "close_app", "app": display_name, "killed_pids": killed}
 
         return {"success": win_res.get("success", False), "action": "close_app", "app": display_name}
 

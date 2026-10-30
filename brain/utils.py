@@ -4,22 +4,19 @@ import re
 import json
 import socket
 from datetime import datetime, timezone
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 
 
 def is_internet_available(host: str = "8.8.8.8", port: int = 53, timeout: float = 1.0) -> bool:
-    """Fast check if active internet connection is reachable (1s timeout)."""
-    try:
-        s = socket.create_connection((host, port), timeout=timeout)
-        s.close()
-        return True
-    except Exception:
+    """Blocking connectivity check — never call from async code (use core.connectivity.is_online)."""
+    for target in (host, "1.1.1.1"):
         try:
-            s = socket.create_connection(("1.1.1.1", port), timeout=timeout)
-            s.close()
+            sock = socket.create_connection((target, port), timeout=timeout)
+            sock.close()
             return True
-        except Exception:
-            return False
+        except OSError:
+            continue
+    return False
 
 
 def get_current_datetime_utc() -> str:
@@ -47,6 +44,26 @@ def estimate_token_count(text: str) -> int:
     if not text:
         return 0
     return max(1, len(text) // 4)
+
+
+def extract_json(text: str) -> Any:
+    """Extract the first JSON object *or array* from an LLM reply (handles ``` fences and prose)."""
+    if not text:
+        return None
+    cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip(), flags=re.IGNORECASE).strip()
+    try:
+        return json.loads(cleaned)
+    except ValueError:
+        pass
+    decoder = json.JSONDecoder()
+    for i, ch in enumerate(cleaned):
+        if ch in "[{":
+            try:
+                value, _ = decoder.raw_decode(cleaned[i:])
+                return value
+            except ValueError:
+                continue
+    return None
 
 
 def extract_and_clean_json(text: str) -> Dict[str, Any]:

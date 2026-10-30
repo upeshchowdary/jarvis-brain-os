@@ -6,7 +6,7 @@ specific application windows, bounding regions, active window metadata, and curs
 
 import sys
 import ctypes
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 from loguru import logger
 
 try:

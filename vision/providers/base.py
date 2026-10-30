@@ -8,7 +8,6 @@ import base64
 import io
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional
-from loguru import logger
 
 try:
     from PIL import Image

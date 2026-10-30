@@ -1,7 +1,7 @@
 """Unit tests for vision.camera module."""
 
 import pytest
-from vision.camera import camera_module, CameraModule
+from vision.camera import camera_module
 
 
 def test_is_camera_available_bool_return():

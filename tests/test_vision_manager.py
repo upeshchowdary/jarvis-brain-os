@@ -1,7 +1,7 @@
 """Unit tests for vision.manager VisionManager orchestrator."""
 
 import pytest
-from vision.manager import vision_manager, VisionManager
+from vision.manager import vision_manager
 from vision.environment import EnvironmentState
 
 

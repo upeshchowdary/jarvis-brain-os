@@ -1,21 +1,6 @@
-from tools.search_tool import InternetSearchTool
-from tools.scraper_tool import WebScraperTool
-from tools.filesystem_tool import FileSystemTool
-from tools.system_tool import SystemInfoTool
-from tools.vision_tool import ScreenVisionTool
-from brain.tool_router import tool_router
+"""JARVIS tools: one tool per capability, registered in ``tools.registry``."""
 
-# Auto-register Phase 2 active tools into central ToolRouter
-tool_router.register_tool(InternetSearchTool())
-tool_router.register_tool(WebScraperTool())
-tool_router.register_tool(FileSystemTool())
-tool_router.register_tool(SystemInfoTool())
-tool_router.register_tool(ScreenVisionTool())
+from tools.base import Tool, ToolContext, ToolResult
+from tools.registry import load_builtin_tools, registry
 
-__all__ = [
-    "InternetSearchTool",
-    "WebScraperTool",
-    "FileSystemTool",
-    "SystemInfoTool",
-    "ScreenVisionTool",
-]
+__all__ = ["Tool", "ToolContext", "ToolResult", "load_builtin_tools", "registry"]

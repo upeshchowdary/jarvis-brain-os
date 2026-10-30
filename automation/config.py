@@ -1,64 +1,51 @@
-"""JARVIS Automation Module — Central Configuration.
+"""Automation timing configuration.
 
-All timeouts, retry limits, safety levels, and feature flags are defined here.
-Do NOT hardcode these values in individual controllers.
+Safety settings (dry-run, confirmation policy, protected processes) live in
+``core.config.settings`` and are enforced by ``automation.gateway`` — there is a
+single source of truth. ``automation_config.DRY_RUN`` is an alias kept for
+backwards compatibility.
 """
 
-from dataclasses import dataclass, field
-from typing import Set
+from dataclasses import dataclass
+
+from core.config import settings
 
 
 @dataclass
 class AutomationConfig:
-    """Centralized config for the automation agent layer."""
-
-    # ── Retry & Timing (Optimized for Sub-Second Execution) ─────
+    # ── Retry & timing ──────────────────────────────────────────────
     MAX_RETRIES: int = 2
-    ACTION_TIMEOUT: float = 5.0           # Per-action timeout (seconds)
-    TASK_TIMEOUT: float = 30.0            # Overall task timeout (seconds)
-    VERIFICATION_TIMEOUT: float = 1.0     # Post-action verification timeout
-    VISION_TIMEOUT: float = 8.0           # Max wait for vision response
-    APP_STARTUP_TIMEOUT: float = 1.5      # Max wait for app to open (fast non-blocking)
-    ELEMENT_SEARCH_TIMEOUT: float = 2.0   # Max wait to find an on-screen element
+    ACTION_TIMEOUT: float = 5.0
+    TASK_TIMEOUT: float = 30.0
+    VERIFICATION_TIMEOUT: float = 1.0
+    VISION_TIMEOUT: float = 8.0
+    APP_STARTUP_TIMEOUT: float = 1.5
+    ELEMENT_SEARCH_TIMEOUT: float = 2.0
 
-    # ── Action timing (fast responsive delays) ──────────────────────
-    ACTION_DELAY: float = 0.05            # Brief pause between actions
-    TYPE_INTERVAL: float = 0.01           # Delay between each typed character
-    CLICK_DELAY: float = 0.02             # Pause after each click
+    # ── Action timing ───────────────────────────────────────────────
+    ACTION_DELAY: float = 0.05
+    TYPE_INTERVAL: float = 0.01
+    CLICK_DELAY: float = 0.02
 
-    # ── Safety ──────────────────────────────────────────────────────
-    SAFETY_ENABLED: bool = True
-    # "low"    = only block HIGH risk
-    # "medium" = block MEDIUM + HIGH risk (require confirmation)
-    # "strict" = block everything above LOW
-    CONFIRMATION_LEVEL: str = "low"
-
-    # ── Emergency Stop ───────────────────────────────────────────────
-    EMERGENCY_STOP_KEY: str = "escape"   # Key to trigger immediate stop
-
-    # ── Dry Run ──────────────────────────────────────────────────────
-    DRY_RUN: bool = False                # If True: log actions but don't execute
-
-    # ── Workflow Storage ─────────────────────────────────────────────
-    WORKFLOWS_DIR: str = "data/workflows"
+    # ── Workflows ───────────────────────────────────────────────────
     MAX_WORKFLOW_STEPS: int = 200
+    LOG_SCREENSHOTS: bool = False
 
-    # ── Logging ──────────────────────────────────────────────────────
-    LOG_FILE: str = "logs/automation.log"
-    LOG_SCREENSHOTS: bool = False        # Embed screenshots in workflow JSON
-    MAX_LOG_SIZE_MB: int = 50
-
-    # ── Vision ───────────────────────────────────────────────────────
-    SCREENSHOT_MAX_DIM: int = 1280       # Resize before sending to vision
+    # ── Vision ──────────────────────────────────────────────────────
+    SCREENSHOT_MAX_DIM: int = 1280
     OCR_CONFIDENCE_THRESHOLD: float = 0.4
 
-    # ── High-risk command keywords (always require confirmation) ─────
-    HIGH_RISK_SHELL_KEYWORDS: Set[str] = field(default_factory=lambda: {
-        "shutdown", "restart", "format", "del ", "rmdir", "rm -rf",
-        "diskpart", "fdisk", "reg delete", "net user", "taskkill /f",
-        "cipher /w", "sfc /", "bcdedit", "attrib -s -h",
-    })
+    @property
+    def DRY_RUN(self) -> bool:  # noqa: N802
+        return settings.DRY_RUN
+
+    @DRY_RUN.setter
+    def DRY_RUN(self, value: bool) -> None:  # noqa: N802
+        settings.DRY_RUN = bool(value)
+
+    @property
+    def CONFIRMATION_LEVEL(self) -> str:  # noqa: N802
+        return "medium" if settings.CONFIRM_MEDIUM_RISK else "low"
 
 
-# Global singleton
 automation_config = AutomationConfig()

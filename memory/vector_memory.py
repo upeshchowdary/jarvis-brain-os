@@ -1,11 +1,11 @@
 import math
 import time
 import asyncio
-from pathlib import Path
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel, Field
 
-from brain.logger import logger
+from core.logging import logger
+from core.paths import data_path
 from app.database.connection import db_manager
 
 try:
@@ -35,7 +35,7 @@ class VectorMemoryManager:
 
         if HAS_CHROMADB:
             try:
-                db_path = persist_dir or str(Path("./data/chroma_db").resolve())
+                db_path = persist_dir or str(data_path("chroma_db"))
                 self._chroma_client = chromadb.PersistentClient(path=db_path)
                 self._collection = self._chroma_client.get_or_create_collection(
                     name="jarvis_semantic_memory",

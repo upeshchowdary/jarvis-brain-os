@@ -4,11 +4,11 @@ Recognizes hand tracking gestures (raised hand, pointing, thumbs up, open palm, 
 and hand side attributes (left/right).
 """
 
-from typing import List, Dict, Any, Optional
+from typing import List, Any
 from loguru import logger
 
 try:
-    from PIL import Image
+    from PIL import Image  # noqa: F401
     HAS_PIL = True
 except ImportError:
     HAS_PIL = False

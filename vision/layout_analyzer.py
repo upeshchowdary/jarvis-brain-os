@@ -5,7 +5,7 @@ Parses spatial distribution of desktop windows, window overlaps, screen grid ali
 """
 
 from typing import List, Dict, Any, Tuple
-from vision.environment import WindowInfo, MonitorInfo, UIElement, BoundingBox
+from vision.environment import WindowInfo, MonitorInfo, UIElement
 
 
 class LayoutAnalyzer:

@@ -4,7 +4,7 @@ Compares consecutive EnvironmentState frames to report opened/closed windows,
 new popups, cursor movement, altered text lines, and UI element changes.
 """
 
-from typing import List, Dict, Any, Optional
+from typing import Optional
 from vision.environment import EnvironmentState, DiffSummary
 
 

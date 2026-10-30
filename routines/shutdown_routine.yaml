@@ -1,0 +1,10 @@
+name: shutdown routine
+description: Close apps gracefully and shut down (asks for confirmation once).
+steps:
+  - say: "Closing your apps and shutting down."
+  - op: app.close
+    args: {name: chrome}
+  - op: app.close
+    args: {name: vs code}
+  - op: system.power
+    args: {action: shutdown}

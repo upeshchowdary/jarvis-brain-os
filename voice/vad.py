@@ -9,8 +9,7 @@ Features:
 
 from __future__ import annotations
 
-import math
-import struct
+import numpy as np
 import time
 from typing import List, Optional, Tuple
 from loguru import logger
@@ -41,23 +40,17 @@ class VoiceActivityDetector:
             return False
 
         try:
-            count = len(raw_audio_chunk) // 2
-            format_str = f"<{count}h"
-            shorts = struct.unpack(format_str, raw_audio_chunk)
-
-            # 1. RMS Energy
-            sum_squares = sum(s * s for s in shorts)
-            rms = math.sqrt(sum_squares / count) if count > 0 else 0.0
-
+            samples = np.frombuffer(raw_audio_chunk[: len(raw_audio_chunk) // 2 * 2], dtype="<i2")
+            if samples.size == 0:
+                return False
+            f = samples.astype(np.float64)
+            rms = float(np.sqrt(np.mean(f * f)))
             if rms < energy_threshold:
                 return False
-
-            # 2. Zero-Crossing Rate (ZCR) to differentiate voiced speech from static noise
-            zcr = sum(1 for i in range(1, count) if (shorts[i] >= 0 > shorts[i - 1]) or (shorts[i] < 0 <= shorts[i - 1]))
-            zcr_rate = zcr / count if count > 0 else 0.0
-
-            # Human speech energy check
-            return (rms >= energy_threshold) and (zcr_rate < 0.95)
+            # Zero-crossing rate separates voiced speech from hiss/static
+            signs = np.signbit(samples)
+            zcr_rate = float(np.count_nonzero(signs[1:] != signs[:-1])) / samples.size
+            return zcr_rate < 0.95
 
         except Exception:
             return False

@@ -2,7 +2,7 @@
 
 from PIL import Image, ImageDraw
 from vision.ui_detector import ui_detector, UIDetector
-from vision.environment import BoundingBox, UIElement, UIElementType, OCRTextItem
+from vision.environment import BoundingBox, UIElementType, OCRTextItem
 
 
 def test_ui_detector_with_ocr_items():

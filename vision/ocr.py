@@ -17,11 +17,11 @@ from __future__ import annotations
 
 import asyncio
 import re
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Any, Tuple
 from loguru import logger
 
 try:
-    from PIL import Image
+    from PIL import Image  # noqa: F401
     HAS_PIL = True
 except ImportError:
     HAS_PIL = False
@@ -49,7 +49,7 @@ try:
 except ImportError:
     pass
 
-from vision.environment import BoundingBox, OCRTextItem
+from vision.environment import BoundingBox, OCRTextItem  # noqa: E402
 
 
 class OCREngine:

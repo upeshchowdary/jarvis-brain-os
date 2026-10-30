@@ -10,7 +10,6 @@ Implements self-correction and multi-tier recovery strategies:
 from __future__ import annotations
 
 import asyncio
-import time
 from typing import Dict, List, Optional, Any
 
 from automation.automation_logger import automation_logger
@@ -23,9 +22,10 @@ class RecoveryEngine:
     """Detects and resolves obstacles, modals, focus drops, and execution failures."""
 
     # Common dismissal targets (cookie dialogs, promo modals, update notices)
+    # Only clearly *negative/neutral* dismissals — never "Accept", "I agree" or "Continue",
+    # which could consent to something on the user's behalf.
     DISMISS_TARGETS = [
-        "Accept all", "Accept cookies", "I agree", "Got it", "Dismiss",
-        "Close", "Skip", "No thanks", "Maybe later", "Continue", "Not now",
+        "Reject all", "Got it", "Dismiss", "No thanks", "Maybe later", "Not now", "Skip",
     ]
 
     async def try_dismiss_overlays(self) -> bool:
@@ -118,7 +118,7 @@ class RecoveryEngine:
         """
         Queries LLM to generate recovery sub-steps when state diverges from plan.
         """
-        from brain.model_manager import model_manager
+        from core.llm import llm
         prompt = (
             f"You are the JARVIS Recovery Engine.\n"
             f"Goal: \"{goal}\"\n"
@@ -133,15 +133,11 @@ class RecoveryEngine:
         )
 
         try:
-            res = await model_manager.generate(
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.1,
-                max_tokens=300,
-            )
-            raw = (res.get("content", "") if isinstance(res, dict) else "").strip()
-            raw = raw.strip("```json").strip("```").strip()
-            import json
-            return json.loads(raw)
+            res = await llm.chat([{"role": "user", "content": prompt}], temperature=0.1, max_tokens=300, purpose="fast")
+            from brain.utils import extract_json
+
+            plan = extract_json(res.content)
+            return plan if isinstance(plan, list) else []
         except Exception as e:
             automation_logger.warning(f"[Recovery] Dynamic replan LLM error: {e}")
             return []

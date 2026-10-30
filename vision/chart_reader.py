@@ -4,11 +4,10 @@ Interprets Pie charts, Line graphs, Bar charts, Scatter plots, and Heat maps,
 extracting Titles, Axes, Legends, and estimated series values into ChartData models.
 """
 
-from typing import Dict, Any, List, Optional
-from loguru import logger
+from typing import Any, Optional
 
 try:
-    from PIL import Image
+    from PIL import Image  # noqa: F401
     HAS_PIL = True
 except ImportError:
     HAS_PIL = False
@@ -41,7 +40,7 @@ class ChartReader:
         y_label = "Y-Axis / Value"
         legend = ["Series A", "Series B"]
 
-        lines = [l.strip() for l in (ocr_text or "").splitlines() if l.strip()]
+        lines = [ln.strip() for ln in (ocr_text or "").splitlines() if ln.strip()]
         if lines:
             title = lines[0]
 

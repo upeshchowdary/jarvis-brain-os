@@ -1,42 +1,33 @@
 """Unit tests for Phase 2 Active Tools and Memory Engine."""
 
 import pytest
-from tools.search_tool import InternetSearchTool
-from tools.scraper_tool import WebScraperTool
-from tools.filesystem_tool import FileSystemTool
-from tools.system_tool import SystemInfoTool
+from tools import ToolContext, load_builtin_tools
 from memory.short_term import short_term_memory
 from memory.long_term import long_term_memory
 from memory.vector_memory import vector_memory
 
+registry = load_builtin_tools()
 
-@pytest.mark.asyncio
+
+@pytest.mark.network
 async def test_internet_search_tool():
-    tool = InternetSearchTool()
-    res = await tool.execute(query="Python Programming Language", max_results=2)
-    assert res["success"] is True
-    assert isinstance(res["results"], list)
+    res = await registry.get("web_search").run(ToolContext(), query="Python Programming Language")
+    assert res.success is True
+    assert isinstance(res.data, list)
 
 
-@pytest.mark.asyncio
-async def test_system_info_tool():
-    tool = SystemInfoTool()
-    res = await tool.execute()
-    assert res["success"] is True
-    assert "os" in res
-    assert "cpu_cores" in res
+async def test_system_status_tool():
+    res = await registry.get("system_status").run(ToolContext())
+    assert res.success is True
+    assert "cpu_cores" in res.data and "os" in res.data
 
 
-@pytest.mark.asyncio
-async def test_filesystem_tool():
-    tool = FileSystemTool()
-    # Test file write and read
-    write_res = await tool.execute(action="write", path="scratch/test_fs_tool.txt", content="JARVIS FS Test")
-    assert write_res["success"] is True
-
-    read_res = await tool.execute(action="read", path="scratch/test_fs_tool.txt")
-    assert read_res["success"] is True
-    assert read_res["content"] == "JARVIS FS Test"
+async def test_files_read_tool(tmp_path):
+    f = tmp_path / "test_fs_tool.txt"
+    f.write_text("JARVIS FS Test", encoding="utf-8")
+    res = await registry.get("files_read").run(ToolContext(), location=str(f))
+    assert res.success is True
+    assert "JARVIS FS Test" in res.content_for_llm
 
 
 def test_short_term_memory():

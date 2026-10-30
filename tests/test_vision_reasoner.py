@@ -2,10 +2,8 @@
 
 import pytest
 from PIL import Image
-from vision.visual_reasoner import visual_reasoner, VisualReasoner
+from vision.visual_reasoner import VisualReasoner
 from vision.providers.base import BaseVisionProvider
-from vision.providers.openai import OpenAIVisionProvider
-from vision.providers.gemini import GeminiVisionProvider
 
 
 class MockVisionProvider(BaseVisionProvider):

@@ -1,6 +1,6 @@
 """Unit tests for vision.screen_capture module."""
 
-from vision.screen_capture import screen_capture_engine, ScreenCaptureEngine
+from vision.screen_capture import screen_capture_engine
 from vision.environment import BoundingBox, CursorState, MonitorInfo, WindowInfo
 
 

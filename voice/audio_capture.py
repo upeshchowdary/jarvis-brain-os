@@ -10,13 +10,12 @@ Features:
 
 from __future__ import annotations
 
-import asyncio
 import collections
-import math
-import struct
+
+import numpy as np
 import threading
 import time
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Any
 from loguru import logger
 
 from voice.state import VoiceState, voice_state_manager
@@ -104,12 +103,8 @@ class AudioCaptureManager:
         if not raw_audio_chunk:
             return 0.0
         try:
-            count = len(raw_audio_chunk) // 2
-            format_str = f"<{count}h"
-            shorts = struct.unpack(format_str, raw_audio_chunk)
-            sum_squares = sum(s * s for s in shorts)
-            rms = math.sqrt(sum_squares / count) if count > 0 else 0.0
-            return rms
+            samples = np.frombuffer(raw_audio_chunk[: len(raw_audio_chunk) // 2 * 2], dtype="<i2").astype(np.float64)
+            return float(np.sqrt(np.mean(samples * samples))) if samples.size else 0.0
         except Exception:
             return 0.0
 

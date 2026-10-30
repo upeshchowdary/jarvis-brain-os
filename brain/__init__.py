@@ -1,47 +1,30 @@
-from brain.brain_manager import BrainManager, brain_manager, BrainExecutionOutput
-from brain.model_manager import ModelManager, model_manager
-from brain.personality_manager import PersonalityManager, personality_manager, PersonalityType
-from brain.prompt_manager import PromptManager, prompt_manager
-from brain.context_manager import ContextManager, context_manager
-from brain.conversation_manager import ConversationManager, conversation_manager
-from brain.intent_engine import IntentEngine, intent_engine, StructuredIntent
-from brain.reasoning_engine import ReasoningEngine, reasoning_engine
-from brain.planner import Planner, planner, HierarchicalPlan
-from brain.reflection_engine import ReflectionEngine, reflection_engine, ReflectionResult
-from brain.tool_router import ToolRouter, tool_router, BaseBrainTool, ToolCallSpec
-from brain.knowledge_manager import KnowledgeManager, knowledge_manager, BaseKnowledgeProvider
+"""JARVIS brain package.
 
-__all__ = [
-    "BrainManager",
-    "brain_manager",
-    "BrainExecutionOutput",
-    "ModelManager",
-    "model_manager",
-    "PersonalityManager",
-    "personality_manager",
-    "PersonalityType",
-    "PromptManager",
-    "prompt_manager",
-    "ContextManager",
-    "context_manager",
-    "ConversationManager",
-    "conversation_manager",
-    "IntentEngine",
-    "intent_engine",
-    "StructuredIntent",
-    "ReasoningEngine",
-    "reasoning_engine",
-    "Planner",
-    "planner",
-    "HierarchicalPlan",
-    "ReflectionEngine",
-    "reflection_engine",
-    "ReflectionResult",
-    "ToolRouter",
-    "tool_router",
-    "BaseBrainTool",
-    "ToolCallSpec",
-    "KnowledgeManager",
-    "knowledge_manager",
-    "BaseKnowledgeProvider",
-]
+Attributes are resolved lazily so that importing a light submodule
+(``brain.utils``, ``brain.brain_config``) never drags in the whole pipeline.
+That is what used to cause the ``import memory`` -> ``import brain`` cycle.
+"""
+
+from importlib import import_module
+from typing import Any
+
+_EXPORTS = {
+    "Brain": "brain.pipeline",
+    "brain": "brain.pipeline",
+    "TurnResult": "brain.pipeline",
+    "PersonalityManager": "brain.personality_manager",
+    "personality_manager": "brain.personality_manager",
+    "PersonalityType": "brain.personality_manager",
+    "ConversationManager": "brain.conversation_manager",
+    "conversation_manager": "brain.conversation_manager",
+}
+
+__all__ = ["Brain", "brain", "TurnResult", "PersonalityManager", "personality_manager", "PersonalityType",
+           "ConversationManager", "conversation_manager"]
+
+
+def __getattr__(name: str) -> Any:
+    module = _EXPORTS.get(name)
+    if module is None:
+        raise AttributeError(f"module 'brain' has no attribute {name!r}")
+    return getattr(import_module(module), name)

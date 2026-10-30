@@ -3,18 +3,15 @@
 import pytest
 import struct
 import math
-from unittest.mock import MagicMock, patch
 
-from voice.state import VoiceState, VoiceStateManager, voice_state_manager
-from voice.voice_config import voice_config
+from voice.state import VoiceState, VoiceStateManager
 from voice.audio_capture import AudioCaptureManager
 from voice.vad import VoiceActivityDetector
 from voice.wake_word import WakeWordDetector
 from voice.normalizer import CommandNormalizer
 from voice.tts import TextToSpeechEngine
 from voice.barge_in import BargeInMonitor
-from brain.intent_engine import intent_engine
-from automation.engine.planner import task_planner
+from brain import router
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -257,15 +254,8 @@ def test_voice_command_scenario_understanding(voice_command):
     normalized = cn.normalize(voice_command)
     assert len(normalized) > 0
 
-    # 2. Intent Engine understanding
-    intent = intent_engine.detect_intent(normalized)
-    assert intent.intent in (
-        "AUTOMATION_TASK",
-        "REALTIME_KNOWLEDGE_SEARCH",
-        "FILESYSTEM_OPERATION",
-        "SYSTEM_TELEMETRY",
-        "SCREEN_VISION",
-        "CODE_GENERATION",
-        "TASK_PLANNING",
-        "GENERAL_CONVERSATION",
-    )
+    # 2. Every spoken command is either handled by the exact-command fast path or recognised as an
+    #    imperative request, so the agent is offered action tools for it (questions never are).
+    decision = router.fast_route(normalized)
+    read_only_request = normalized.lower().startswith(("show me", "what", "where"))
+    assert decision is not None or router.is_imperative(normalized) or read_only_request, normalized

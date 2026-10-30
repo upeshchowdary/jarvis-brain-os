@@ -2,10 +2,7 @@
 
 # pyrefly: ignore [missing-import]
 import pytest
-import asyncio
 from app.database.connection import DatabaseManager
-from memory.short_term import ShortTermMemoryManager
-from memory.long_term import LongTermMemoryManager
 from memory.vector_memory import VectorMemoryManager
 from brain.conversation_manager import ConversationManager
 
@@ -40,7 +37,7 @@ async def test_vector_memory_persistence(tmp_path):
     await db_mgr.init_db()
 
     # Create vector memory and add document
-    vm1 = VectorMemoryManager()
+    VectorMemoryManager()
 
     # Direct persistence call to test_db
     await db_mgr.save_vector_document(

@@ -5,11 +5,11 @@ Menus, Tabs, Taskbars, Address bars, Toolbars, Popups) with bounding boxes and s
 """
 
 import uuid
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Any, Optional
 from loguru import logger
 
 try:
-    from PIL import Image
+    from PIL import Image  # noqa: F401
     HAS_PIL = True
 except ImportError:
     HAS_PIL = False

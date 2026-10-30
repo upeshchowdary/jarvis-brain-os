@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import re
 import time
-from typing import List, Optional, Tuple
+from typing import Optional, Tuple
 from loguru import logger
 
 from voice.voice_config import voice_config
@@ -95,3 +95,63 @@ class WakeWordDetector:
 
 
 wake_word_detector = WakeWordDetector()
+
+
+class AcousticWakeWord:
+    """Optional on-device acoustic wake word ("hey jarvis") using openWakeWord (Apache-2.0 code).
+
+    Detecting the wake word on raw audio means nothing is transcribed until the user
+    addresses JARVIS — lower latency, lower CPU and better privacy than transcribing
+    everything and searching the text. Note: openWakeWord's bundled pre-trained models
+    are released for non-commercial use (CC BY-NC-SA); fine for a personal assistant.
+    """
+
+    FRAME_SAMPLES = 1280  # 80 ms at 16 kHz, what openWakeWord expects
+
+    def __init__(self) -> None:
+        self._model = None
+        self._buffer = b""
+        self.error: Optional[str] = None
+
+    def available(self) -> bool:
+        if self._model is not None:
+            return True
+        if self.error:
+            return False
+        try:
+            import openwakeword  # type: ignore
+            from openwakeword.model import Model  # type: ignore
+
+            try:
+                openwakeword.utils.download_models([voice_config.OPENWAKEWORD_MODEL])
+            except Exception:
+                pass
+            self._model = Model(wakeword_models=[voice_config.OPENWAKEWORD_MODEL], inference_framework="onnx")
+            return True
+        except Exception as exc:
+            self.error = str(exc)
+            logger.warning(f"[WakeWord] openWakeWord unavailable ({exc}); falling back to transcript matching.")
+            return False
+
+    def process(self, chunk: bytes) -> bool:
+        """Feed raw 16-bit mono 16 kHz audio; returns True when the wake word is heard."""
+        if not self.available():
+            return False
+        import numpy as np
+
+        self._buffer += chunk
+        frame_bytes = self.FRAME_SAMPLES * 2
+        fired = False
+        while len(self._buffer) >= frame_bytes:
+            frame, self._buffer = self._buffer[:frame_bytes], self._buffer[frame_bytes:]
+            scores = self._model.predict(np.frombuffer(frame, dtype="<i2"))
+            if max(scores.values(), default=0.0) >= voice_config.OPENWAKEWORD_THRESHOLD:
+                fired = True
+        if fired:
+            self._model.reset()
+            self._buffer = b""
+            voice_state_manager.transition_to(VoiceState.WAKE_DETECTED, "Acoustic wake word")
+        return fired
+
+
+acoustic_wake_word = AcousticWakeWord()

@@ -3,7 +3,7 @@
 from PIL import Image
 from vision.screen_memory import screen_memory
 from vision.diff_detector import diff_detector
-from vision.environment import EnvironmentState, WindowInfo, CursorState, BoundingBox
+from vision.environment import EnvironmentState, WindowInfo, CursorState
 
 
 def test_screen_memory_caching():

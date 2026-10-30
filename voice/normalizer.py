@@ -9,7 +9,7 @@ Features:
 from __future__ import annotations
 
 import re
-from typing import Dict, List, Tuple
+from typing import List, Tuple
 from loguru import logger
 
 
@@ -54,7 +54,7 @@ class CommandNormalizer:
 
         # Spoken filler words at start of command (supports chained e.g. "um please")
         self._filler_prefix = re.compile(
-            r"^(?:(?:um+|uh+|ah+|so+|like+|actually+|basically+|please+|can\s+you+|could\s+you+)\s*)+",
+            r"^(?:(?:um+|uh+|ah+|er+|hmm+|so|actually|basically|please|can\s+you|could\s+you)[,\s]+)+",
             re.IGNORECASE
         )
 

@@ -1,8 +1,6 @@
 import asyncio
-from typing import List, Dict, Any, Optional
-from brain.brain_config import brain_config
+from typing import List, Dict
 from brain.utils import estimate_token_count
-from brain.logger import logger
 from app.database.connection import db_manager
 
 
@@ -50,6 +48,10 @@ class ShortTermMemoryManager:
         if session_id not in self._buffers or not self._buffers[session_id]:
             await self.load_from_db(session_id)
         return self._buffers.get(session_id, []).copy()
+
+    def forget_buffer(self, session_id: str) -> None:
+        """Drop the in-RAM buffer only (history stays in SQLite)."""
+        self._buffers.pop(session_id, None)
 
     def clear(self, session_id: str) -> None:
         """Clear memory buffer for session."""
