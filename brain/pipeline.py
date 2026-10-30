@@ -28,12 +28,14 @@ from brain import router
 from brain.conversation_manager import conversation_manager
 from brain.prompts import build_system_prompt, wrap_untrusted
 from core.config import settings
+from core.events import bus
 from core.llm import LLMResponse, LLMUnavailable, llm, resolve_model
 from core.logging import logger
 from core.metrics import metrics
 from core.session import sessions
 from tools.base import Tool, ToolCallRecord, ToolContext, ToolResult
 from tools.registry import load_builtin_tools, registry
+from tools.selection import select_tools
 
 
 @dataclass
@@ -108,6 +110,8 @@ class Brain:
             result.metadata.setdefault("model", "fast-path" if result.route != "agent" else "")
             result.metadata.update(session_id=sid, total_latency_ms=round(total, 1), timing_breakdown_ms=timing)
             conversation_manager.add_assistant_message(sid, response)
+            bus.publish("turn", {"session_id": sid, "channel": channel, "query": query, "response": response[:2000],
+                                 "status": result.status, "route": result.route})
             self._after_turn(result)
             return {"type": "done", "result": result}
 
@@ -139,24 +143,28 @@ class Brain:
             record = await self._run_tool(tool, decision.args, ctx, origin="fast")
             timing["tool_ms"] = round(record.elapsed_ms, 1)
             yield {"type": "tool", "name": tool.name, "result": record.to_dict()}
-            if tool.final or not record.result.success:
+            if tool.final or not record.result.success or record.result.status != "ok":
                 yield finish(note + record.result.message, route="fast_path", intent=tool.name, status=record.result.status,
                              pending=self._pending_dict(record.result), tools=[record.to_dict()],
                              metadata={"rule": decision.rule})
                 return
-            # Read-only tools that need synthesis (none today) fall through to the agent.
+            prefilled = (tool, record)  # e.g. "summarize today's commits": the agent writes the answer from the result
+        else:
+            prefilled = None
 
         # 3 ── Agent ──────────────────────────────────────────────────────
-        async for event in self._agent(query, history, state, ctx, personality, model_override, timing, stream_tokens, note):
+        async for event in self._agent(query, history, state, ctx, personality, model_override, timing, stream_tokens, note, prefilled):
             if event["type"] == "final":
                 yield finish(**event["kwargs"])
                 return
             yield event
 
     # ── Agent loop ──────────────────────────────────────────────────────
-    async def _agent(self, query, history, state, ctx, personality, model_override, timing, stream_tokens, note):
+    async def _agent(self, query, history, state, ctx, personality, model_override, timing, stream_tokens, note, prefilled=None):
         allow_actions = router.is_imperative(query)
-        offered: Dict[str, Tool] = {t.name: t for t in (registry.all() if allow_actions else registry.read_only())}
+        base = registry.all() if allow_actions else registry.read_only()
+        recent = " ".join(m.get("content", "")[:200] for m in history[-4:])
+        offered: Dict[str, Tool] = {t.name: t for t in select_tools(query, base, recent)}
 
         t = time.perf_counter()
         facts, memories = await self._memory_context(query, allow_actions)
@@ -173,6 +181,17 @@ class Brain:
         tainted = False
         sensitive = False
         records: List[ToolCallRecord] = []
+        if prefilled is not None:
+            ptool, precord = prefilled
+            call_id = "fast_0"
+            messages.append({"role": "assistant", "content": "", "tool_calls": [
+                {"id": call_id, "type": "function", "function": {"name": ptool.name, "arguments": json.dumps(precord.arguments)}}]})
+            content = precord.result.message
+            if precord.result.content_for_llm:
+                content += "\n" + (wrap_untrusted(ptool.name, precord.result.content_for_llm) if ptool.untrusted_output else precord.result.content_for_llm)
+            messages.append({"role": "tool", "tool_call_id": call_id, "content": content})
+            records.append(precord)
+            tainted, sensitive = ptool.untrusted_output, ptool.sensitive_output
         last: Optional[LLMResponse] = None
         llm_ms = 0.0
 

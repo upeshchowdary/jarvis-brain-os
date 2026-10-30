@@ -1,0 +1,8 @@
+name: morning
+description: Daily briefing, mail and calendar.
+steps:
+  - briefing: true
+  - op: browser.open_url
+    args: {url: https://mail.google.com}
+  - op: browser.open_url
+    args: {url: https://calendar.google.com}

@@ -1,0 +1,17 @@
+name: study mode
+description: Open coding + class tools, quiet the PC and start a focus timer.
+variables:
+  minutes: 50
+  class_url: https://classroom.google.com
+steps:
+  - op: app.open
+    args: {name: vs code}
+  - op: browser.open_url
+    args: {url: "{class_url}"}
+  - op: system.volume
+    args: {action: set, level: 30}
+  - timer: {minutes: "{minutes}", label: "Focus session over — take a 10 minute break"}
+  - say: "Study mode is on. Focus for {minutes} minutes; I'll tell you when to take a break."
+  - if: {battery_below: 25}
+    then:
+      - say: "Your battery is low, plug in the charger before you start."

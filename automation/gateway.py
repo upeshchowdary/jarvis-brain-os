@@ -378,7 +378,7 @@ class ActionGateway:
         self._emit("pending_created", self._pending[pid].to_dict())
         return GatewayResult(
             "needs_confirmation",
-            f"⚠️ This needs your confirmation ({risk.label.upper()} risk):\n{preview}\n\nSay **yes** to confirm or anything else to cancel.",
+            f"⚠️ This needs your confirmation ({risk.label.upper()} risk):\n{preview}\n\nSay “yes” to confirm, or anything else to cancel.",
             risk=risk.label,
             pending_id=pid,
             preview=preview,

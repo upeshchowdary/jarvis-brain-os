@@ -39,11 +39,11 @@ async def test_restart_requires_confirmation_then_yes_schedules_it(win):
 
 
 async def test_anything_else_cancels_pending(win, monkeypatch):
-    install(monkeypatch, FakeLLM([text("It's sunny.")]))
+    install(monkeypatch, FakeLLM([text("Owls can rotate their heads 270 degrees.")]))
     sid = "p-cancel"
     await brain.handle("restart the computer", sid)
-    res = await brain.handle("what's the weather like?", sid)
-    assert "cancelled the action" in res.response and res.response.endswith("It's sunny.")
+    res = await brain.handle("tell me a fun fact about owls", sid)
+    assert "cancelled the action" in res.response and res.response.endswith("Owls can rotate their heads 270 degrees.")
     assert gateway.pending_for(sid) is None
     win["restart_system"].assert_not_called()
 

@@ -5,4 +5,4 @@ Do not import these modules from anywhere except ``automation.gateway`` — call
 fails if any other module imports ``automation.ops``.
 """
 
-from automation.ops import apps, browser, computer, mcp_ops, messaging, shell, system  # noqa: F401
+from automation.ops import apps, browser, computer, dev, docs, files, mcp_ops, messaging, shell, system  # noqa: F401

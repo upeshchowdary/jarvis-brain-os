@@ -99,3 +99,38 @@ All notable changes to JARVIS Brain OS. Baseline before the v3 upgrade: commit `
   Verified live in Chromium (`tests/test_browser_agent.py`).
 
 **Verify**: `pytest tests/test_voice_pipeline.py tests/test_mcp.py tests/test_browser_agent.py`.
+
+## Phase 5 — New capabilities
+
+Every action-taking feature runs through the ActionGateway with the right risk level.
+
+- **Reminders & schedules** (`services/scheduler.py`, `services/timeparse.py`): "remind me at 6 pm to submit the
+  report", "every weekday at 9 open my class links", "set a timer for 10 minutes", list/cancel. Persisted in
+  SQLite, survives restarts (late reminders are delivered and marked late), recurring daily/weekdays/weekly/every-N.
+  Windows toast + spoken alert + dashboard event. Scheduled commands/routines still obey the gateway.
+- **Routines / modes** (`services/routines.py`, `routines/*.yaml`, `data/routines/*.yaml`): YAML with variables
+  and conditions (`battery_below`, `app_running`, `weekday`, `after/before`), timers, spoken lines, briefing.
+  All OS steps run as ONE gateway plan (one confirmation). Built-ins: study mode, shutdown routine, morning.
+- **Workflow recorder v2**: editable YAML (old JSON still loads), `{param}` placeholders ("replay send report with
+  name=Rahul"), triggers (time, file created in a folder, app launched, USB connected), replay through
+  `computer.run_plan` with verification/retry.
+- **File management with undo** (`automation/ops/files.py`): create/append/rename/move/copy, delete → Recycle Bin
+  (`send2trash`), organize a folder by type or month, bulk rename with preview, zip/unzip (zip-slip safe),
+  duplicate finder (hash), content search, "undo that". System folders and JARVIS data are refused.
+- **Documents** (`services/documents.py`): read/summarise PDF/DOCX/PPTX/XLSX, local Q&A over a folder (BM25, cached
+  index, cited passages), extract tables to Excel, convert md/txt ↔ docx, csv ↔ xlsx, any → txt/md.
+- **Productivity**: notes, to-dos, clipboard history ("paste what I copied 3 items ago"), daily briefing (weather via
+  free wttr.in, reminders, to-dos, PC health), weather.
+- **System health monitor** (`services/health.py`): low battery, sustained high CPU, RAM, disk, temperature →
+  throttled proactive alerts with suggested fixes (ending a process still needs confirmation).
+- **Developer helper**: find projects by name (remembered), git status / today's commits (summarised), run tests
+  (confirmed), open project in VS Code.
+- **Web research**: multi-query search + concurrent page reading → numbered sources for cited answers.
+- **Desktop UX**: `/dashboard` (chat with live streaming, approve/deny buttons, live activity feed, reminders,
+  to-dos, notes, routines, audit log, emergency stop; strict CSP, no external scripts) and `jarvis.py --tray`
+  (system-tray menu + Win+J hotkey). `jarvis.py` launches everything.
+- **Tool selection**: only the relevant subset of the 80+ tools is sent to the LLM per request (core + keyword
+  groups), keeping prompts small and tool choice accurate.
+
+**Verify**: `pytest tests/test_productivity_features.py`, then `python jarvis.py --open` and try
+"remind me in 1 minute to stretch", "start study mode", "organize my downloads" → approve → "undo that".

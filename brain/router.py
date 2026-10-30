@@ -36,7 +36,7 @@ _POLITE_PREFIX = re.compile(
     r"i want you to|i need you to|i'd like you to|go ahead and)\s+",
     re.I,
 )
-_POLITE_SUFFIX = re.compile(r"\s+(?:please|pls|for me|right now|now|jarvis|thanks|thank you|asap)$", re.I)
+_POLITE_SUFFIX = re.compile(r"\s+(?:please|pls|for me|right now|now|thanks|thank you|asap)$|(?<!\bin)(?<!\bof)(?<!\bfor)(?<!\bmy)(?<!\bthe)(?<!\bopen)[\s,]+jarvis$", re.I)
 
 
 def normalize(text: str) -> Tuple[str, bool]:
@@ -295,6 +295,73 @@ def _replay(m: re.Match) -> RouteDecision:
     from tools.builtin.workflows import parse_params
 
     return RouteDecision("workflow_replay", {"name": m.group("n").strip().lower(), "params": parse_params(m.group("p") or "")})
+
+
+# Reminders, notes, to-dos, briefing, weather, clipboard (Phase 5).
+@rule(r"(?:remind me|set (?:a |an )?reminder|set (?:an )?alarm)(?: for| to| at| in| on| every)? (?P<rest>.{3,200})", "reminder")
+def _reminder(m: re.Match) -> Optional[RouteDecision]:
+    from services.timeparse import parse_when
+
+    rest = m.group("rest").strip()
+    if parse_when(rest) is None:
+        return None
+    return RouteDecision("set_reminder", {"text": rest, "when": rest})
+
+
+@rule(r"set (?:a |the )?timer (?:for )?(?P<rest>.{2,60})|(?P<rest2>\d+ (?:minutes?|mins?|seconds?|hours?)) timer", "timer")
+def _timer(m: re.Match) -> Optional[RouteDecision]:
+    from services.timeparse import parse_when
+
+    rest = (m.group("rest") or m.group("rest2")).strip()
+    when = rest if rest.lower().startswith("in ") else f"in {rest}"
+    return RouteDecision("set_reminder", {"text": "⏲ Timer finished", "when": when}) if parse_when(when) else None
+
+
+rule(r"(?:what are|show|list|show me|read)(?: me)? my (?:upcoming )?reminders|(?:do i have )?any reminders|my reminders", "reminders_list")(
+    lambda m: RouteDecision("list_reminders", {}))
+rule(r"(?:cancel|delete|remove|clear)(?: my| the| all)? reminders?(?: (?:about|for|to) )?(?P<q>.{0,80})", "reminder_cancel")(
+    lambda m: RouteDecision("cancel_reminder", {"query": m.group("q").strip() or "all"}))
+rule(r"(?:take|make|write)(?: a)? note(?: that|:)? (?P<t>.{2,500})|note (?:down|this)[: ]+(?P<t2>.{2,500})", "note_add")(
+    lambda m: RouteDecision("note_add", {"text": (m.group("t") or m.group("t2")).strip()}))
+rule(r"(?:show|read|list)(?: me)?(?: all)? my notes|what are my notes", "notes_list")(lambda m: RouteDecision("notes_list", {}))
+rule(r"add (?P<t>.{2,200}?) to (?:my |the )?(?:to-?do|todo|task)(?: list)?", "todo_add")(
+    lambda m: RouteDecision("todo_add", {"text": m.group("t").strip()}))
+rule(r"(?:what(?:'s| is) on |show(?: me)? |read )?my (?:to-?do|todo|task)(?: list|s)?|(?:show|list)(?: my)? (?:to-?dos|todos|tasks)", "todo_list")(
+    lambda m: RouteDecision("todo_list", {}))
+rule(r"(?:mark|tick off|check off|complete) (?P<t>.{2,200}?)(?: as)?(?: done| complete| finished)?", "todo_done")(
+    lambda m: RouteDecision("todo_done", {"query": m.group("t").strip()}))
+rule(r"remove (?P<t>.{2,200}?) from (?:my |the )?(?:to-?do|todo|task)(?: list)?", "todo_remove")(
+    lambda m: RouteDecision("todo_done", {"query": m.group("t").strip(), "remove": True}))
+rule(r"(?:give me |read me )?(?:my |the )?(?:daily |morning )?briefing|brief me|what(?:'s| does) my day look like|what(?:'s| is) my day like", "briefing")(
+    lambda m: RouteDecision("daily_briefing", {}))
+rule(r"(?:what(?:'s| is)|how(?:'s| is)) the weather(?: like)?(?: (?:in|at|for) (?P<l>[\w ,.-]{2,40}?))?(?: today| now| right now)?|weather(?: (?:in|at|for) (?P<l2>[\w ,.-]{2,40}))?", "weather")(
+    lambda m: RouteDecision("weather", {"location": (m.group("l") or m.group("l2") or "").strip()}))
+rule(r"(?:show|what(?:'s| is) in)(?: me)? my clipboard(?: history)?|what did i (?:just )?copy|clipboard history", "clipboard")(
+    lambda m: RouteDecision("clipboard_history", {}))
+_NUM_WORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10}
+rule(r"paste (?:what|the thing|the text) i copied (?P<n>\d+|one|two|three|four|five|six|seven|eight|nine|ten) (?:items?|things?|times?|copies) (?:ago|back)", "paste_history")(
+    lambda m: RouteDecision("paste_from_history", {"index": (int(m.group("n")) if m.group("n").isdigit() else _NUM_WORDS[m.group("n").lower()]) + 1}))
+
+# Routines / modes, undo, file housekeeping, developer helpers.
+rule(r"(?:start|activate|enable|turn on|begin|enter|switch to) (?:the |my )?(?P<n>[\w -]{2,40}?) mode", "routine_mode")(
+    lambda m: RouteDecision("run_routine", {"name": f"{m.group('n').strip().lower()} mode"}))
+rule(r"(?:run|start|do) (?:the |my )?(?P<n>[\w -]{2,40}?) routine", "routine_run")(
+    lambda m: RouteDecision("run_routine", {"name": m.group("n").strip().lower()}))
+rule(r"(?:list|show)(?: me)?(?: my| all)? routines|what routines do (?:i|you) have", "routine_list")(lambda m: RouteDecision("list_routines", {}))
+rule(r"undo(?: that| it| this)?(?: last)?|undo the last (?:thing|action|operation|change|move|file operation)", "undo")(
+    lambda m: RouteDecision("undo_last_action", {}))
+rule(r"(?:organi[sz]e|tidy(?: up)?|clean up|sort) (?:my |the )?(?P<f>downloads|desktop|documents|pictures)(?: folder)?(?: by (?P<by>type|date|month))?", "organize")(
+    lambda m: RouteDecision("organize_folder", {"folder": m.group("f").lower(), "by": "date" if (m.group("by") or "").lower() in ("date", "month") else "type"}))
+rule(r"find(?: the)? duplicates?(?: files)? in (?:my |the )?(?P<f>[\w ./\\:~-]{2,80}?)(?: folder)?", "duplicates")(
+    lambda m: RouteDecision("find_duplicate_files", {"folder": m.group("f").strip()}))
+rule(r"open (?:my |the )?(?P<p>[\w .-]{2,40}?) project(?: in (?:vs ?code|visual studio code|code))?", "open_project")(
+    lambda m: RouteDecision("open_project", {"project": m.group("p").strip()}))
+rule(r"git status(?: (?:of|for|in) (?:my |the )?(?P<p>[\w .-]{2,40}?)(?: project)?)?", "git_status")(
+    lambda m: RouteDecision("git_status", {"project": (m.group("p") or ".").strip()}))
+rule(r"(?:summari[sz]e|show|what are) (?:today'?s|my today'?s) commits(?: (?:in|for|of) (?:my |the )?(?P<p>[\w .-]{2,40}?)(?: project)?)?", "git_today")(
+    lambda m: RouteDecision("git_today_commits", {"project": (m.group("p") or ".").strip()}))
+rule(r"run (?:the )?tests(?: (?:in|for|of) (?:my |the )?(?P<p>[\w .-]{2,40}?)(?: project)?)?", "run_tests")(
+    lambda m: RouteDecision("run_tests", {"project": (m.group("p") or ".").strip()}))
 
 
 # Browser searches.
