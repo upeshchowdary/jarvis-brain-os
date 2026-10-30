@@ -43,8 +43,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         from services import start_background_services
 
         await start_background_services()
+        await llm.warm_up()
+        llm.start_keepwarm()
     logger.info(f"JARVIS ready on http://{settings.HOST}:{settings.PORT} (token in .env as JARVIS_API_TOKEN)")
     yield
+    llm.stop_keepwarm()
     if settings.BACKGROUND_SERVICES:
         from services import stop_background_services
 

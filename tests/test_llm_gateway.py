@@ -220,3 +220,77 @@ async def test_offline_prefers_local(gw):
     seen = gw(lambda r: ok("offline"))
     res = await llm.chat([{"role": "user", "content": "x"}])
     assert res.provider == "ollama" and "11434" in str(seen[0].url)
+
+
+async def test_reasoning_effort_sent_per_model(gw, monkeypatch):
+    monkeypatch.setattr(settings, "REASONING_EFFORT", {"gemini-test": "minimal", "llama-test": "low"})
+    seen = gw(lambda r: ok("x"))
+    await llm.chat([{"role": "user", "content": "x"}])
+    assert json.loads(seen[0].content)["reasoning_effort"] == "minimal"
+    seen.clear()
+    await llm.chat([{"role": "user", "content": "x"}], model="ollama/qwen-test")
+    assert "reasoning_effort" not in json.loads(seen[0].content)
+
+
+async def test_reasoning_effort_never_sent_to_local_provider(gw, monkeypatch):
+    monkeypatch.setattr(settings, "REASONING_EFFORT", {"qwen-test": "low"})
+    seen = gw(lambda r: ok("x"))
+    await llm.chat([{"role": "user", "content": "x"}], model="lmstudio/qwen-test")
+    assert "reasoning_effort" not in json.loads(seen[0].content)
+
+
+def test_reasoning_effort_parses_json_from_env(monkeypatch):
+    from core.config import Settings
+
+    monkeypatch.setenv("REASONING_EFFORT", '{"m1": "low"}')
+    assert Settings(_env_file=None).REASONING_EFFORT == {"m1": "low"}
+
+
+async def test_response_format_passthrough(gw):
+    seen = gw(lambda r: ok("{}"))
+    fmt = {"type": "json_schema", "json_schema": {"name": "intent", "schema": {"type": "object"}}}
+    await llm.chat([{"role": "user", "content": "x"}], response_format=fmt)
+    assert json.loads(seen[0].content)["response_format"] == fmt
+
+
+async def test_warm_up_hits_each_configured_cloud_provider_once(gw, monkeypatch):
+    monkeypatch.setattr(settings, "INTENT_MODEL", "groq/llama-test")
+    monkeypatch.setattr(settings, "ACTION_MODEL", "gemini/gemini-test")
+    seen = gw(lambda r: ok("x"))
+    await llm.warm_up()
+    hosts = sorted({r.url.host for r in seen})
+    assert hosts == ["api.groq.com", "generativelanguage.googleapis.com"]
+    assert len(seen) == 2 and json.loads(seen[0].content)["max_tokens"] == 1
+
+
+async def test_warm_up_skips_empty_local_and_unconfigured(gw, monkeypatch):
+    monkeypatch.setattr(settings, "INTENT_MODEL", "")
+    monkeypatch.setattr(settings, "ACTION_MODEL", "ollama/qwen-test")
+    monkeypatch.setattr(settings, "GROQ_API_KEY", None)
+    monkeypatch.setattr(settings, "DEFAULT_MODEL", "groq/llama-test")
+    seen = gw(lambda r: ok("x"))
+    await llm.warm_up()
+    assert seen == []
+
+
+async def test_warm_up_swallows_errors(gw):
+    gw(lambda r: httpx.Response(500, text="down"))
+    await llm.warm_up()  # must not raise
+
+
+async def test_keepwarm_is_noop_when_disabled(gw, monkeypatch):
+    monkeypatch.setattr(settings, "LLM_KEEPWARM", False)
+    llm.start_keepwarm(0.01)
+    assert llm._keepwarm_task is None
+
+
+async def test_keepwarm_warms_when_idle_and_stops(gw, monkeypatch):
+    import asyncio
+
+    monkeypatch.setattr(settings, "LLM_KEEPWARM", True)
+    seen = gw(lambda r: ok("x"))
+    llm.start_keepwarm(0.02)
+    await asyncio.sleep(0.15)
+    llm.stop_keepwarm()
+    assert llm._keepwarm_task is None
+    assert seen  # idle -> warmed at least once

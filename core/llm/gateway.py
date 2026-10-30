@@ -7,6 +7,7 @@ Ollama and LM Studio. Features:
 * native tool calling (``tools`` / ``tool_calls``) and streaming (text + tool calls);
 * per-call timeouts, retries with exponential backoff on 429 / 5xx / network errors;
 * a fallback chain from config (``DEFAULT_MODEL`` → ``LLM_FALLBACKS``);
+* per-model ``reasoning_effort``, structured output (``response_format``) and keep-warm pings;
 * one shared ``httpx.AsyncClient`` per event loop (connection reuse = lower latency);
 * ``local_only`` calls for PRIVACY_MODE=local (file/screen content never leaves the PC).
 
@@ -197,6 +198,8 @@ class LLMGateway:
     def __init__(self) -> None:
         self._clients: Dict[int, httpx.AsyncClient] = {}
         self._transport: Optional[httpx.AsyncBaseTransport] = None
+        self._last_request = 0.0  # monotonic time of the last real request (keep-warm skips busy cycles)
+        self._keepwarm_task: Optional[asyncio.Task] = None
 
     # Tests inject an httpx.MockTransport here.
     def set_transport(self, transport: Optional[httpx.AsyncBaseTransport]) -> None:
@@ -258,7 +261,8 @@ class LLMGateway:
             headers["X-Title"] = "JARVIS"
         return headers
 
-    def _payload(self, model: str, messages, tools, tool_choice, temperature, max_tokens, stream, provider: str = "") -> Dict[str, Any]:
+    def _payload(self, model: str, messages, tools, tool_choice, temperature, max_tokens, stream, provider: str = "",
+                 response_format: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         payload: Dict[str, Any] = {
             "model": model,
             "messages": _sign_tool_calls(messages) if provider == "gemini" else messages,
@@ -269,10 +273,16 @@ class LLMGateway:
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = tool_choice or "auto"
+        effort = settings.REASONING_EFFORT.get(model)
+        if effort and not (provider in PROVIDERS and PROVIDERS[provider].local):
+            payload["reasoning_effort"] = effort
+        if response_format:
+            payload["response_format"] = response_format
         return payload
 
     async def _post(self, provider: ProviderSpec, payload: Dict[str, Any], timeout: Optional[float]) -> Dict[str, Any]:
         url = f"{provider.base_url()}/chat/completions"
+        self._last_request = time.monotonic()
         attempt = 0
         keys_left = len(provider.keys()) - 1
         while True:
@@ -312,6 +322,7 @@ class LLMGateway:
         purpose: str = "chat",
         local_only: bool = False,
         timeout: Optional[float] = None,
+        response_format: Optional[Dict[str, Any]] = None,
     ) -> LLMResponse:
         errors: List[str] = []
         chain = await self.candidates(model, purpose, local_only)
@@ -319,7 +330,7 @@ class LLMGateway:
             provider = PROVIDERS[prov_name]
             started = time.perf_counter()
             try:
-                data = await self._post(provider, self._payload(mod, messages, tools, tool_choice, temperature, max_tokens, False, prov_name), timeout)
+                data = await self._post(provider, self._payload(mod, messages, tools, tool_choice, temperature, max_tokens, False, prov_name, response_format), timeout)
                 choice = (data.get("choices") or [{}])[0]
                 message = choice.get("message") or {}
                 elapsed = (time.perf_counter() - started) * 1000
@@ -365,6 +376,7 @@ class LLMGateway:
             provider = PROVIDERS[prov_name]
             keys_left = len(provider.keys()) - 1
             started = time.perf_counter()
+            self._last_request = time.monotonic()
             produced = False
             text_parts: List[str] = []
             calls: Dict[int, Dict[str, Any]] = {}
@@ -434,6 +446,48 @@ class LLMGateway:
         async for kind, value in self.stream_events(messages, **kwargs):
             if kind == "text":
                 yield value
+
+    # ── Keep-warm ───────────────────────────────────────────────────────
+    async def warm_up(self) -> None:
+        """Send a 1-token request to each configured cloud provider used by the default, action and intent models.
+
+        Opens the TLS connection and wakes the provider so the first real turn isn't cold. Never raises.
+        """
+        targets: Dict[str, str] = {}
+        for spec in (settings.DEFAULT_MODEL, settings.ACTION_MODEL, settings.INTENT_MODEL):
+            if not spec or not spec.strip():
+                continue
+            prov, mod = resolve_model(spec)
+            if PROVIDERS[prov].local or not PROVIDERS[prov].configured():
+                continue
+            targets.setdefault(prov, mod)
+
+        async def ping(prov: str, mod: str) -> None:
+            try:
+                payload = self._payload(mod, [{"role": "user", "content": "ping"}], None, None, 0.0, 1, False, prov)
+                await self._post(PROVIDERS[prov], payload, 10.0)
+            except Exception as exc:
+                logger.debug(f"[LLM] warm-up {prov}/{mod} failed: {exc}")
+
+        await asyncio.gather(*(ping(p, m) for p, m in targets.items()))
+
+    def start_keepwarm(self, interval: float = 50.0) -> None:
+        """Re-run warm_up in the background while idle (no-op when LLM_KEEPWARM is off)."""
+        if not settings.LLM_KEEPWARM or (self._keepwarm_task and not self._keepwarm_task.done()):
+            return
+
+        async def loop() -> None:
+            while True:
+                await asyncio.sleep(interval)
+                if time.monotonic() - self._last_request >= interval:
+                    await self.warm_up()
+
+        self._keepwarm_task = asyncio.get_running_loop().create_task(loop())
+
+    def stop_keepwarm(self) -> None:
+        if self._keepwarm_task:
+            self._keepwarm_task.cancel()
+            self._keepwarm_task = None
 
     async def health(self) -> Dict[str, Any]:
         return {

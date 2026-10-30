@@ -10,7 +10,7 @@ import os
 import secrets
 from enum import Enum
 from pathlib import Path
-from typing import Annotated, Any, List, Optional
+from typing import Annotated, Any, Dict, List, Optional
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
@@ -71,6 +71,15 @@ class Settings(BaseSettings):
     LLM_FALLBACKS: StrList = Field(
         default_factory=lambda: ["groq/openai/gpt-oss-120b", "openai/gpt-4o-mini", "ollama/qwen3.5:latest"]
     )
+    # Intent step (empty INTENT_MODEL disables it) and the model used for action turns.
+    INTENT_MODEL: str = "groq/openai/gpt-oss-120b"
+    INTENT_FALLBACK_MODEL: str = "gemini/gemini-3.5-flash-lite"
+    ACTION_MODEL: str = "gemini/gemini-3.5-flash"
+    # reasoning_effort per model name (as sent to the provider); JSON object in the environment.
+    REASONING_EFFORT: Annotated[Dict[str, str], NoDecode] = Field(default_factory=lambda: {
+        "gemini-3.5-flash-lite": "minimal", "gemini-3.5-flash": "minimal", "openai/gpt-oss-120b": "low",
+    })
+    LLM_KEEPWARM: bool = True  # ping the cloud providers while idle so the first real call isn't cold
     GEMINI_MODEL: str = "gemini-3.5-flash-lite"
     TEMPERATURE: float = Field(default=0.2, ge=0.0, le=2.0)
     MAX_TOKENS: int = Field(default=1024, ge=1)
@@ -161,6 +170,14 @@ class Settings(BaseSettings):
                 import json
                 return json.loads(v)
             return [item.strip() for item in v.split(",") if item.strip()]
+        return v
+
+    @field_validator("REASONING_EFFORT", mode="before")
+    @classmethod
+    def _parse_json_dict(cls, v: Any) -> Any:
+        if isinstance(v, str):
+            import json
+            return json.loads(v) if v.strip() else {}
         return v
 
     @field_validator("PRIVACY_MODE")
