@@ -29,7 +29,7 @@ class VoiceConfig(BaseSettings):
     # ── Voice Activity Detection (VAD) ──
     VAD_MODE: int = Field(default=2, ge=0, le=3)  # Aggressiveness 0-3
     MIN_SPEECH_DURATION_MS: int = 300
-    SILENCE_TIMEOUT_MS: int = 900  # pause that ends a command (lower = snappier, higher = more patient)
+    SILENCE_TIMEOUT_MS: int = 600  # pause that ends a command (lower = snappier, higher = more patient)
     MAX_COMMAND_DURATION_SEC: float = 25.0
     PRE_SPEECH_BUFFER_MS: int = 400
     POST_SPEECH_BUFFER_MS: int = 400

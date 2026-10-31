@@ -148,12 +148,24 @@ class VoiceManager:
         voice_state_manager.transition_to(VoiceState.UNDERSTANDING, f"Understanding: '{command}'")
         tts_engine.stop()
         buffer, spoken_any, result = "", False, None
+        heard: set = set()  # normalised progress lines already spoken this turn (never repeat them)
+
+        def norm(t: str) -> str:
+            return re.sub(r"\W+", " ", t).strip().lower()
+
         async for event in brain.stream(command, self.session_id, channel="voice", stream_tokens=voice_config.STREAM_TTS):
-            if event["type"] == "text":
+            if event["type"] == "progress":
+                line = speakable(event.get("text", ""))
+                if line and norm(line) not in heard:
+                    heard.add(norm(line))
+                    tts_engine.speak(line, concise=False)  # queued, does not block the stream
+            elif event["type"] == "text":
                 buffer += event["delta"]
                 sentences, buffer = split_sentences(buffer)
                 for sentence in sentences:
-                    tts_engine.speak(speakable(sentence), concise=False)
+                    line = speakable(sentence)
+                    if norm(line) not in heard:
+                        tts_engine.speak(line, concise=False)
                     spoken_any = True
             elif event["type"] == "tool":
                 voice_state_manager.transition_to(VoiceState.EXECUTING, event["name"])
@@ -165,9 +177,12 @@ class VoiceManager:
         if result["status"] == "needs_confirmation":
             tts_engine.speak(confirmation_speech(result), priority=True, concise=False)
         elif buffer.strip() and spoken_any:
-            tts_engine.speak(speakable(buffer), concise=False)
+            if norm(speakable(buffer)) not in heard:
+                tts_engine.speak(speakable(buffer), concise=False)
         elif not spoken_any:
-            tts_engine.speak(speakable(result["response"]) or "Done.")
+            final = speakable(result["response"])
+            if not (final and norm(final) in heard):  # already heard as a progress line
+                tts_engine.speak(final or "Done.")
         return {"success": True, "command": command, "intent": result["intent"]["intent"],
                 "response": result["response"], "status": result["status"], "metadata": result["metadata"]}
 

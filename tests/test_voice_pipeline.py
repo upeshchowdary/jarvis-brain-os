@@ -124,3 +124,48 @@ async def test_stt_uses_whisper_when_it_hears_words(monkeypatch):
     monkeypatch.setattr(stt_mod.voice_config, "STT_ENGINE", "faster_whisper")
     res = await engine.transcribe(b"\x01\x00" * 8000)
     assert res["engine"] == "faster_whisper" and res["text"] == "Lock the screen"
+
+
+def test_silence_timeout_is_600():
+    from voice.voice_config import voice_config
+
+    assert voice_config.SILENCE_TIMEOUT_MS == 600
+
+
+def _patch_stream(monkeypatch, events):
+    import brain.pipeline as bp
+
+    async def fake_stream(*a, **k):
+        for e in events:
+            yield e
+
+    monkeypatch.setattr(bp.brain, "stream", fake_stream)
+
+
+class _Result:
+    def __init__(self, response, status="ok"):
+        self._d = {"response": response, "status": status, "intent": {"intent": "x"}, "metadata": {}}
+
+    def to_dict(self):
+        return self._d
+
+
+async def test_progress_events_are_spoken(monkeypatch):
+    spoken = []
+    monkeypatch.setattr(vm_module, "tts_engine", MagicMock(speak=lambda t, **k: spoken.append(t), stop=lambda: None))
+    _patch_stream(monkeypatch, [{"type": "progress", "text": "Opening WhatsApp."},
+                                {"type": "progress", "text": "Message sent."},
+                                {"type": "done", "result": _Result("All done, sir.")}])
+    await voice_manager.respond("message mom")
+    assert spoken[:2] == ["Opening WhatsApp.", "Message sent."]
+    assert spoken[2] == "All done, sir."
+
+
+async def test_progress_duplicate_of_final_response_is_heard_once(monkeypatch):
+    spoken = []
+    monkeypatch.setattr(vm_module, "tts_engine", MagicMock(speak=lambda t, **k: spoken.append(t), stop=lambda: None))
+    _patch_stream(monkeypatch, [{"type": "progress", "text": "Message sent."},
+                                {"type": "progress", "text": "Message sent."},
+                                {"type": "done", "result": _Result("Message sent.")}])
+    await voice_manager.respond("message mom")
+    assert spoken == ["Message sent."]
