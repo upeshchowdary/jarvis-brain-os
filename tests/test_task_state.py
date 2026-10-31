@@ -187,3 +187,33 @@ async def test_task_plan_tool_respects_the_turns_task(monkeypatch):
     t.start("B", "text")
     res = await registry.get("task_plan").run(ToolContext(task_id=a.id), action="set", subgoals=["x", "y"])
     assert not res.success and t.current().plan == []
+
+
+async def test_load_never_makes_a_shelved_task_current(monkeypatch):
+    """I6: a task stopped/shelved just before a restart stays shelved (revivable via "continue"), never current."""
+    now = time.time()
+    shelved = {"id": "s1", "goal": "stopped one", "status": "shelved", "channel": "voice", "updated_at": now}
+
+    async def rows(limit=5):
+        return [shelved]
+
+    monkeypatch.setattr(db_manager, "load_recent_tasks", rows)
+    t = TaskTracker()
+    await t.load()
+    assert t.current() is None
+    revived = t.revive_last()
+    assert revived is not None and revived.goal == "stopped one" and t.current() is revived
+
+
+async def test_load_restores_recent_active_and_waiting_tasks(monkeypatch):
+    now = time.time()
+    for status in ("active", "waiting_for_user"):
+        row = {"id": f"r-{status}", "goal": status, "status": status, "channel": "text", "updated_at": now}
+
+        async def rows(limit=5, row=row):
+            return [row]
+
+        monkeypatch.setattr(db_manager, "load_recent_tasks", rows)
+        t = TaskTracker()
+        await t.load()
+        assert t.current() is not None and t.current().goal == status

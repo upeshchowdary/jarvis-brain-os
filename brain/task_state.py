@@ -191,7 +191,7 @@ class TaskTracker:
             return t
 
     async def load(self) -> None:
-        """Restore the newest unfinished task from the DB (current if recent enough, else last shelved)."""
+        """Restore the newest unfinished task from the DB (current if active/waiting and recent, else last shelved)."""
         from app.database.connection import db_manager
 
         try:
@@ -209,8 +209,9 @@ class TaskTracker:
                     continue
                 if t.status in ("done", "failed"):
                     continue
-                if time.time() - t.updated_at <= settings.TASK_IDLE_SECONDS:
-                    t.status = "active"
+                # Only a task that was still current comes back as current; a shelved one (emergency stop,
+                # replaced, idled out) stays revivable via "continue" but never resumes on its own.
+                if t.status in _CURRENT_STATUSES and time.time() - t.updated_at <= settings.TASK_IDLE_SECONDS:
                     self._current = t
                 else:
                     t.status = "shelved"
