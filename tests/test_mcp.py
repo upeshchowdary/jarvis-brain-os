@@ -153,3 +153,27 @@ async def test_mcp_turns_stay_out_of_recent_turns_and_tasks(monkeypatch):
     assert list(args[1]) == [] and args[2] is None
     assert [t.user for t in turns.recent(10, 3600)] == ["start the weekly report"]
     assert tracker.current() is user_task and user_task.steps == [] and user_task.status == "active"
+
+
+async def test_mcp_cannot_lift_the_users_emergency_stop_or_dry_run(monkeypatch):
+    """A remote agent may stop or rehearse, never resume after the user's stop or switch dry-run off."""
+    from core.config import settings
+    from integrations.mcp_server import build_server
+
+    _full_control(monkeypatch)
+    monkeypatch.setattr(settings, "DRY_RUN", False)
+    server = build_server()
+    gateway.emergency_stop("user (voice)")
+    try:
+        await server.call_tool("jarvis", {"message": "resume automation"})
+        assert gateway.is_stopped
+        gateway.resume()
+        await server.call_tool("jarvis", {"message": "enable dry run mode"})
+        assert settings.DRY_RUN is True
+        await server.call_tool("jarvis", {"message": "disable dry run"})
+        assert settings.DRY_RUN is True
+        await server.call_tool("jarvis", {"message": "emergency stop"})
+        assert gateway.is_stopped
+    finally:
+        gateway.resume()
+        monkeypatch.setattr(settings, "DRY_RUN", False)
