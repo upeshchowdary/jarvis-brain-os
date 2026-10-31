@@ -619,7 +619,7 @@ async def test_timing_breakdown_has_intent_and_memory(monkeypatch, tools):
 
 async def test_interleaved_turns_do_not_corrupt_each_others_task(monkeypatch, tools, fresh_state):
     """I3: turn A's later steps / close must not land on task B that a concurrent turn started meanwhile."""
-    b_started, a_done = asyncio.Event(), asyncio.Event()
+    a_waiting, b_started, a_done = asyncio.Event(), asyncio.Event(), asyncio.Event()
 
     async def fake_analyze(query, turns, task):
         if "alpha" in query:
@@ -635,6 +635,7 @@ async def test_interleaved_turns_do_not_corrupt_each_others_task(monkeypatch, to
                 if done == 0:
                     return call("open_app", name="whatsapp")
                 if done == 1:
+                    a_waiting.set()
                     await b_started.wait()  # turn B starts its own task now
                     return call("task_plan", action="set", subgoals=["Open WhatsApp", "Send"])
                 if done == 2:
@@ -653,7 +654,11 @@ async def test_interleaved_turns_do_not_corrupt_each_others_task(monkeypatch, to
         finally:
             a_done.set()
 
-    await asyncio.gather(run_a(), brain.handle("beta go", "u-b"))
+    async def run_b():
+        await a_waiting.wait()  # A has begun its task and booked a step
+        return await brain.handle("beta go", "u-b")
+
+    await asyncio.gather(run_a(), run_b())
     current = fresh_state.current()
     assert current is not None and current.goal.startswith("Beta")
     assert current.steps == [] and current.plan == [] and current.status == "active"
