@@ -80,6 +80,10 @@ class Settings(BaseSettings):
         "gemini-3.5-flash-lite": "minimal", "gemini-3.5-flash": "minimal", "openai/gpt-oss-120b": "low",
     })
     LLM_KEEPWARM: bool = True  # ping the cloud providers while idle so the first real call isn't cold
+    LANGFUSE_ENABLED: bool = False  # optional tracing (pip install .[tracing]); off = langfuse is never imported
+    LANGFUSE_PUBLIC_KEY: str = ""
+    LANGFUSE_SECRET_KEY: str = ""
+    LANGFUSE_HOST: str = ""
     TASK_IDLE_SECONDS: int = Field(default=900, ge=1)  # a task idle this long is shelved
     INTENT_HISTORY_TURNS: int = Field(default=8, ge=0)  # recent cross-channel turns shown to the intent step
     INTENT_HISTORY_WINDOW_SECONDS: int = Field(default=1800, ge=1)

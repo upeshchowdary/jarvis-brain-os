@@ -41,6 +41,7 @@ from core.events import bus
 from core.llm import LLMResponse, LLMUnavailable, llm, resolve_model
 from core.logging import logger
 from core.metrics import metrics
+from core import tracing
 from core.session import sessions
 from tools.base import Tool, ToolCallRecord, ToolContext, ToolResult, from_gateway
 from tools.registry import load_builtin_tools, registry
@@ -152,7 +153,16 @@ class Brain:
         assert result is not None
         return result
 
-    async def stream(
+    async def stream(self, query: str, session_id: Optional[str] = None, **kw: Any) -> AsyncIterator[Dict[str, Any]]:
+        """Yield events: {"type": "status"|"text"|"tool"|"done", ...}. The last one carries the TurnResult."""
+        sid = session_id or f"session_{uuid.uuid4().hex[:8]}"
+        with tracing.trace_turn((query or "").strip(), sid, kw.get("channel", "text")) as trace:
+            async for event in self._stream(query, sid, **kw):
+                if event["type"] == "done":
+                    trace.finish(event["result"])
+                yield event
+
+    async def _stream(
         self,
         query: str,
         session_id: Optional[str] = None,
@@ -164,7 +174,6 @@ class Brain:
         stream_tokens: bool = True,
         allow_confirm: bool = True,
     ) -> AsyncIterator[Dict[str, Any]]:
-        """Yield events: {"type": "status"|"text"|"tool"|"done", ...}. The last one carries the TurnResult."""
         started = time.perf_counter()
         timing: Dict[str, float] = {}
         query = (query or "").strip()
@@ -260,6 +269,10 @@ class Brain:
             intent = replace(legacy_intent(query), source="fast")
             facts, memories = await self._timed(timing, "memory_ms",
                                                 self._memory_context(query, intent.kind == "action", sid))
+
+        if "intent_ms" in timing:
+            metrics.observe("turn.intent", timing["intent_ms"])
+            tracing.record_intent(intent, timing["intent_ms"])
 
         # 4 ── Current task (questions and chat leave it alone) ───────────
         task_mode = self._begin_task(intent, ctx)
@@ -478,6 +491,7 @@ class Brain:
                 return
             llm_ms += (time.perf_counter() - t) * 1000
             assert resp is not None
+            tracing.record_llm(resp, (time.perf_counter() - t) * 1000)
             last = resp
 
             if not resp.tool_calls:
@@ -574,6 +588,7 @@ class Brain:
             result = ToolResult.error(f"{tool.name} failed: {exc}")
         elapsed = (time.perf_counter() - started) * 1000
         metrics.observe(f"tool.{tool.name}", elapsed)
+        tracing.record_tool(tool.name, result.success, result.status, elapsed)
         sessions.get(ctx.session_id).last_tool = tool.name
         return ToolCallRecord(tool.name, clean, result, elapsed, origin)
 

@@ -605,3 +605,13 @@ async def test_fast_path_stop_shelves_active_task(monkeypatch, fresh_state):
     assert gateway.is_stopped and fresh_state.current() is None and task.status == "shelved"
     gateway.resume()
     assert fresh_state.revive_last() is task
+
+
+async def test_timing_breakdown_has_intent_and_memory(monkeypatch, tools):
+    patch_intent(monkeypatch, intent("hello there", kind="chat"))
+    install(monkeypatch, FakeLLM([text("hi")]))
+    res = await brain.handle("hello there", "u-timing")
+    timing = res.metadata["timing_breakdown_ms"]
+    for key in ("intent_ms", "memory_ms", "llm_ms"):
+        assert isinstance(timing[key], (int, float)), key
+    assert "turn.intent" in pipeline.metrics.snapshot()["latency"]
