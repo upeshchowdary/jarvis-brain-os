@@ -5,6 +5,8 @@ bearer token in .env (JARVIS_API_TOKEN, generated on first run), CORS is closed
 unless CORS_ORIGINS is set, and requests are rate limited per client.
 """
 
+import asyncio
+import sys
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
@@ -51,15 +53,23 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         llm.start_keepwarm()
     logger.info(f"JARVIS ready on http://{settings.HOST}:{settings.PORT} (token in .env as JARVIS_API_TOKEN)")
     yield
+    # Shutdown: stop whatever can still start turns (voice, background services), then flush what those turns
+    # left (chat log / index, task state), then the keep-warm pings, and only then close the LLM client.
     memory_warm_up.cancel()
-    from brain.pipeline import brain
-
-    await brain.flush_persistence()  # the last turn's log/index isn't lost on shutdown
-    llm.stop_keepwarm()
+    voice_module = sys.modules.get("voice.voice_manager")  # only if voice was ever used (it is heavy to import)
+    if voice_module is not None and voice_module.voice_manager.is_running:
+        await voice_module.voice_manager.stop()
     if settings.BACKGROUND_SERVICES:
         from services import stop_background_services
 
         await stop_background_services()
+    from brain.pipeline import brain
+
+    await brain.flush_persistence()  # the last turn's log/index isn't lost on shutdown
+    await tasks.flush()
+    keepwarm = llm.stop_keepwarm()
+    if keepwarm is not None:
+        await asyncio.gather(keepwarm, return_exceptions=True)
     await llm.aclose()
     logger.info("JARVIS shut down.")
 

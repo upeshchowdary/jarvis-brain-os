@@ -550,10 +550,12 @@ class LLMGateway:
 
         self._keepwarm_task = asyncio.get_running_loop().create_task(loop())
 
-    def stop_keepwarm(self) -> None:
-        if self._keepwarm_task:
-            self._keepwarm_task.cancel()
-            self._keepwarm_task = None
+    def stop_keepwarm(self) -> Optional[asyncio.Task]:
+        """Cancel the keep-warm loop; returns the cancelled task (await it to let it finish) or None."""
+        task, self._keepwarm_task = self._keepwarm_task, None
+        if task:
+            task.cancel()
+        return task
 
     async def health(self) -> Dict[str, Any]:
         return {
