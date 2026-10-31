@@ -4,6 +4,9 @@ All of them act on the *foreground* window via ``pywinauto.keyboard.send_keys``.
 The caller passes a normalised key string such as ``"ctrl+shift+t"``; it is mapped to
 pywinauto syntax here. Unknown keys are rejected: arbitrary send_keys strings never get through.
 
+When JARVIS's own web console is the foreground window (the user typed "close tab" / "type hi" there), key
+presses and typing first switch back to the previous window with Alt+Tab, and refuse if there is none.
+
 Risk: key presses and typing are LOW only when they come from the user's own words (the fast path passes
 ``origin="fast"``); from the LLM agent or any other caller they are MEDIUM, like typing elsewhere.
 """
@@ -19,6 +22,8 @@ from automation.gateway import OpResult, Preview, Risk, gateway
 from automation.ops import system_impl as impl
 
 _IS_WINDOWS = sys.platform == "win32"
+CONSOLE_TITLE = "JARVIS console"  # <title> of app/static/web/console.html
+_SWITCH_SETTLE_SECONDS = 0.15
 
 _MODIFIERS = {"ctrl": "^", "control": "^", "shift": "+", "alt": "%"}
 _NAMED = {
@@ -72,6 +77,17 @@ def _input_risk(args: Dict[str, Any]) -> Risk:
     return Risk.LOW if args.get("origin") == "fast" else Risk.MEDIUM
 
 
+async def _leave_console() -> Optional[str]:
+    """If the JARVIS console is in front, Alt+Tab to the previous window. Returns an error message or None."""
+    if CONSOLE_TITLE.lower() not in (await _run(impl.foreground_title)).lower():
+        return None
+    await _run(_send, "%{TAB}")
+    await asyncio.sleep(_SWITCH_SETTLE_SECONDS)
+    if CONSOLE_TITLE.lower() in (await _run(impl.foreground_title)).lower():
+        return "Click the window you want first."
+    return None
+
+
 def _press_preview(args: Dict[str, Any]) -> Preview:
     keys = str(args.get("keys", ""))
     if to_send_keys(keys) is None:
@@ -88,6 +104,9 @@ async def press(keys: str = "", origin: str = "") -> OpResult:
     if seq is None:
         return OpResult.fail(f"I don't know the key '{keys}'.")
     try:
+        problem = await _leave_console()
+        if problem:
+            return OpResult.fail(problem)
         await _run(_send, seq)
     except Exception as e:  # noqa: BLE001
         return OpResult.fail(f"Couldn't press {keys}: {e}")
@@ -107,6 +126,9 @@ async def type_text(text: str = "", origin: str = "") -> OpResult:
     if not text:
         return OpResult.fail("Nothing to type.")
     try:
+        problem = await _leave_console()
+        if problem:
+            return OpResult.fail(problem)
         await _run(_send, escape_text(str(text)), with_spaces=True)
     except Exception as e:  # noqa: BLE001
         return OpResult.fail(f"Couldn't type that: {e}")

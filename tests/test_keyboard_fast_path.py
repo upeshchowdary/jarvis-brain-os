@@ -273,3 +273,47 @@ async def test_rewritten_typing_is_not_the_users_own_words(monkeypatch, on_windo
         res = await brain_handle("do that one more time", "kb-risk")
     assert res.route == "fast_path" and res.status == "needs_confirmation", res.response
     sk.assert_not_called()
+
+
+# ── I8: from the JARVIS console, keys go to the window the user was in, not the console itself ──
+
+async def _press_from(titles, keys="ctrl+w"):
+    with patch("automation.ops.keyboard.impl.foreground_title", side_effect=list(titles)) as fg, \
+            patch("automation.ops.keyboard.send_keys") as sk:
+        res = await gateway.execute(ActionRequest("keyboard.press", {"keys": keys, "origin": "fast"}), "kb-console")
+    return res, sk, fg
+
+
+async def test_console_in_front_switches_to_previous_window_first(on_windows):
+    res, sk, _ = await _press_from(["JARVIS console - Google Chrome", "Inbox - Outlook"])
+    assert res.status == "executed", res
+    assert [c.args[0] for c in sk.call_args_list] == ["%{TAB}", "^w"]
+
+
+async def test_console_with_no_other_window_fails_clearly(on_windows):
+    res, sk, _ = await _press_from(["JARVIS console - Google Chrome", "JARVIS console - Google Chrome"])
+    assert res.status == "failed" and "Click the window you want first." in res.message
+    assert [c.args[0] for c in sk.call_args_list] == ["%{TAB}"]  # the keys never reached the console
+
+
+async def test_other_window_in_front_gets_keys_directly(on_windows):
+    res, sk, fg = await _press_from(["Untitled - Notepad"], keys="f5")
+    assert res.status == "executed"
+    assert [c.args[0] for c in sk.call_args_list] == ["{F5}"] and fg.call_count == 1
+
+
+async def test_typing_from_console_goes_to_previous_window(on_windows):
+    with patch("automation.ops.keyboard.impl.foreground_title", side_effect=["JARVIS console", "Untitled - Notepad"]), \
+            patch("automation.ops.keyboard.send_keys") as sk:
+        res = await gateway.execute(ActionRequest("keyboard.type", {"text": "hi", "origin": "fast"}), "kb-console")
+    assert res.status == "executed"
+    assert [c.args[0] for c in sk.call_args_list] == ["%{TAB}", "hi"]
+
+
+def test_console_title_matches_the_page():
+    from pathlib import Path
+
+    import automation.ops.keyboard as kb
+
+    html = (Path(__file__).resolve().parents[1] / "app" / "static" / "web" / "console.html").read_text(encoding="utf-8")
+    assert f"<title>{kb.CONSOLE_TITLE}</title>" in html

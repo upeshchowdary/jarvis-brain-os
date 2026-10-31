@@ -195,6 +195,16 @@ def window_action(title_fragment: str, action: str) -> bool:
         return False
 
 
+def foreground_title() -> str:
+    """Title of the foreground window ("" when unknown)."""
+    try:
+        import win32gui
+        title = win32gui.GetWindowText(win32gui.GetForegroundWindow())
+        return title if isinstance(title, str) else ""
+    except Exception:
+        return ""
+
+
 def minimize_active_window() -> bool:
     """Minimize the currently active/focused window."""
     try:

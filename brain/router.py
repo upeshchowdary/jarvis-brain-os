@@ -229,7 +229,8 @@ rule(r"(?:next|skip)(?: the)?(?: track| song)?|skip (?:this )?(?:track|song)|pla
 rule(r"previous(?: track| song)?|(?:play )?(?:the )?(?:previous|last) (?:track|song)|go back a (?:track|song)", "media_prev")(
     lambda m: RouteDecision("media_control", {"action": "previous"}))
 
-# Keyboard fast path: acts on the foreground window, no LLM. Registered before model switching / app opening so
+# Keyboard fast path: acts on the foreground window (or, when that is the JARVIS console, the previous one: see
+# automation/ops/keyboard.py), no LLM. Registered before model switching / app opening so
 # "switch to tab 3" and "switch to chrome" are caught here (model names fall through to switch_model).
 # Bare context words ("next", "back", "again") are deliberately NOT rules — see CONTEXT_WORDS.
 def _keys(keys: str) -> Callable[[re.Match], RouteDecision]:
