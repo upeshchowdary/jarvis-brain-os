@@ -407,12 +407,27 @@ def _close(m: re.Match) -> Optional[RouteDecision]:
     return RouteDecision("close_app", {"name": x}) if _is_known_app(x) else None
 
 
-def fast_route(text: str) -> Optional[RouteDecision]:
-    """Match the whole utterance against the command grammar. None → use the LLM."""
+# Bare follow-up words: while a task is active they refer to it ("next" = the next step, not the next song),
+# so they go to the intent step instead of the fast path.
+CONTEXT_WORDS = {"next", "previous", "back", "again", "that", "it", "do it", "continue", "this", "same", "more", "go on"}
+# Emergency stop / resume / dry run / status always match first, whatever the task state.
+SAFETY_RULES = ("stop", "resume", "dry_run_on", "dry_run_off", "automation_status")
+
+
+def fast_route(text: str, task_active: bool = False) -> Optional[RouteDecision]:
+    """Match the whole utterance against the command grammar. None → use the LLM.
+
+    ``task_active``: a task is in progress, so a bare context word ("next", "again", …) is not a command.
+    Safety rules are tried before that check and therefore always win.
+    """
     t, _ = normalize(text)
     if not t or len(t) > 160:
         return None
-    for rx, fn, name in _RULES:
+    safety = [r for r in _RULES if r[2] in SAFETY_RULES]
+    rest = [r for r in _RULES if r[2] not in SAFETY_RULES]
+    if task_active and t.lower() in CONTEXT_WORDS:
+        rest = []
+    for rx, fn, name in safety + rest:
         m = rx.match(t)
         if m:
             decision = fn(m)

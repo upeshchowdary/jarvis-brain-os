@@ -151,7 +151,8 @@ async def test_model_switch_is_per_session(monkeypatch):
     fake = install(monkeypatch, FakeLLM([text("hi"), text("hi")]))
     await brain.handle("hello there friend", "session-A")
     await brain.handle("hello there friend", "session-B")
-    assert fake.calls[0]["model"] == "groq/openai/gpt-oss-120b" and fake.calls[1]["model"] is None
+    # Session B has no override: chat turns now name the chat model explicitly (actions use ACTION_MODEL).
+    assert fake.calls[0]["model"] == "groq/openai/gpt-oss-120b" and fake.calls[1]["model"] == settings.DEFAULT_MODEL
 
 
 async def test_switch_to_unconfigured_provider_is_refused(monkeypatch):

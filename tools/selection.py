@@ -8,7 +8,7 @@ keywords appear in the request (or recent conversation).
 from __future__ import annotations
 
 import re
-from typing import Dict, Iterable, List, Sequence
+from typing import Dict, Iterable, List, Optional, Sequence
 
 from tools.base import Tool
 
@@ -86,13 +86,25 @@ GROUPS: Dict[str, Dict[str, Sequence[str]]] = {
 MAX_TOOLS = 28
 
 
-def select_tools(query: str, available: Iterable[Tool], context: str = "") -> List[Tool]:
+# Always offered alongside intent-chosen groups: plan the task, look back at earlier chats.
+GROUP_EXTRAS = ("task_plan", "chat_history")
+
+
+def select_tools(query: str, available: Iterable[Tool], context: str = "",
+                 groups: Optional[List[str]] = None) -> List[Tool]:
+    """CORE + matching groups. ``groups`` (from the intent step) replaces keyword matching:
+    CORE + those groups' tools + :data:`GROUP_EXTRAS`. ``None`` → keyword matching on query + context."""
     pool = {t.name: t for t in available}
     text = f" {query.lower()} {context.lower()} "
     wanted: List[str] = [n for n in CORE if n in pool]
-    for group in GROUPS.values():
-        if any(k in text for k in group["keywords"]):
-            wanted += [n for n in group["tools"] if n in pool]
+    if groups is not None:
+        for g in groups:
+            wanted += [n for n in GROUPS.get(g, {}).get("tools", []) if n in pool]
+        wanted += [n for n in GROUP_EXTRAS if n in pool]
+    else:
+        for group in GROUPS.values():
+            if any(k in text for k in group["keywords"]):
+                wanted += [n for n in group["tools"] if n in pool]
     # External MCP tools: include when their server is mentioned, or all if there are only a few.
     mcp = [n for n in pool if n.startswith("mcp_")]
     if len(mcp) <= 8:

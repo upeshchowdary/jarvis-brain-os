@@ -126,7 +126,8 @@ class Settings(BaseSettings):
 
     # ── Router / agent ──────────────────────────────────────────────────
     ROUTER_USE_LLM: bool = True
-    AGENT_MAX_STEPS: int = Field(default=5, ge=1, le=15)
+    AGENT_MAX_STEPS: int = Field(default=5, ge=1, le=15)  # questions / chat
+    AGENT_MAX_STEPS_ACTION: int = Field(default=15, ge=1, le=50)  # action turns (multi-step tasks)
     MAX_HISTORY_MESSAGES: int = 20
     MAX_CONVERSATION_TOKENS: int = 4096
     MAX_FACTS_PER_TURN: int = 12

@@ -11,7 +11,7 @@ def text(content: str) -> LLMResponse:
     return LLMResponse(content=content, provider="fake", model="fake-1")
 
 
-def call(name: str, **arguments: Any) -> LLMResponse:
+def call(name: str, /, **arguments: Any) -> LLMResponse:
     return LLMResponse(content="", provider="fake", model="fake-1", tool_calls=[ToolCall(f"call_{name}", name, arguments)])
 
 

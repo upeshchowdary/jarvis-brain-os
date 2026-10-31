@@ -2,14 +2,20 @@
 
 1. **Pending confirmation** — if the session has an action waiting, "yes" runs it
    and anything else cancels it (and is then handled as a new request).
-2. **Fast path** — anchored command grammar → tool, no LLM (~ms latency).
-3. **Agent** — LLM with native tool calling (≤ AGENT_MAX_STEPS rounds).
+2. **Fast path** — anchored command grammar → tool, no LLM (~ms latency). While a task is active a bare
+   context word ("next", "again", …) is not a command; safety rules (stop, resume, dry run) always win.
+3. **Understand** — the intent step (rewrite to a standalone request + classify) and the memory lookup run
+   concurrently. A rewritten request that is an exact command runs on the fast path.
+4. **Current task** — a new action starts a task; a continuation revives the last one; questions leave it alone.
+5. **Agent** — LLM with native tool calling (≤ AGENT_MAX_STEPS rounds, AGENT_MAX_STEPS_ACTION for actions).
    * Questions/statements are offered read-only tools only.
    * After a tool returns untrusted content (web/file/screen), side-effect tools
      are withdrawn for the rest of the turn (prompt-injection taint).
    * PRIVACY_MODE=local: once file/screen content is in context, only local models are used.
    * A tool that needs confirmation ends the turn with the preview.
-   * Action-only rounds skip the second LLM call (lower latency).
+   * Action-only rounds skip the second LLM call only for single-step requests; multi-step tasks run to
+     completion and emit short ``progress`` events.
+   * Assistant history turns end with ``[did: tool(arg) ✓/✗, …]`` action notes (not shown to the user).
 
 Every side effect happens inside tools → ActionGateway (risk policy, dry-run, audit).
 """
@@ -18,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -26,7 +33,9 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 from automation.gateway import gateway
 from brain import router
 from brain.conversation_manager import conversation_manager
+from brain.intent import Intent, analyze, legacy_intent
 from brain.prompts import build_system_prompt, wrap_untrusted
+from brain.task_state import recent_turns, tasks
 from core.config import settings
 from core.events import bus
 from core.llm import LLMResponse, LLMUnavailable, llm, resolve_model
@@ -36,6 +45,55 @@ from core.session import sessions
 from tools.base import Tool, ToolCallRecord, ToolContext, ToolResult
 from tools.registry import load_builtin_tools, registry
 from tools.selection import select_tools
+
+_NOTES_LIMIT = 200  # max chars of the " [did: …]" suffix on assistant history turns
+_NOTE_ARG_CLIP = 40
+_PROGRESS_CLIP = 60
+_BOOKKEEPING_TOOLS = {"task_plan"}  # not task steps, not in action notes / progress
+_SENTENCE = re.compile(r"(.+?[.!?])(?:\s|$)")
+
+
+def _clip(text: str, n: int) -> str:
+    text = " ".join(str(text or "").split())
+    return text if len(text) <= n else text[: n - 1] + "…"
+
+
+def _done_ok(record: ToolCallRecord) -> bool:
+    return record.result.success and record.result.status == "ok"
+
+
+def _note_arg(args: Dict[str, Any]) -> str:
+    value = next(iter(args.values()), "") if args else ""
+    if isinstance(value, (dict, list)):
+        value = json.dumps(value, ensure_ascii=False)
+    return _clip(str(value).replace("[", "(").replace("]", ")"), _NOTE_ARG_CLIP)
+
+
+def _action_notes(records: List[ToolCallRecord], limit: int = _NOTES_LIMIT) -> str:
+    """`` [did: open_app(whatsapp) ✓, send_message(whatsapp) ✗]`` — one trailing segment, ≤ ``limit`` chars.
+
+    ✓ = the tool actually did it (status ok); ✗ = failed, blocked, dry run or still awaiting confirmation.
+    When too long, the oldest items are dropped first (replaced by "…").
+    """
+    items = [f"{r.name}({_note_arg(r.arguments)}) {'✓' if _done_ok(r) else '✗'}"
+             for r in records if r.name not in _BOOKKEEPING_TOOLS]
+    if not items:
+        return ""
+    dropped = False
+    while True:
+        note = " [did: " + ", ".join((["…"] if dropped else []) + items) + "]"
+        if len(note) <= limit or len(items) == 1:
+            break
+        items.pop(0)
+        dropped = True
+    return note if len(note) <= limit else note[: limit - 2] + "…]"
+
+
+def _progress_text(message: str) -> str:
+    """First sentence of a tool result, ≤ 60 chars (shown while a multi-step task runs)."""
+    text = " ".join((message or "").split())
+    m = _SENTENCE.match(text)
+    return _clip(m.group(1) if m else text, _PROGRESS_CLIP)
 
 
 @dataclass
@@ -104,7 +162,7 @@ class Brain:
         ctx = ToolContext(session_id=sid, channel=channel, dry_run=dry_run, source=channel)
         note = ""
 
-        def finish(response: str, **kw: Any) -> Dict[str, Any]:
+        def finish(response: str, records: Optional[List[ToolCallRecord]] = None, **kw: Any) -> Dict[str, Any]:
             total = (time.perf_counter() - started) * 1000
             metrics.observe(f"turn.{kw.get('route', 'agent')}", total)
             result = TurnResult(query=query, response=response, session_id=sid, **kw)
@@ -112,7 +170,10 @@ class Brain:
             result.metadata.setdefault("model", "fast-path" if result.route != "agent" else "")
             result.metadata.update(session_id=sid, total_latency_ms=round(total, 1), timing_breakdown_ms=timing)
             result.metadata["channel"] = channel
-            conversation_manager.add_assistant_message(sid, response)
+            # History (and the intent step) see what was done; the user-visible response stays clean.
+            remembered = response + _action_notes(records or [])
+            conversation_manager.add_assistant_message(sid, remembered)
+            recent_turns.add(channel, sid, query, remembered)
             bus.publish("turn", {"session_id": sid, "channel": channel, "query": query, "response": response[:2000],
                                  "status": result.status, "route": result.route})
             self._after_turn(result)
@@ -138,49 +199,147 @@ class Brain:
             note = "(I cancelled the action that was waiting for confirmation.)\n\n"
 
         # 2 ── Fast path ──────────────────────────────────────────────────
+        active = tasks.current()
         t = time.perf_counter()
-        decision = router.fast_route(query)
+        decision = router.fast_route(query, task_active=active is not None)
         timing["router_ms"] = round((time.perf_counter() - t) * 1000, 2)
-        tool = registry.get(decision.tool) if decision is not None else None
-        if decision is not None and tool is not None:
-            record = await self._run_tool(tool, decision.args, ctx, origin="fast")
+        prefilled = None
+        hit = self._fast_hit(decision)
+        if hit is not None:
+            tool, args = hit
+            record = await self._run_tool(tool, args, ctx, origin="fast")
             timing["tool_ms"] = round(record.elapsed_ms, 1)
             yield {"type": "tool", "name": tool.name, "result": record.to_dict()}
-            if tool.final or not record.result.success or record.result.status != "ok":
-                yield finish(note + record.result.message, route="fast_path", intent=tool.name, status=record.result.status,
-                             pending=self._pending_dict(record.result), tools=[record.to_dict()],
-                             metadata={"rule": decision.rule})
+            if active is not None and tool.side_effect:
+                self._record_step(record)
+            if self._fast_path_done(tool, record):
+                yield finish(note + record.result.message, records=[record], route="fast_path", intent=tool.name,
+                             status=record.result.status, pending=self._pending_dict(record.result),
+                             tools=[record.to_dict()], metadata={"rule": decision.rule})
                 return
             prefilled = (tool, record)  # e.g. "summarize today's commits": the agent writes the answer from the result
-        else:
-            prefilled = None
 
-        # 3 ── Agent ──────────────────────────────────────────────────────
-        async for event in self._agent(query, history, state, ctx, personality, model_override, timing, stream_tokens, note, prefilled):
+        # 3 ── Understand: intent step ∥ memory lookup ────────────────────
+        if prefilled is None:
+            turns = recent_turns.recent(settings.INTENT_HISTORY_TURNS, settings.INTENT_HISTORY_WINDOW_SECONDS)
+            intent, (facts, memories) = await asyncio.gather(
+                self._timed(timing, "intent_ms", analyze(query, turns, tasks.current())),
+                self._timed(timing, "memory_ms", self._memory_context(query, router.is_imperative(query), sid)),
+            )
+        else:  # the fast path already understood it
+            intent = legacy_intent(query)
+            facts, memories = await self._timed(timing, "memory_ms",
+                                                self._memory_context(query, intent.kind == "action", sid))
+
+        # 4 ── Current task (questions and chat leave it alone) ───────────
+        self._begin_task(intent, ctx)
+
+        # 5 ── The rewritten request may be an exact command ("yes do that" → "open whatsapp") ──
+        if prefilled is None and intent.request.strip() != query:
+            decision = router.fast_route(intent.request, task_active=False)
+            hit = self._fast_hit(decision)
+            if hit is not None and hit[0].side_effect and intent.kind != "action":
+                hit = None  # questions never act, even if their rewrite reads like a command
+            if hit is not None:
+                tool, args = hit
+                record = await self._run_tool(tool, args, ctx, origin="fast")
+                yield {"type": "tool", "name": tool.name, "result": record.to_dict()}
+                if intent.kind == "action":
+                    self._record_step(record)
+                if self._fast_path_done(tool, record):
+                    self._close_task(intent, [record])
+                    yield finish(note + record.result.message, records=[record], route="fast_path", intent=tool.name,
+                                 status=record.result.status, pending=self._pending_dict(record.result),
+                                 tools=[record.to_dict()], metadata={"rule": decision.rule, "request": intent.request})
+                    return
+                prefilled = (tool, record)
+
+        # 6 ── Agent ──────────────────────────────────────────────────────
+        async for event in self._agent(query, intent, facts, memories, history, state, ctx, personality,
+                                       model_override, timing, stream_tokens, note, prefilled):
             if event["type"] == "final":
-                yield finish(**event["kwargs"])
+                records = event.get("records") or []
+                if not event.get("incomplete"):
+                    self._close_task(intent, records)
+                yield finish(records=records, **event["kwargs"])
                 return
             yield event
 
-    # ── Agent loop ──────────────────────────────────────────────────────
-    async def _agent(self, query, history, state, ctx, personality, model_override, timing, stream_tokens, note,
-                     prefilled=None) -> AsyncIterator[Dict[str, Any]]:
-        allow_actions = router.is_imperative(query)
-        base = registry.all() if allow_actions else registry.read_only()
-        recent = " ".join(m.get("content", "")[:200] for m in history[-4:])
-        offered: Dict[str, Tool] = {t.name: t for t in select_tools(query, base, recent)}
+    # ── Fast path / task helpers ────────────────────────────────────────
+    @staticmethod
+    def _fast_hit(decision: Optional[router.RouteDecision]):
+        tool = registry.get(decision.tool) if decision is not None else None
+        return (tool, decision.args) if tool is not None else None
 
+    @staticmethod
+    def _fast_path_done(tool: Tool, record: ToolCallRecord) -> bool:
+        return tool.final or not record.result.success or record.result.status != "ok"
+
+    @staticmethod
+    async def _timed(timing: Dict[str, float], key: str, coro):
         t = time.perf_counter()
-        facts, memories = await self._memory_context(query, allow_actions, ctx.session_id)
-        timing["memory_ms"] = round((time.perf_counter() - t) * 1000, 1)
+        try:
+            return await coro
+        finally:
+            timing[key] = round((time.perf_counter() - t) * 1000, 1)
 
-        model = model_override or state.model_override
-        model_label = "/".join(resolve_model(model or settings.DEFAULT_MODEL))
+    @staticmethod
+    def _begin_task(intent: Intent, ctx: ToolContext) -> None:
+        """A new action starts a task; a continuation with no current task revives the last shelved one."""
+        if intent.kind != "action":
+            return  # questions / chat never start, replace, shelve or mark the task
+        if not intent.continues_task:
+            tasks.start(intent.request, ctx.channel)
+        elif tasks.current() is None and tasks.revive_last() is None:
+            tasks.start(intent.request, ctx.channel)  # nothing to continue: track this request as its own task
+
+    @staticmethod
+    def _record_step(record: ToolCallRecord) -> None:
+        if record.name in _BOOKKEEPING_TOOLS:
+            return
+        tasks.record_step(record.name, record.arguments, record.result.message, _done_ok(record))
+
+    @staticmethod
+    def _close_task(intent: Intent, records: List[ToolCallRecord]) -> None:
+        """Turn end: done when the last step succeeded and no plan item is left; failed after a failed step."""
+        if intent.kind != "action":
+            return
+        current = tasks.current()
+        steps = [r for r in records if r.name not in _BOOKKEEPING_TOOLS]
+        if current is None or not steps:
+            return
+        last = steps[-1]
+        if _done_ok(last) and not any(p.status in ("todo", "doing") for p in current.plan):
+            tasks.set_status("done")
+        elif not last.result.success:
+            tasks.set_status("failed")
+
+    # ── Agent loop ──────────────────────────────────────────────────────
+    async def _agent(self, query, intent: Intent, facts, memories, history, state, ctx, personality, model_override,
+                     timing, stream_tokens, note, prefilled=None) -> AsyncIterator[Dict[str, Any]]:
+        """Final events carry ``records`` (every tool run this turn) and ``incomplete`` (step budget ran out)."""
+        is_action = intent.kind == "action"
+        base = registry.all() if is_action else registry.read_only()  # questions never act
+        recent = " ".join(m.get("content", "")[:200] for m in history[-4:])
+        offered: Dict[str, Tool] = {
+            t.name: t for t in select_tools(intent.request, base, recent, groups=intent.tool_groups or None)}
+        if not is_action:
+            offered.pop("task_plan", None)  # a question must not edit the current task's plan
+        multi_step = is_action and not intent.single_step
+
+        model = model_override or state.model_override or (settings.ACTION_MODEL if is_action else settings.DEFAULT_MODEL)
+        model_label = "/".join(resolve_model(model))
+        current = tasks.current()
         system = build_system_prompt(personality=personality or state.personality, channel=ctx.channel,
-                                     facts=facts, memories=memories, model_label=model_label)
+                                     facts=facts, memories=memories, model_label=model_label,
+                                     task_summary=current.summary() if current else None)
         messages: List[Dict[str, Any]] = [{"role": "system", "content": system}]
         messages += [m for m in history[-settings.MAX_HISTORY_MESSAGES:] if m.get("role") in ("user", "assistant")]
-        messages.append({"role": "user", "content": query})
+        request = intent.request.strip() or query
+        messages.append({"role": "user", "content": request if request == query
+                         else f"{request}\n(user's exact words: {query})"})
+        if multi_step:
+            yield {"type": "progress", "text": "On it."}
 
         tainted = False
         sensitive = False
@@ -199,7 +358,9 @@ class Brain:
         last: Optional[LLMResponse] = None
         llm_ms = 0.0
 
-        for step in range(settings.AGENT_MAX_STEPS):
+        max_steps = settings.AGENT_MAX_STEPS_ACTION if is_action else settings.AGENT_MAX_STEPS
+        incomplete = False
+        for step in range(max_steps):
             tools_now = [tl for tl in offered.values() if not (tainted and tl.side_effect)]
             local_only = settings.PRIVACY_MODE == "local" and sensitive
             t = time.perf_counter()
@@ -216,7 +377,7 @@ class Brain:
                     response=note + "I can't reach a language model right now, so I can't answer that. "
                              "Start Ollama or add an API key to .env. Direct commands like “volume up” or “open chrome” still work.",
                     route="error", intent="conversation", status="error", tools=[r.to_dict() for r in records],
-                    metadata={"error": str(exc)})}
+                    metadata={"error": str(exc)}), "records": records, "incomplete": True}
                 return
             llm_ms += (time.perf_counter() - t) * 1000
             assert resp is not None
@@ -238,6 +399,10 @@ class Brain:
                 records.append(record)
                 round_records.append(record)
                 yield {"type": "tool", "name": tool.name, "result": record.to_dict()}
+                if is_action:
+                    self._record_step(record)
+                if multi_step and _done_ok(record) and tool.name not in _BOOKKEEPING_TOOLS and record.result.message:
+                    yield {"type": "progress", "text": _progress_text(record.result.message)}
                 content = record.result.message
                 if record.result.content_for_llm:
                     content += "\n" + (wrap_untrusted(tool.name, record.result.content_for_llm) if tool.untrusted_output else record.result.content_for_llm)
@@ -250,11 +415,12 @@ class Brain:
                     yield {"type": "final", "kwargs": dict(
                         response=note + record.result.message, route="agent", intent=tool.name, status="needs_confirmation",
                         pending=self._pending_dict(record.result), tools=[r.to_dict() for r in records],
-                        metadata=self._llm_meta(resp, model_label))}
+                        metadata=self._llm_meta(resp, model_label)), "records": records}
                     return
 
-            # Latency: if every call this round was a self-describing action, answer without another LLM round.
-            if round_records and all(registry.get(r.name).final for r in round_records):
+            # Latency: a single-step request whose calls were all self-describing actions ends here, without
+            # another LLM round. Multi-step tasks send the results back so the model can continue.
+            if intent.single_step and round_records and all(registry.get(r.name).final for r in round_records):
                 text = "\n".join(r.result.message for r in round_records if r.result.message)
                 lead = (resp.content + "\n\n") if resp.content else ""
                 timing["llm_ms"] = round(llm_ms, 1)
@@ -262,16 +428,20 @@ class Brain:
                     "ok" if all(r.result.success for r in round_records) else "error")
                 yield {"type": "final", "kwargs": dict(
                     response=note + lead + text, route="agent", intent=round_records[-1].name, status=status,
-                    tools=[r.to_dict() for r in records], metadata=self._llm_meta(resp, model_label))}
+                    tools=[r.to_dict() for r in records], metadata=self._llm_meta(resp, model_label)),
+                    "records": records}
                 return
         else:
             logger.warning("[Brain] Agent hit max steps")
+            incomplete = bool(last and last.tool_calls)
 
         timing["llm_ms"] = round(llm_ms, 1)
-        answer = (last.content if last else "") or "Done."
+        answer = (last.content if last else "") or (
+            "I ran out of steps before finishing." if incomplete else "Done.")
         yield {"type": "final", "kwargs": dict(
             response=note + answer, route="agent", intent=records[-1].name if records else "conversation",
-            status="ok", tools=[r.to_dict() for r in records], metadata=self._llm_meta(last, model_label))}
+            status="ok", tools=[r.to_dict() for r in records], metadata=self._llm_meta(last, model_label)),
+            "records": records, "incomplete": incomplete}
 
     async def _llm_events(self, messages, tools: List[Tool], model, local_only: bool, stream_tokens: bool):
         schemas = [t.schema() for t in tools] or None
