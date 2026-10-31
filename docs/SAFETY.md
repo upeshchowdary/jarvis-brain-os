@@ -55,7 +55,8 @@ for your approval. The defaults (both `true`) are what anyone else running JARVI
 * **Browser agent** — never types into password fields (asks you to log in); stops before buy/pay/send/delete/post.
 * **Remote agents (MCP)** — can request actions but can never confirm them; approval happens in JARVIS, even in
   full-control mode. MCP turns never enter the PC-wide recent-turns buffer or the current task, so a later "yes" or
-  "continue" from you can't be bent into an MCP request.
+  "continue" from you can't be bent into an MCP request. They may trigger the emergency stop or dry-run, but never
+  resume after a stop or switch dry-run off.
 * **Keyboard commands from the console** — when the JARVIS console itself is the window in front, key presses and
   typing first switch back to the previous window (Alt+Tab); if there is none, they fail with "Click the window you
   want first." instead of acting on the console.
