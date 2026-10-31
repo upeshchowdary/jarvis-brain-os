@@ -26,7 +26,7 @@ class Clarify(Tool):
 MODEL_ALIASES = {
     "gemini": "gemini/gemini-3.5-flash-lite",
     "groq": "groq/openai/gpt-oss-120b",
-    "llama": "groq/openai/gpt-oss-120b",
+    "llama": "groq/llama-3.3-70b-versatile",  # Llama 3.3 70B on Groq (the id this project used before gpt-oss)
     "openai": "openai/gpt-4o-mini",
     "gpt": "openai/gpt-4o-mini",
     "claude": "anthropic/claude-sonnet-4-5",

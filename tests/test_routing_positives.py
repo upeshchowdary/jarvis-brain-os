@@ -156,6 +156,14 @@ def test_model_aliases():
     assert resolve_alias("gpt-4o") == "openai/gpt-4o"
 
 
+def test_llama_alias_is_a_llama_model_on_groq():
+    """M7: "switch to llama" must not silently pick an OpenAI-family model."""
+    from core.llm import resolve_model
+
+    provider, model = resolve_model(resolve_alias("llama"))
+    assert provider == "groq" and model.startswith("llama-")
+
+
 @pytest.mark.parametrize("query,url_part", [
     ("search youtube for python tutorials", "youtube.com/results?search_query=python+tutorials"),
     ("google best laptops 2026", "google.com/search?q=best+laptops+2026"),
