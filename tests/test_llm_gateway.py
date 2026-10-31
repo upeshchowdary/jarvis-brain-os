@@ -302,7 +302,13 @@ async def test_warm_up_hits_each_configured_cloud_provider_once(gw, monkeypatch)
     await llm.warm_up()
     hosts = sorted({r.url.host for r in seen})
     assert hosts == ["api.groq.com", "generativelanguage.googleapis.com"]
-    assert len(seen) == 2 and json.loads(seen[0].content)["max_tokens"] == 1
+    assert len(seen) == 2
+    # I2: a models listing (no completion quota), never a chat completion.
+    urls = sorted(str(r.url) for r in seen)
+    assert urls == ["https://api.groq.com/openai/v1/models",
+                    "https://generativelanguage.googleapis.com/v1beta/openai/models"]
+    assert all(r.method == "GET" and not r.content for r in seen)
+    assert all(r.headers.get("authorization", "").startswith("Bearer ") for r in seen)
 
 
 async def test_warm_up_skips_empty_local_and_unconfigured(gw, monkeypatch):
@@ -328,9 +334,11 @@ async def test_keepwarm_is_noop_when_disabled(gw, monkeypatch):
 
 async def test_keepwarm_warms_when_idle_and_stops(gw, monkeypatch):
     import asyncio
+    import time
 
     monkeypatch.setattr(settings, "LLM_KEEPWARM", True)
     seen = gw(lambda r: ok("x"))
+    monkeypatch.setattr(llm, "_last_request", time.monotonic())  # a real request just happened
     llm.start_keepwarm(0.02)
     await asyncio.sleep(0.15)
     llm.stop_keepwarm()
@@ -364,3 +372,44 @@ async def test_warm_up_survives_bad_model_spec(gw, monkeypatch):
     monkeypatch.setattr(settings, "INTENT_MODEL", None)
     gw(lambda r: ok("x"))
     await llm.warm_up()
+
+
+async def test_keepwarm_only_within_window_after_a_real_request(gw, monkeypatch):
+    """I2: no pings before the first real request or > KEEPWARM_WINDOW_SECONDS after the last one."""
+    import time
+
+    monkeypatch.setattr(settings, "PRIVACY_MODE", "cloud")
+    monkeypatch.setattr(llm, "_last_request", None)
+    assert not llm._keepwarm_due(50.0)
+    now = time.monotonic()
+    monkeypatch.setattr(llm, "_last_request", now - 10)
+    assert not llm._keepwarm_due(50.0)  # busy: a real request was just made
+    monkeypatch.setattr(llm, "_last_request", now - 60)
+    assert llm._keepwarm_due(50.0)
+    monkeypatch.setattr(llm, "_last_request", now - gateway_module.KEEPWARM_WINDOW_SECONDS - 5)
+    assert not llm._keepwarm_due(50.0)  # idle for a long time: let the connection go
+    assert gateway_module.KEEPWARM_WINDOW_SECONDS <= 15 * 60
+
+
+async def test_keepwarm_skips_offline_and_local_privacy(gw, monkeypatch):
+    import time
+
+    monkeypatch.setattr(llm, "_last_request", time.monotonic() - 60)
+    monkeypatch.setattr(settings, "PRIVACY_MODE", "cloud")
+    connectivity.set_state_for_tests(False)
+    assert not llm._keepwarm_due(50.0)
+    connectivity.set_state_for_tests(True)
+    monkeypatch.setattr(settings, "PRIVACY_MODE", "local")
+    assert not llm._keepwarm_due(50.0)
+
+
+async def test_keepwarm_loop_does_not_ping_without_a_recent_request(gw, monkeypatch):
+    import asyncio
+
+    monkeypatch.setattr(settings, "LLM_KEEPWARM", True)
+    monkeypatch.setattr(llm, "_last_request", None)
+    seen = gw(lambda r: ok("x"))
+    llm.start_keepwarm(0.02)
+    await asyncio.sleep(0.12)
+    llm.stop_keepwarm()
+    assert seen == []

@@ -7,7 +7,8 @@ Ollama and LM Studio. Features:
 * native tool calling (``tools`` / ``tool_calls``) and streaming (text + tool calls);
 * per-call timeouts, retries with exponential backoff on 429 / 5xx / network errors;
 * a fallback chain from config (``DEFAULT_MODEL`` → ``LLM_FALLBACKS``);
-* per-model ``reasoning_effort``, structured output (``response_format``) and keep-warm pings;
+* per-model ``reasoning_effort``, structured output (``response_format``) and keep-warm pings
+  (``GET /models``: no completion quota is spent);
 * one shared ``httpx.AsyncClient`` per event loop (connection reuse = lower latency);
 * ``local_only`` calls for PRIVACY_MODE=local (file/screen content never leaves the PC).
 
@@ -67,6 +68,8 @@ class ProviderSpec:
 
 # Upper bound for one keep-warm ping (seconds).
 _WARM_TIMEOUT = 3.0
+# Keep the connection warm only this long after the last real request (free-tier request caps are per day).
+KEEPWARM_WINDOW_SECONDS = 15 * 60.0
 
 # Index of the key currently in use per provider (only matters when a provider has several keys).
 _KEY_CURSOR: Dict[str, int] = {}
@@ -201,7 +204,9 @@ class LLMGateway:
     def __init__(self) -> None:
         self._clients: Dict[int, httpx.AsyncClient] = {}
         self._transport: Optional[httpx.AsyncBaseTransport] = None
-        self._last_request = 0.0  # monotonic time of the last real request (keep-warm skips busy cycles)
+        # Monotonic time of the last real request (None: none yet). Keep-warm skips busy cycles and stops
+        # KEEPWARM_WINDOW_SECONDS after it.
+        self._last_request: Optional[float] = None
         self._keepwarm_task: Optional[asyncio.Task] = None
 
     # Tests inject an httpx.MockTransport here.
@@ -462,21 +467,21 @@ class LLMGateway:
 
     # ── Keep-warm ───────────────────────────────────────────────────────
     async def warm_up(self) -> None:
-        """Send a 1-token request to each configured cloud provider used by the default, action and intent models.
+        """``GET {base_url}/models`` on each configured cloud provider used by the default, action and intent models.
 
-        Opens the TLS connection and wakes the provider so the first real turn isn't cold. Never raises.
+        Opens the TLS connection so the first real turn isn't cold, without spending completion quota (Groq's and
+        Gemini's OpenAI-compatible APIs both list models at ``/models``). Never raises.
         """
         async def ping(spec: str) -> None:
             try:
-                prov, mod = resolve_model(spec)
+                prov, _ = resolve_model(spec)
                 provider = PROVIDERS[prov]
                 if provider.local or not provider.configured():
                     return
-                payload = self._payload(mod, [{"role": "user", "content": "ping"}], None, None, 0.0, 1, False, prov)
+                headers = {k: v for k, v in self._headers(provider).items() if k != "Content-Type"}
                 # Single shot: no retries or key rotation, so an outage can't stall startup or every cycle.
                 await asyncio.wait_for(
-                    self._client().post(f"{provider.base_url()}/chat/completions", json=payload,
-                                        headers=self._headers(provider), timeout=_WARM_TIMEOUT),
+                    self._client().get(f"{provider.base_url()}/models", headers=headers, timeout=_WARM_TIMEOUT),
                     _WARM_TIMEOUT,
                 )
             except Exception as exc:
@@ -491,6 +496,12 @@ class LLMGateway:
                     pass
         await asyncio.gather(*(ping(spec) for spec in specs.values()))
 
+    def _keepwarm_due(self, interval: float) -> bool:
+        """Idle for ``interval`` but within KEEPWARM_WINDOW_SECONDS of the last real request; online; cloud mode."""
+        if self._last_request is None or connectivity.last_known() is False or settings.PRIVACY_MODE == "local":
+            return False
+        return interval <= time.monotonic() - self._last_request <= KEEPWARM_WINDOW_SECONDS
+
     def start_keepwarm(self, interval: float = 50.0) -> None:
         """Re-run warm_up in the background while idle (no-op when LLM_KEEPWARM is off)."""
         if not settings.LLM_KEEPWARM or (self._keepwarm_task and not self._keepwarm_task.done()):
@@ -499,7 +510,7 @@ class LLMGateway:
         async def loop() -> None:
             while True:
                 await asyncio.sleep(interval)
-                if time.monotonic() - self._last_request >= interval:
+                if self._keepwarm_due(interval):
                     await self.warm_up()
 
         self._keepwarm_task = asyncio.get_running_loop().create_task(loop())
