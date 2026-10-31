@@ -1,4 +1,7 @@
-"""Instant keyboard / window-focus tools (act on the foreground window). Always through the ActionGateway."""
+"""Instant keyboard / window-focus tools (act on the foreground window). Always through the ActionGateway.
+
+Key presses and typing pass ``ctx.origin`` on: LOW from the fast path (the user's own words), MEDIUM from the agent.
+"""
 
 from __future__ import annotations
 
@@ -25,7 +28,7 @@ class PressKeys(_KeyboardTool):
     parameters = obj({"keys": {"type": "string"}}, ["keys"])
 
     async def run(self, ctx: ToolContext, keys: str = "", **_: Any) -> ToolResult:
-        return await via_gateway(ctx, ActionRequest("keyboard.press", {"keys": keys}))
+        return await via_gateway(ctx, ActionRequest("keyboard.press", {"keys": keys, "origin": ctx.origin}))
 
 
 @register
@@ -35,7 +38,7 @@ class TypeText(_KeyboardTool):
     parameters = obj({"text": {"type": "string"}}, ["text"])
 
     async def run(self, ctx: ToolContext, text: str = "", **_: Any) -> ToolResult:
-        return await via_gateway(ctx, ActionRequest("keyboard.type", {"text": text}))
+        return await via_gateway(ctx, ActionRequest("keyboard.type", {"text": text, "origin": ctx.origin}))
 
 
 @register

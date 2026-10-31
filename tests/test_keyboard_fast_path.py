@@ -88,7 +88,7 @@ def test_switch_to_unknown_target_still_goes_to_model_switch():
 
 async def _press(keys):
     with patch("automation.ops.keyboard.send_keys") as sk:
-        res = await gateway.execute(ActionRequest("keyboard.press", {"keys": keys}), "kb-test")
+        res = await gateway.execute(ActionRequest("keyboard.press", {"keys": keys, "origin": "fast"}), "kb-test")
     return res, sk
 
 
@@ -116,14 +116,14 @@ async def test_press_rejects_unknown_keys(keys):
 
 async def test_type_escapes_special_chars():
     with patch("automation.ops.keyboard.send_keys") as sk:
-        res = await gateway.execute(ActionRequest("keyboard.type", {"text": "a+b"}), "kb-test")
+        res = await gateway.execute(ActionRequest("keyboard.type", {"text": "a+b", "origin": "fast"}), "kb-test")
     assert res.status == "executed", res
     sk.assert_called_once_with("a{+}b", with_spaces=True)
 
 
 async def test_type_escapes_all_pywinauto_specials():
     with patch("automation.ops.keyboard.send_keys") as sk:
-        await gateway.execute(ActionRequest("keyboard.type", {"text": "^%~(){}[]"}), "kb-test")
+        await gateway.execute(ActionRequest("keyboard.type", {"text": "^%~(){}[]", "origin": "fast"}), "kb-test")
     sk.assert_called_once_with("{^}{%}{~}{(}{)}{{}{}}{[}{]}", with_spaces=True)
 
 
@@ -200,3 +200,76 @@ def test_new_tool_flags():
     for name in ("press_keys", "type_text", "focus_window"):
         t = registry.get(name)
         assert t.side_effect is True and t.final is True
+
+
+# ── I5: the user's own words (fast path) are LOW; the LLM agent's key presses / typing are MEDIUM ──
+
+@pytest.fixture
+def on_windows(monkeypatch):
+    import automation.ops.keyboard as kb
+
+    monkeypatch.setattr(kb, "_IS_WINDOWS", True)
+    gateway.resume()
+    yield kb
+    gateway.cancel_session("kb-risk")
+
+
+def test_keyboard_risk_depends_on_origin():
+    from automation.gateway import Risk
+
+    for op in ("keyboard.press", "keyboard.type"):
+        assert gateway.classify(ActionRequest(op, {"origin": "fast"})) == Risk.LOW
+        assert gateway.classify(ActionRequest(op, {"origin": "llm"})) == Risk.MEDIUM
+        assert gateway.classify(ActionRequest(op, {})) == Risk.MEDIUM  # unknown caller: the safe default
+    assert gateway.classify(ActionRequest("window.focus", {"name": "x"})) == Risk.LOW
+
+
+async def test_fast_path_typing_runs_without_confirmation_on_defaults(on_windows):
+    from brain.pipeline import brain
+
+    with patch("automation.ops.keyboard.send_keys") as sk:
+        res = await brain.handle("type hello there", "kb-risk")
+    assert res.route == "fast_path" and res.status == "ok", res.response
+    sk.assert_called_once_with("hello there", with_spaces=True)
+
+
+@pytest.mark.parametrize("confirm_medium, status", [(True, "needs_confirmation"), (False, "ok")])
+async def test_llm_typing_needs_confirmation_when_medium_confirms(monkeypatch, on_windows, confirm_medium, status):
+    from unittest.mock import AsyncMock
+
+    import brain.pipeline as pipeline
+    from brain.intent import Intent
+    from core.config import settings
+    from tests.fakes import FakeLLM, call, install
+
+    monkeypatch.setattr(settings, "CONFIRM_MEDIUM_RISK", confirm_medium)
+    monkeypatch.setattr(pipeline, "analyze", AsyncMock(return_value=Intent(
+        request="Put the words hello there into the focused box", kind="action", continues_task=False, single_step=True,
+        tool_groups=["keyboard"], needs_screen=False, source="llm")))
+    install(monkeypatch, FakeLLM([call("type_text", text="hello there")]))
+    with patch("automation.ops.keyboard.send_keys") as sk:
+        res = await brain_handle("could you put hello there in the box", "kb-risk")
+    assert res.status == status, res.response
+    assert sk.called is (not confirm_medium)
+
+
+async def brain_handle(query, sid):
+    from brain.pipeline import brain
+
+    return await brain.handle(query, sid)
+
+
+async def test_rewritten_typing_is_not_the_users_own_words(monkeypatch, on_windows):
+    """The intent step's rewrite ("do it again" → "type …") may reach the fast path, but it is MEDIUM, not LOW."""
+    from unittest.mock import AsyncMock
+
+    import brain.pipeline as pipeline
+    from brain.intent import Intent
+
+    monkeypatch.setattr(pipeline, "analyze", AsyncMock(return_value=Intent(
+        request="type hello there", kind="action", continues_task=True, single_step=True,
+        tool_groups=["keyboard"], needs_screen=False, source="llm")))
+    with patch("automation.ops.keyboard.send_keys") as sk:
+        res = await brain_handle("do that one more time", "kb-risk")
+    assert res.route == "fast_path" and res.status == "needs_confirmation", res.response
+    sk.assert_not_called()

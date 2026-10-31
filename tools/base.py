@@ -21,6 +21,7 @@ class ToolContext:
     dry_run: Optional[bool] = None
     source: str = "chat"
     task_id: Optional[str] = None  # the task this turn began (task_plan only edits that one)
+    origin: str = "llm"  # who chose this call: "fast" (router, the user's own words) | "rewrite" | "llm" (the agent)
 
 
 @dataclass

@@ -291,7 +291,8 @@ class Brain:
                 hit = None  # questions never act, even if their rewrite reads like a command
             if hit is not None:
                 tool, args = hit
-                record = await self._run_tool(tool, args, ctx, origin="fast")
+                # The model's rewrite, not the user's own words: tools see origin "rewrite" (e.g. typing is MEDIUM).
+                record = await self._run_tool(tool, args, ctx, origin="fast", ctx_origin="rewrite")
                 yield {"type": "tool", "name": tool.name, "result": record.to_dict()}
                 if task_id:
                     self._record_step(record, task_id)
@@ -584,11 +585,13 @@ class Brain:
             yield "done", resp
 
     # ── Helpers ─────────────────────────────────────────────────────────
-    async def _run_tool(self, tool: Tool, args: Dict[str, Any], ctx: ToolContext, origin: str) -> ToolCallRecord:
+    async def _run_tool(self, tool: Tool, args: Dict[str, Any], ctx: ToolContext, origin: str,
+                        ctx_origin: Optional[str] = None) -> ToolCallRecord:
+        """``origin`` ("fast" | "llm") is recorded; tools see ``ctx.origin = ctx_origin or origin``."""
         started = time.perf_counter()
         clean = {k: v for k, v in (args or {}).items() if v is not None}
         try:
-            result = await tool.run(ctx, **clean)
+            result = await tool.run(replace(ctx, origin=ctx_origin or origin), **clean)
         except TypeError as exc:
             result = ToolResult.error(f"Bad arguments for {tool.name}: {exc}")
         except Exception as exc:

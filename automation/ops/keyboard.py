@@ -3,6 +3,9 @@
 All of them act on the *foreground* window via ``pywinauto.keyboard.send_keys``.
 The caller passes a normalised key string such as ``"ctrl+shift+t"``; it is mapped to
 pywinauto syntax here. Unknown keys are rejected: arbitrary send_keys strings never get through.
+
+Risk: key presses and typing are LOW only when they come from the user's own words (the fast path passes
+``origin="fast"``); from the LLM agent or any other caller they are MEDIUM, like typing elsewhere.
 """
 
 from __future__ import annotations
@@ -65,6 +68,10 @@ def _send(seq: str, **kwargs: Any) -> None:
     send_keys(seq, **kwargs)
 
 
+def _input_risk(args: Dict[str, Any]) -> Risk:
+    return Risk.LOW if args.get("origin") == "fast" else Risk.MEDIUM
+
+
 def _press_preview(args: Dict[str, Any]) -> Preview:
     keys = str(args.get("keys", ""))
     if to_send_keys(keys) is None:
@@ -72,8 +79,9 @@ def _press_preview(args: Dict[str, Any]) -> Preview:
     return Preview(f"Press {keys} in the active window.", ok=True)
 
 
-@gateway.operation("keyboard.press", Risk.LOW, "Press a key or key combination in the active window", preview=_press_preview)
-async def press(keys: str = "") -> OpResult:
+@gateway.operation("keyboard.press", _input_risk, "Press a key or key combination in the active window",
+                   preview=_press_preview)
+async def press(keys: str = "", origin: str = "") -> OpResult:
     if not _IS_WINDOWS:
         return OpResult.fail("Keyboard control is only available on Windows.")
     seq = to_send_keys(keys)
@@ -92,8 +100,8 @@ def _type_preview(args: Dict[str, Any]) -> Preview:
     return Preview(f'Type "{shown}" into the active window.', ok=bool(text))
 
 
-@gateway.operation("keyboard.type", Risk.LOW, "Type text into the active window", preview=_type_preview)
-async def type_text(text: str = "") -> OpResult:
+@gateway.operation("keyboard.type", _input_risk, "Type text into the active window", preview=_type_preview)
+async def type_text(text: str = "", origin: str = "") -> OpResult:
     if not _IS_WINDOWS:
         return OpResult.fail("Keyboard control is only available on Windows.")
     if not text:
