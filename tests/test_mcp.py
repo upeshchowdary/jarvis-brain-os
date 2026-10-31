@@ -19,9 +19,12 @@ async def test_mcp_client_cannot_confirm_its_own_action(monkeypatch):
     from brain.pipeline import brain
     from unittest.mock import MagicMock
 
+    from tests.fakes import FakeLLM, install, text
+
     monkeypatch.setattr(sysops, "_IS_WINDOWS", True)
     spy = MagicMock(return_value=True)
     monkeypatch.setattr(sysops.impl, "restart_system", spy)
+    install(monkeypatch, FakeLLM([text("Okay.")]))  # "yes" reaches the agent: never a real (local) model
     gateway.resume()
     first = await brain.handle("restart my pc", "mcp", allow_confirm=False)
     assert first.status == "needs_confirmation"
@@ -107,10 +110,13 @@ async def test_mcp_jarvis_tool_cannot_run_high_risk_in_full_control(monkeypatch)
 
     from integrations.mcp_server import build_server
 
+    from tests.fakes import FakeLLM, install, text
+
     _full_control(monkeypatch)
     monkeypatch.setattr(sysops, "_IS_WINDOWS", True)
     spy = MagicMock(return_value=True)
     monkeypatch.setattr(sysops.impl, "restart_system", spy)
+    install(monkeypatch, FakeLLM([text("Okay.")]))  # "yes" reaches the agent: never a real (local) model
     gateway.resume()
     server = build_server()
     try:
