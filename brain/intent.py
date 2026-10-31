@@ -9,6 +9,10 @@ Models: ``settings.INTENT_MODEL`` then ``settings.INTENT_FALLBACK_MODEL`` (each 
 through the general fallback chain), one retry each on invalid output. If both fail, or
 ``INTENT_MODEL`` is empty, :func:`legacy_intent` keeps today's first-word routing. Never raises.
 
+Free-tier quota: the primary gets at most ``DEADLINE_SECONDS - FALLBACK_RESERVE_SECONDS`` so the fallback
+always has time, and after a 429 or a timeout it is skipped until the provider's ``retry-after`` /
+``x-ratelimit-reset-tokens`` (``COOLDOWN_SECONDS`` when neither is sent).
+
 The prompt is ordered for provider prompt caching: the system message is static (rules + examples,
 identical on every call); everything that changes per turn goes in the last (user) message.
 """
@@ -18,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -32,8 +37,14 @@ KINDS = ("action", "question", "chat")
 TOOL_GROUPS: List[str] = sorted(set(GROUPS) | {"keyboard", "history"})
 MAX_TOKENS = 300
 DEADLINE_SECONDS = 3.0  # whole intent step (both models, retries); past it → legacy routing
-TIMEOUT_SECONDS = 2.0  # per HTTP call; gateway retries are off (retries=0), so a 429 moves straight to the fallback
+TIMEOUT_SECONDS = 1.3  # per primary call; gateway retries are off (retries=0), so a 429 moves straight to the fallback
+FALLBACK_RESERVE_SECONDS = 1.5  # of the deadline always left for the fallback model
+COOLDOWN_SECONDS = 30.0  # primary skipped this long after a 429 / timeout when the provider sends no reset header
+_MIN_CALL_SECONDS = 0.3  # don't start a call (retry / fallback) with less time than this left
 _ATTEMPTS_PER_MODEL = 2  # first try + one retry on invalid output
+_COOLDOWN: Dict[str, float] = {}  # model → _clock() time until which it is skipped
+_clock = time.monotonic
+_DURATION = re.compile(r"(\d+(?:\.\d+)?)(ms|h|m|s)")
 _USER_CLIP, _ASSISTANT_CLIP = 300, 400
 
 
@@ -269,20 +280,71 @@ def parse_intent(content: str) -> Tuple[Optional[Intent], str]:
                   source="llm"), ""
 
 
+# ── Rate limits ─────────────────────────────────────────────────────────
+
+def _duration(value: Any) -> Optional[float]:
+    """Seconds in a rate-limit header: "12", "7.66s", "1m2.5s", "750ms" (None if unreadable)."""
+    v = str(value or "").strip().lower()
+    if not v:
+        return None
+    try:
+        return max(0.0, float(v))
+    except ValueError:
+        pass
+    parts = _DURATION.findall(v)
+    if not parts or "".join(n + u for n, u in parts) != v:
+        return None  # e.g. an HTTP-date retry-after
+    return sum(float(n) * {"ms": 0.001, "s": 1.0, "m": 60.0, "h": 3600.0}[u] for n, u in parts)
+
+
+def _cooldown_for(exc: BaseException) -> Optional[float]:
+    """How long to skip a model after ``exc``: 429 → reset header (or COOLDOWN_SECONDS), timeout → COOLDOWN_SECONDS."""
+    if isinstance(exc, asyncio.TimeoutError) or getattr(exc, "timed_out", False):
+        return COOLDOWN_SECONDS
+    if getattr(exc, "status", None) == 429:
+        headers = getattr(exc, "headers", None) or {}
+        for name in ("retry-after", "x-ratelimit-reset-tokens"):
+            seconds = _duration(headers.get(name))
+            if seconds is not None:
+                return seconds
+        return COOLDOWN_SECONDS
+    return None
+
+
 # ── Entry point ─────────────────────────────────────────────────────────
 
 async def _ask_models(message: str, turns: Sequence[Turn], task: Optional[Task],
                       models: List[str]) -> Optional[Intent]:
     messages = build_messages(message, turns, task)
-    for model in models:
+    started = _clock()
+    for index, model in enumerate(models):
+        primary = index == 0
+        if primary and _clock() < _COOLDOWN.get(model, 0.0):
+            logger.debug(f"[intent] {model} cooling down after a rate limit / timeout; skipped")
+            continue
+        # The primary must finish early enough to leave the fallback FALLBACK_RESERVE_SECONDS of the deadline.
+        ends = started + DEADLINE_SECONDS - (FALLBACK_RESERVE_SECONDS if primary and len(models) > 1 else 0.0)
         convo = messages
         for attempt in range(1, _ATTEMPTS_PER_MODEL + 1):
+            left = ends - _clock()
+            if attempt > 1 or not primary:
+                if left < _MIN_CALL_SECONDS:
+                    break
+                timeout = min(TIMEOUT_SECONDS, left) if primary else left
+            else:
+                timeout = TIMEOUT_SECONDS
             try:
-                resp = await llm.chat(convo, model=model, temperature=0, max_tokens=MAX_TOKENS,
-                                      response_format=RESPONSE_FORMAT, fallbacks=False, retries=0,
-                                      timeout=TIMEOUT_SECONDS, purpose="intent")
-            except Exception as exc:  # unavailable / rate-limited → next model (no in-gateway retry or sleep)
-                logger.warning(f"[intent] {model} unavailable: {exc}")
+                resp = await asyncio.wait_for(
+                    llm.chat(convo, model=model, temperature=0, max_tokens=MAX_TOKENS,
+                             response_format=RESPONSE_FORMAT, fallbacks=False, retries=0,
+                             timeout=timeout, purpose="intent"),
+                    timeout)
+            except Exception as exc:  # unavailable / rate-limited / slow → next model (no in-gateway retry or sleep)
+                cooldown = _cooldown_for(exc) if primary else None
+                if cooldown:
+                    _COOLDOWN[model] = _clock() + cooldown
+                logger.warning(f"[intent] {model} unavailable: {exc!r}"
+                               + (f"; skipping it for {cooldown:.0f}s" if cooldown else ""))
                 break
             intent, reason = parse_intent(resp.content)
             if intent:

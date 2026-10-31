@@ -144,16 +144,36 @@ class LLMResponse:
         return msg
 
 
-class LLMUnavailable(RuntimeError):
-    """Raised when every candidate provider failed."""
+class ProviderError(RuntimeError):
+    """One provider call failed. ``status`` / ``headers`` come from the HTTP response (None / {} on transport errors)."""
 
-    def __init__(self, errors: List[str]) -> None:
+    def __init__(self, message: str, status: Optional[int] = None, headers: Any = None, timed_out: bool = False) -> None:
+        super().__init__(message)
+        self.status = status
+        self.headers: Dict[str, str] = dict(headers or {})  # httpx gives lower-case names
+        self.timed_out = timed_out
+
+
+class LLMUnavailable(RuntimeError):
+    """Raised when every candidate provider failed.
+
+    ``status`` / ``headers`` / ``timed_out`` describe the last provider failure (e.g. a 429 with ``retry-after``),
+    so callers that run their own fallback order can back off.
+    """
+
+    def __init__(self, errors: List[str], causes: Optional[List[BaseException]] = None) -> None:
         super().__init__("; ".join(errors) or "No LLM provider is configured.")
         self.errors = errors
+        last = next((c for c in reversed(causes or []) if isinstance(c, ProviderError)), None)
+        self.status: Optional[int] = last.status if last else None
+        self.headers: Dict[str, str] = last.headers if last else {}
+        self.timed_out: bool = bool(last and last.timed_out)
 
 
 class _RetryableError(RuntimeError):
-    pass
+    def __init__(self, message: str, status: int, headers: Any) -> None:
+        super().__init__(message)
+        self.status, self.headers = status, dict(headers or {})
 
 
 def _parse_arguments(raw: Any) -> Dict[str, Any]:
@@ -305,17 +325,18 @@ class LLMGateway:
                     keys_left -= 1
                     continue
                 if resp.status_code == 429 or resp.status_code >= 500:
-                    raise _RetryableError(f"HTTP {resp.status_code}: {resp.text[:200]}")
+                    raise _RetryableError(f"HTTP {resp.status_code}: {resp.text[:200]}", resp.status_code, resp.headers)
                 if resp.status_code != 200:
-                    raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:300]}")
+                    raise ProviderError(f"HTTP {resp.status_code}: {resp.text[:300]}", resp.status_code, resp.headers)
                 return resp.json()
             except (_RetryableError, httpx.TransportError) as exc:
                 if isinstance(exc, httpx.ConnectError) and provider.local:
                     raise RuntimeError(f"{provider.name} is not running at {provider.base_url()}") from exc
                 if attempt >= max_retries:
-                    raise RuntimeError(str(exc) or exc.__class__.__name__) from exc
+                    raise ProviderError(str(exc) or exc.__class__.__name__, getattr(exc, "status", None),
+                                        getattr(exc, "headers", None), isinstance(exc, httpx.TimeoutException)) from exc
                 delay = 0.4 * (2 ** attempt)
-                retry_after = getattr(getattr(exc, "response", None), "headers", {}).get("retry-after") if hasattr(exc, "response") else None
+                retry_after = (getattr(exc, "headers", None) or {}).get("retry-after")
                 if retry_after and str(retry_after).isdigit():
                     delay = min(float(retry_after), 8.0)
                 attempt += 1
@@ -343,6 +364,7 @@ class LLMGateway:
         ``retries`` overrides ``settings.MAX_RETRIES`` for 429 / 5xx / network errors (0 = fail fast, no backoff sleep).
         """
         errors: List[str] = []
+        causes: List[BaseException] = []
         chain = await self.candidates(model, purpose, local_only, fallbacks)
         for index, (prov_name, mod) in enumerate(chain):
             provider = PROVIDERS[prov_name]
@@ -368,8 +390,9 @@ class LLMGateway:
             except Exception as exc:
                 metrics.incr(f"llm.errors.{prov_name}")
                 errors.append(f"{prov_name}/{mod}: {exc}")
+                causes.append(exc)
                 logger.warning(f"[LLM] {prov_name}/{mod} failed: {exc}")
-        raise LLMUnavailable(errors)
+        raise LLMUnavailable(errors, causes)
 
     async def stream_events(
         self,

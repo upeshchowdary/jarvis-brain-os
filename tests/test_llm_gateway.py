@@ -413,3 +413,32 @@ async def test_keepwarm_loop_does_not_ping_without_a_recent_request(gw, monkeypa
     await asyncio.sleep(0.12)
     llm.stop_keepwarm()
     assert seen == []
+
+
+# ── I2: the raised error carries the HTTP status / headers (the intent step's cooldown reads them) ──
+
+async def test_unavailable_exposes_status_and_headers(gw):
+    gw(lambda r: httpx.Response(429, text="rate limited",
+                                headers={"retry-after": "7", "x-ratelimit-reset-tokens": "1m2s"}))
+    with pytest.raises(LLMUnavailable) as info:
+        await llm.chat([{"role": "user", "content": "x"}], model="groq/llama-test", fallbacks=False, retries=0)
+    exc = info.value
+    assert exc.status == 429 and not exc.timed_out
+    assert exc.headers["retry-after"] == "7" and exc.headers["x-ratelimit-reset-tokens"] == "1m2s"
+
+
+async def test_unavailable_exposes_non_retryable_status(gw):
+    gw(lambda r: httpx.Response(400, text="bad request"))
+    with pytest.raises(LLMUnavailable) as info:
+        await llm.chat([{"role": "user", "content": "x"}], model="groq/llama-test", fallbacks=False, retries=0)
+    assert info.value.status == 400
+
+
+async def test_unavailable_marks_timeouts(gw):
+    def handler(request):
+        raise httpx.ReadTimeout("slow", request=request)
+
+    gw(handler)
+    with pytest.raises(LLMUnavailable) as info:
+        await llm.chat([{"role": "user", "content": "x"}], model="groq/llama-test", fallbacks=False, retries=0)
+    assert info.value.timed_out and info.value.status is None

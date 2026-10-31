@@ -254,6 +254,9 @@ async def test_eval_cases_live(monkeypatch):
         for case in cases:
             for attempt in range(_RATE_LIMIT_RETRIES + 1):
                 await _pace(recorder)
+                # Score the primary model on every case: the eval paces and retries rate limits itself, so the
+                # runtime cooldown (skip the primary after a 429 / timeout) must not carry over between cases.
+                intent_mod._COOLDOWN.clear()
                 first = len(recorder.calls)
                 started = time.perf_counter()
                 got = await analyze(case["message"], build_turns(case), build_task(case))

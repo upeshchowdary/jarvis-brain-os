@@ -348,3 +348,98 @@ def test_correction_example_present():
     system = intent_mod.SYSTEM_PROMPT
     assert "not windows but in the chrome browser tabs" in system
     assert "Switch to the Instagram tab in Google Chrome" in system
+
+
+# ── I2: free-tier quota: cooldown after a 429 / timeout, primary timeout leaves the fallback time ──
+
+@pytest.fixture(autouse=True)
+def no_cooldown(monkeypatch):
+    monkeypatch.setattr(intent_mod, "_COOLDOWN", {})
+
+
+def rate_limited(headers=None):
+    exc = LLMUnavailable(["groq/openai/gpt-oss-120b: HTTP 429: rate limited"])
+    exc.status, exc.headers, exc.timed_out = 429, dict(headers or {}), False
+    return exc
+
+
+def primary_fails_with(monkeypatch, exc):
+    def script(messages, tools):
+        if fake.calls[-1]["model"] == INTENT_MODEL:
+            raise exc
+        return text(json.dumps(NEXT_DO))
+
+    fake = use(monkeypatch, script)
+    return fake
+
+
+@pytest.mark.parametrize("headers, seconds", [
+    ({"retry-after": "12"}, 12.0),
+    ({"x-ratelimit-reset-tokens": "1m2.5s"}, 62.5),
+    ({"x-ratelimit-reset-tokens": "750ms"}, 0.75),
+    ({}, 30.0),
+])
+async def test_primary_429_skips_primary_until_reset(monkeypatch, headers, seconds):
+    now = [1000.0]
+    monkeypatch.setattr(intent_mod, "_clock", lambda: now[0])
+    fake = primary_fails_with(monkeypatch, rate_limited(headers))
+    got = await analyze("next do", [], None)
+    assert got.source == "llm" and [c["model"] for c in fake.calls] == [INTENT_MODEL, FALLBACK_MODEL]
+    now[0] += seconds - 0.01
+    await analyze("next do", [], None)
+    assert [c["model"] for c in fake.calls][2:] == [FALLBACK_MODEL]  # primary skipped during the cooldown
+    now[0] += 0.02
+    await analyze("next do", [], None)
+    assert [c["model"] for c in fake.calls][3:] == [INTENT_MODEL, FALLBACK_MODEL]  # tried again after it
+
+
+async def test_primary_timeout_starts_default_cooldown(monkeypatch):
+    now = [50.0]
+    monkeypatch.setattr(intent_mod, "_clock", lambda: now[0])
+    exc = LLMUnavailable(["groq: ReadTimeout"])
+    exc.status, exc.headers, exc.timed_out = None, {}, True
+    fake = primary_fails_with(monkeypatch, exc)
+    await analyze("next do", [], None)
+    now[0] += 29.0
+    await analyze("next do", [], None)
+    assert [c["model"] for c in fake.calls] == [INTENT_MODEL, FALLBACK_MODEL, FALLBACK_MODEL]
+
+
+async def test_other_primary_errors_do_not_cool_down(monkeypatch):
+    exc = LLMUnavailable(["groq: HTTP 400"])
+    exc.status, exc.headers, exc.timed_out = 400, {}, False
+    fake = primary_fails_with(monkeypatch, exc)
+    await analyze("next do", [], None)
+    await analyze("next do", [], None)
+    assert [c["model"] for c in fake.calls] == [INTENT_MODEL, FALLBACK_MODEL] * 2
+
+
+def test_primary_timeout_leaves_the_fallback_at_least_1_5_s():
+    assert intent_mod.TIMEOUT_SECONDS <= 1.3
+    assert intent_mod.DEADLINE_SECONDS - intent_mod.FALLBACK_RESERVE_SECONDS >= intent_mod.TIMEOUT_SECONDS
+    assert intent_mod.FALLBACK_RESERVE_SECONDS >= 1.5
+
+
+class HangingPrimary:
+    """The primary never answers; the fallback answers at once."""
+
+    def __init__(self):
+        self.calls = []
+
+    async def chat(self, messages, *, model=None, timeout=None, **kw):
+        self.calls.append({"model": model, "timeout": timeout})
+        if model == INTENT_MODEL:
+            await asyncio.sleep(10)
+        return text(json.dumps(NEXT_DO))
+
+
+async def test_hanging_primary_still_lets_the_fallback_answer(monkeypatch):
+    fake = HangingPrimary()
+    monkeypatch.setattr(intent_mod, "llm", fake)
+    started = time.perf_counter()
+    got = await analyze("next do", [], None)
+    elapsed = time.perf_counter() - started
+    assert got.source == "llm" and [c["model"] for c in fake.calls] == [INTENT_MODEL, FALLBACK_MODEL]
+    assert elapsed < intent_mod.TIMEOUT_SECONDS + 0.5
+    assert fake.calls[1]["timeout"] >= intent_mod.FALLBACK_RESERVE_SECONDS
+    assert intent_mod._COOLDOWN.get(INTENT_MODEL)  # the timeout started a cooldown
