@@ -145,9 +145,10 @@ class LLMResponse:
 
 
 class ProviderError(RuntimeError):
-    """One provider call failed. ``status`` / ``headers`` come from the HTTP response (None / {} on transport errors)."""
+    """One provider call failed. ``status`` / ``headers`` are the HTTP response's (None / {} on transport errors)."""
 
-    def __init__(self, message: str, status: Optional[int] = None, headers: Any = None, timed_out: bool = False) -> None:
+    def __init__(self, message: str, status: Optional[int] = None, headers: Any = None,
+                 timed_out: bool = False) -> None:
         super().__init__(message)
         self.status = status
         self.headers: Dict[str, str] = dict(headers or {})  # httpx gives lower-case names
@@ -206,6 +207,17 @@ def _sign_tool_calls(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         if msg.get("role") == "assistant" and calls and any(not c.get("extra_content") for c in calls):
             msg = {**msg, "tool_calls": [c if c.get("extra_content") else {**c, "extra_content": _PLACEHOLDER_SIGNATURE}
                                          for c in calls]}
+        out.append(msg)
+    return out
+
+
+def _strip_extra_content(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Drop Gemini-only ``extra_content`` from tool calls for every other provider (new dicts; input untouched)."""
+    out = []
+    for msg in messages:
+        calls = msg.get("tool_calls")
+        if msg.get("role") == "assistant" and calls and any("extra_content" in c for c in calls):
+            msg = {**msg, "tool_calls": [{k: v for k, v in c.items() if k != "extra_content"} for c in calls]}
         out.append(msg)
     return out
 
@@ -295,7 +307,7 @@ class LLMGateway:
                  response_format: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         payload: Dict[str, Any] = {
             "model": model,
-            "messages": _sign_tool_calls(messages) if provider == "gemini" else messages,
+            "messages": _sign_tool_calls(messages) if provider == "gemini" else _strip_extra_content(messages),
             "temperature": settings.TEMPERATURE if temperature is None else temperature,
             "max_tokens": max_tokens or settings.MAX_TOKENS,
             "stream": stream,

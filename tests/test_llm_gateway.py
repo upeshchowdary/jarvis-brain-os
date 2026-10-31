@@ -442,3 +442,27 @@ async def test_unavailable_marks_timeouts(gw):
     with pytest.raises(LLMUnavailable) as info:
         await llm.chat([{"role": "user", "content": "x"}], model="groq/llama-test", fallbacks=False, retries=0)
     assert info.value.timed_out and info.value.status is None
+
+
+async def test_extra_content_is_stripped_for_non_gemini_providers(gw):
+    """M1: Gemini thought signatures are Gemini-only; other providers get plain tool calls (and so do streams)."""
+    signed = {"google": {"thought_signature": "real"}}
+    history = [
+        {"role": "user", "content": "x"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "c1", "type": "function", "extra_content": signed, "function": {"name": "web_search", "arguments": "{}"}},
+        ]},
+        {"role": "tool", "tool_call_id": "c1", "content": "results"},
+    ]
+    seen = gw(lambda r: ok("answer"))
+    await llm.chat(history, model="groq/llama-test")
+    assert "extra_content" not in json.loads(seen[0].content)["messages"][1]["tool_calls"][0]
+    assert history[1]["tool_calls"][0]["extra_content"] == signed  # caller's messages are not mutated
+    seen.clear()
+    await llm.chat(history, model="gemini/gemini-test")
+    assert json.loads(seen[0].content)["messages"][1]["tool_calls"][0]["extra_content"] == signed
+    body = "data: " + json.dumps({"choices": [{"delta": {"content": "ok"}}]}) + "\n\ndata: [DONE]\n\n"
+    seen.clear()
+    gw(lambda r: httpx.Response(200, text=body, headers={"content-type": "text/event-stream"}))
+    _ = [e async for e in llm.stream_events(history, model="groq/llama-test")]
+    assert "extra_content" not in json.loads(seen[0].content)["messages"][1]["tool_calls"][0]
