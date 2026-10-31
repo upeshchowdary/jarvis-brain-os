@@ -62,3 +62,94 @@ async def test_server_tools_with_name_argument_work(monkeypatch):
     result = await build_server().call_tool("open_app", {"name": "chrome"})
     text = str(result)
     assert "Opened Chrome" in text
+
+
+# ── Remote agents never approve their own risky actions, whatever CONFIRM_* says (C1) ──
+
+def _full_control(monkeypatch):
+    from core.config import settings
+
+    monkeypatch.setattr(settings, "CONFIRM_HIGH_RISK", False)
+    monkeypatch.setattr(settings, "CONFIRM_MEDIUM_RISK", False)
+
+
+async def test_gateway_always_confirms_mcp_source_in_full_control(monkeypatch):
+    from automation.gateway import ActionRequest, OpResult, Operation
+
+    _full_control(monkeypatch)
+    gateway.resume()
+    calls = []
+
+    async def op(**kw):
+        calls.append(kw)
+        return OpResult.ok("ran")
+
+    gateway.register(Operation("test.mcp_high", Risk.HIGH, op, "High test op"))
+    gateway.register(Operation("test.mcp_medium", Risk.MEDIUM, op, "Medium test op"))
+    gateway.register(Operation("test.mcp_low", Risk.LOW, op, "Low test op"))
+    try:
+        for name in ("test.mcp_high", "test.mcp_medium"):
+            res = await gateway.execute(ActionRequest(name), "mcp-full", source="mcp")
+            assert res.status == "needs_confirmation", name
+        assert calls == []
+        assert (await gateway.execute(ActionRequest("test.mcp_low"), "mcp-full", source="mcp")).status == "executed"
+        # The owner's own channels honour full-control mode.
+        assert (await gateway.execute(ActionRequest("test.mcp_high"), "owner-full", source="chat")).status == "executed"
+        dry = await gateway.execute(ActionRequest("test.mcp_high"), "mcp-full", source="mcp", dry_run=True)
+        assert "would ask for confirmation" in dry.message
+    finally:
+        gateway.cancel_session("mcp-full")
+
+
+async def test_mcp_jarvis_tool_cannot_run_high_risk_in_full_control(monkeypatch):
+    import automation.ops.system as sysops
+    from unittest.mock import MagicMock
+
+    from integrations.mcp_server import build_server
+
+    _full_control(monkeypatch)
+    monkeypatch.setattr(sysops, "_IS_WINDOWS", True)
+    spy = MagicMock(return_value=True)
+    monkeypatch.setattr(sysops.impl, "restart_system", spy)
+    gateway.resume()
+    server = build_server()
+    try:
+        first = str(await server.call_tool("jarvis", {"message": "restart my pc"}))
+        assert "confirm" in first.lower()
+        await server.call_tool("jarvis", {"message": "yes"})
+        spy.assert_not_called()
+        assert gateway.pending_for("mcp") is not None  # still waiting for the human
+    finally:
+        gateway.cancel_session("mcp")
+
+
+async def test_mcp_turns_stay_out_of_recent_turns_and_tasks(monkeypatch):
+    import brain.pipeline as pipeline
+    from brain import task_state
+    from brain.intent import Intent
+    from integrations.mcp_server import build_server
+    from tests.fakes import FakeLLM, call, install
+    from tools import ToolResult
+    from tools.registry import registry
+
+    tracker, turns = task_state.TaskTracker(), task_state.RecentTurns()
+    for mod in (task_state, pipeline):
+        monkeypatch.setattr(mod, "tasks", tracker)
+        monkeypatch.setattr(mod, "recent_turns", turns)
+    user_task = tracker.start("Write the weekly report", "voice")
+    turns.add("voice", "voice", "start the weekly report", "On it.")
+    analyze = AsyncMock(return_value=Intent(request="Open Notepad", kind="action", continues_task=False,
+                                            single_step=True, tool_groups=["system"], needs_screen=False,
+                                            source="llm"))
+    monkeypatch.setattr(pipeline, "analyze", analyze)
+    install(monkeypatch, FakeLLM([call("open_app", name="notepad")]))
+    monkeypatch.setattr(registry.get("open_app"), "run", AsyncMock(return_value=ToolResult.ok("Opened Notepad.")))
+    gateway.resume()
+
+    await build_server().call_tool("jarvis", {"message": "notepad would be nice right now"})
+
+    # The remote agent saw none of the user's context and left no trace in it.
+    args = analyze.await_args.args
+    assert list(args[1]) == [] and args[2] is None
+    assert [t.user for t in turns.recent(10, 3600)] == ["start the weekly report"]
+    assert tracker.current() is user_task and user_task.steps == [] and user_task.status == "active"

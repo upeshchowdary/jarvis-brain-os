@@ -30,7 +30,7 @@ import uuid
 from dataclasses import dataclass, field, replace
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
-from automation.gateway import gateway
+from automation.gateway import REMOTE_SOURCES, gateway
 from brain import router
 from brain.conversation_manager import conversation_manager
 from brain.intent import Intent, analyze, legacy_intent
@@ -183,6 +183,9 @@ class Brain:
         history = conversation_manager.get_history(sid)
         conversation_manager.add_user_message(sid, query)
         ctx = ToolContext(session_id=sid, channel=channel, dry_run=dry_run, source=channel)
+        # A remote agent (MCP) gets no shared context: it never sees or feeds the PC-wide turn buffer and
+        # never starts, continues or closes the user's task (so "yes"/"continue" can't be bent into its request).
+        remote = channel in REMOTE_SOURCES
         note = ""
         carried: List[ToolCallRecord] = []  # e.g. the confirmation this message cancelled
 
@@ -197,7 +200,8 @@ class Brain:
             # History (and the intent step) see what was done; the user-visible response stays clean.
             remembered = response + _action_notes(carried + (records or []))
             conversation_manager.add_assistant_message(sid, remembered)
-            recent_turns.add(channel, sid, query, remembered)
+            if not remote:
+                recent_turns.add(channel, sid, query, remembered)
             bus.publish("turn", {"session_id": sid, "channel": channel, "query": query, "response": response[:2000],
                                  "status": result.status, "route": result.route})
             self._after_turn(result)
@@ -234,7 +238,7 @@ class Brain:
             note = "(I cancelled the action that was waiting for confirmation.)\n\n"
 
         # 2 ── Fast path ──────────────────────────────────────────────────
-        active = tasks.current()
+        active = None if remote else tasks.current()
         t = time.perf_counter()
         decision = router.fast_route(query, task_active=active is not None)
         timing["router_ms"] = round((time.perf_counter() - t) * 1000, 2)
@@ -260,9 +264,10 @@ class Brain:
 
         # 3 ── Understand: intent step ∥ memory lookup ────────────────────
         if prefilled is None:
-            turns = recent_turns.recent(settings.INTENT_HISTORY_TURNS, settings.INTENT_HISTORY_WINDOW_SECONDS)
+            turns = [] if remote else recent_turns.recent(settings.INTENT_HISTORY_TURNS,
+                                                          settings.INTENT_HISTORY_WINDOW_SECONDS)
             intent, (facts, memories) = await asyncio.gather(
-                self._timed(timing, "intent_ms", analyze(query, turns, tasks.current())),
+                self._timed(timing, "intent_ms", analyze(query, turns, None if remote else tasks.current())),
                 self._timed(timing, "memory_ms", self._memory_context(query, router.is_imperative(query), sid)),
             )
         else:  # the fast path already understood it; source "fast": this turn never starts/continues/closes a task
@@ -275,7 +280,7 @@ class Brain:
             tracing.record_intent(intent, timing["intent_ms"])
 
         # 4 ── Current task (questions and chat leave it alone) ───────────
-        task_mode = self._begin_task(intent, ctx)
+        task_mode = None if remote else self._begin_task(intent, ctx)
         book = task_mode is not None  # this turn's tool calls are steps of the current task
 
         # 5 ── The rewritten request may be an exact command ("yes do that" → "open whatsapp") ──
@@ -301,7 +306,7 @@ class Brain:
 
         # 6 ── Agent ──────────────────────────────────────────────────────
         async for event in self._agent(query, intent, facts, memories, history, state, ctx, personality,
-                                       model_override, timing, stream_tokens, note, prefilled, book):
+                                       model_override, timing, stream_tokens, note, prefilled, book, remote):
             if event["type"] == "final":
                 records = event.get("records") or []
                 self._close_task(task_mode, records, event.get("outcome"))
@@ -414,7 +419,8 @@ class Brain:
 
     # ── Agent loop ──────────────────────────────────────────────────────
     async def _agent(self, query, intent: Intent, facts, memories, history, state, ctx, personality, model_override,
-                     timing, stream_tokens, note, prefilled=None, book: bool = False) -> AsyncIterator[Dict[str, Any]]:
+                     timing, stream_tokens, note, prefilled=None, book: bool = False,
+                     remote: bool = False) -> AsyncIterator[Dict[str, Any]]:
         """Final events carry ``records`` (every tool run this turn) and ``outcome``:
         None | "incomplete" (step budget / no LLM) | "waiting" (asked the user) | "stopped" (emergency stop)."""
         is_action = intent.kind == "action"
@@ -423,13 +429,13 @@ class Brain:
         offered: Dict[str, Tool] = {t.name: t for t in select_tools(
             intent.request, base, recent, groups=intent.tool_groups or None,
             include=("task_plan",) if is_action else ())}  # the rules tell the model to plan multi-step work
-        if not is_action:
-            offered.pop("task_plan", None)  # a question must not edit the current task's plan
+        if not is_action or remote:
+            offered.pop("task_plan", None)  # a question (or a remote agent) must not edit the current task's plan
         multi_step = is_action and not intent.single_step
 
         model = model_override or state.model_override or (settings.ACTION_MODEL if is_action else settings.DEFAULT_MODEL)
         model_label = "/".join(resolve_model(model))
-        current = tasks.current()
+        current = None if remote else tasks.current()
         system = build_system_prompt(personality=personality or state.personality, channel=ctx.channel,
                                      facts=facts, memories=memories, model_label=model_label,
                                      task_summary=current.summary() if current else None)
