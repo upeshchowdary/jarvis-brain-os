@@ -393,3 +393,172 @@ def test_agent_rules_act_dont_ask():
     assert "CURRENT TASK" in prompt and "Task: Send hi [active]" in prompt
     assert "CURRENT TASK" not in build_system_prompt(personality=None, channel="text", facts={}, memories=[],
                                                      model_label="x")
+
+
+# ── Fix round 1 ─────────────────────────────────────────────────────────
+
+async def test_clarify_ends_multi_step_turn_and_waits(monkeypatch, tools, fresh_state):
+    patch_intent(monkeypatch, intent("Send Nithesh a WhatsApp message", groups=["messaging"]))
+    fake = install(monkeypatch, FakeLLM([call("clarify", question="What should the message say?"),
+                                         text("should not be reached")]))
+    res = await brain.handle("msg nithesh on whatsapp", "u-clarify")
+    assert res.response == "What should the message say?" and len(fake.calls) == 1
+    task = fresh_state.current()
+    assert task is not None and task.status == "waiting_for_user" and task.steps == []
+
+    # The answer continues the same task, which then completes.
+    patch_intent(monkeypatch, intent("Send Nithesh 'hi' on WhatsApp", continues=True, groups=["messaging"]))
+    install(monkeypatch, FakeLLM([call("send_message", app="whatsapp", contact="Nithesh", text="hi"), text("Sent.")]))
+    await brain.handle("say hi", "u-clarify")
+    tools["send_message"].assert_awaited_once()
+    assert fresh_state.current() is None and fresh_state._last is task
+    assert task.status == "done" and [s.tool for s in task.steps] == ["send_message"]
+
+
+async def test_clarify_ends_question_turn(monkeypatch):
+    patch_intent(monkeypatch, intent("Which city's weather?", kind="question"))
+    fake = install(monkeypatch, FakeLLM([call("clarify", question="Which city?"), text("never")]))
+    res = await brain.handle("how is it out there", "u-clarify-q")
+    assert res.response == "Which city?" and len(fake.calls) == 1
+
+
+def test_clarify_description_is_last_resort():
+    assert "last resort" in load_builtin_tools().get("clarify").description.lower()
+
+
+@pytest.fixture
+def confirmable(monkeypatch, tools):
+    """send_message queues a confirmation; the gateway's pending/confirm/cancel are faked."""
+    from types import SimpleNamespace
+
+    from automation.gateway import GatewayResult
+
+    box = {"pending": None}
+    queued = ToolResult(True, "This needs your confirmation: send 'hi' to Nithesh.",
+                        status="needs_confirmation", pending_id="pid-1")
+
+    async def run(ctx, **kw):
+        box["pending"] = SimpleNamespace(pending_id="pid-1", actions=[])
+        return queued
+
+    tools["send_message"].side_effect = run
+    monkeypatch.setattr(gateway, "pending_for", lambda sid: box["pending"])
+    confirm = AsyncMock(return_value=GatewayResult("executed", "Message sent to Nithesh."))
+
+    async def do_confirm(pid, sid=None):
+        box["pending"] = None
+        return await confirm(pid, sid)
+
+    monkeypatch.setattr(gateway, "confirm", do_confirm)
+    monkeypatch.setattr(gateway, "cancel", lambda pid, reason="": box.update(pending=None))
+    return confirm
+
+
+async def test_confirmed_action_is_booked_and_closes_task(monkeypatch, confirmable, fresh_state):
+    patch_intent(monkeypatch, intent("Send Nithesh 'hi' on WhatsApp", groups=["messaging"]))
+    install(monkeypatch, FakeLLM([call("send_message", app="whatsapp", contact="Nithesh", text="hi")]))
+    sid = "u-confirm"
+    first = await brain.handle("msg nithesh hi", sid)
+    assert first.status == "needs_confirmation"
+    assert conversation_manager.get_history(sid)[-1]["content"].endswith("[did: send_message(whatsapp) …]")
+    task = fresh_state.current()
+    assert task.status == "active" and task.steps[-1].mark == "…" and "… send_message(" in task.summary()
+
+    second = await brain.handle("yes", sid)
+    assert second.route == "confirmation" and second.status == "ok"
+    confirmable.assert_awaited_once()
+    assert conversation_manager.get_history(sid)[-1]["content"].endswith("[did: send_message(whatsapp) ✓]")
+    assert fresh_state.current() is None and task.status == "done" and task.steps[-1].mark == "✓"
+
+
+async def test_cancelled_confirmation_is_recorded(monkeypatch, confirmable, fresh_state):
+    patch_intent(monkeypatch, intent("Send Nithesh 'hi' on WhatsApp", groups=["messaging"]))
+    install(monkeypatch, FakeLLM([call("send_message", app="whatsapp", contact="Nithesh", text="hi")]))
+    sid = "u-cancel"
+    await brain.handle("msg nithesh hi", sid)
+    task = fresh_state.current()
+    res = await brain.handle("no", sid)
+    assert res.route == "confirmation" and "cancelled" in res.response.lower()
+    confirmable.assert_not_awaited()
+    assert conversation_manager.get_history(sid)[-1]["content"].endswith("[did: send_message(whatsapp) (cancelled)]")
+    assert fresh_state.current() is task and task.steps[-1].mark == "(cancelled)"
+
+
+def test_note_marks_for_pending_dry_run_cancelled():
+    from tools.base import ToolCallRecord
+
+    recs = [ToolCallRecord("power_control", {"action": "restart"}, ToolResult(True, "x", status="needs_confirmation")),
+            ToolCallRecord("file_delete", {"path": "a.txt"}, ToolResult(True, "x", status="dry_run")),
+            ToolCallRecord("send_message", {"app": "whatsapp"}, ToolResult(False, "x", status="cancelled")),
+            ToolCallRecord("kill_process", {"target": "x"}, ToolResult(False, "x", status="blocked"))]
+    assert pipeline._action_notes(recs) == (" [did: power_control(restart) …, file_delete(a.txt) (dry run), "
+                                            "send_message(whatsapp) (cancelled), kill_process(x) ✗]")
+    assert "awaiting the user's confirmation" in AGENT_RULES and "(dry run)" in AGENT_RULES
+
+
+async def test_legacy_context_word_continues_current_task(monkeypatch, tools, fresh_state):
+    task = fresh_state.start("Open WhatsApp and message Nithesh 'hi'", "voice")
+    patch_intent(monkeypatch, lambda message, turns, t: legacy_intent(message))
+    fake = install(monkeypatch, FakeLLM([text("Sending it now.")]))
+    await brain.handle("next", "u-legacy-next")
+    tools["media_control"].assert_not_awaited()
+    assert fresh_state.current() is task and task.goal == "Open WhatsApp and message Nithesh 'hi'"
+    assert "Task: Open WhatsApp and message Nithesh 'hi'" in fake.calls[0]["messages"][0]["content"]
+
+
+async def test_legacy_message_reactivates_waiting_task(monkeypatch, tools, fresh_state):
+    task = fresh_state.start("Send Nithesh a WhatsApp message", "text")
+    fresh_state.set_status("waiting_for_user")
+    patch_intent(monkeypatch, lambda message, turns, t: legacy_intent(message))
+    install(monkeypatch, FakeLLM([text("ok")]))
+    await brain.handle("send hi", "u-legacy-wait")
+    assert fresh_state.current() is task and task.status == "active"
+
+
+async def test_emergency_stop_breaks_multi_step_loop(monkeypatch, tools, fresh_state):
+    async def open_and_stop(ctx, **kw):
+        gateway.emergency_stop("test")
+        return ToolResult.ok("Opened WhatsApp.")
+
+    tools["open_app"].side_effect = open_and_stop
+    patch_intent(monkeypatch, intent("Open WhatsApp and send Nithesh 'hi'", groups=["messaging"]))
+    fake = install(monkeypatch, FakeLLM([call("open_app", name="whatsapp"),
+                                         call("send_message", app="whatsapp", contact="Nithesh", text="hi"),
+                                         text("Sent.")]))
+    res = await brain.handle("open whatsapp and msg nithesh hi", "u-stop-loop")
+    assert len(fake.calls) == 1 and res.response == "Stopped."
+    tools["send_message"].assert_not_awaited()
+    assert fresh_state.current() is None and fresh_state._last.status == "shelved"
+
+
+async def test_action_while_stopped_does_not_call_llm_but_questions_still_work(monkeypatch, tools):
+    gateway.emergency_stop("test")
+    patch_intent(monkeypatch, intent("Open WhatsApp and send Nithesh 'hi'", groups=["messaging"]))
+    fake = install(monkeypatch, FakeLLM([text("Paris.")]))
+    res = await brain.handle("open whatsapp and msg nithesh hi", "u-stopped-before")
+    assert fake.calls == [] and "resume" in res.response
+    patch_intent(monkeypatch, intent("What is the capital of France?", kind="question"))
+    res = await brain.handle("what is the capital of france", "u-stopped-q")
+    assert res.response == "Paris."
+
+
+def test_task_plan_survives_tool_cap():
+    from tools.selection import MAX_TOOLS
+
+    reg = load_builtin_tools()
+    names = [t.name for t in select_tools("x", reg.all(), groups=list(GROUPS), include=("task_plan",))]
+    assert len(names) == MAX_TOOLS and "task_plan" in names
+    every_keyword = " ".join(k for g in GROUPS.values() for k in g["keywords"])
+    names = [t.name for t in select_tools(every_keyword, reg.all(), include=("task_plan",))]
+    assert len(names) == MAX_TOOLS and "task_plan" in names
+
+
+async def test_task_plan_offered_for_every_action(monkeypatch, tools):
+    patch_intent(monkeypatch, intent("Do everything", groups=list(GROUPS)))
+    fake = install(monkeypatch, FakeLLM([text("ok")]))
+    await brain.handle("do everything", "u-plan-groups")
+    assert "task_plan" in fake.offered(0)
+    patch_intent(monkeypatch, lambda message, turns, t: legacy_intent(message))
+    fake = install(monkeypatch, FakeLLM([text("ok")]))
+    await brain.handle("open chrome and then go to github and send the file and play music", "u-plan-legacy")
+    assert "task_plan" in fake.offered(0)

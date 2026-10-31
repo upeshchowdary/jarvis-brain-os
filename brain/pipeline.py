@@ -28,28 +28,30 @@ import re
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, Dict, List, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
 from automation.gateway import gateway
 from brain import router
 from brain.conversation_manager import conversation_manager
 from brain.intent import Intent, analyze, legacy_intent
 from brain.prompts import build_system_prompt, wrap_untrusted
-from brain.task_state import recent_turns, tasks
+from brain.task_state import STEP_MARKS, recent_turns, tasks
 from core.config import settings
 from core.events import bus
 from core.llm import LLMResponse, LLMUnavailable, llm, resolve_model
 from core.logging import logger
 from core.metrics import metrics
 from core.session import sessions
-from tools.base import Tool, ToolCallRecord, ToolContext, ToolResult
+from tools.base import Tool, ToolCallRecord, ToolContext, ToolResult, from_gateway
 from tools.registry import load_builtin_tools, registry
 from tools.selection import select_tools
 
 _NOTES_LIMIT = 200  # max chars of the " [did: …]" suffix on assistant history turns
 _NOTE_ARG_CLIP = 40
 _PROGRESS_CLIP = 60
-_BOOKKEEPING_TOOLS = {"task_plan"}  # not task steps, not in action notes / progress
+_BOOKKEEPING_TOOLS = {"task_plan", "clarify"}  # not task steps, not in action notes / progress
+_STOPPED = "Stopped."
+_STOPPED_BEFORE = "Emergency stop is on, so I won't act. Say “resume automation” to allow actions again."
 _SENTENCE = re.compile(r"(.+?[.!?])(?:\s|$)")
 
 
@@ -58,8 +60,18 @@ def _clip(text: str, n: int) -> str:
     return text if len(text) <= n else text[: n - 1] + "…"
 
 
+def _step_state(record: ToolCallRecord) -> str:
+    """How a tool call ended, as a key of STEP_MARKS: ok | failed | pending | dry_run | cancelled."""
+    status = record.result.status
+    if status == "needs_confirmation":
+        return "pending"
+    if status in ("dry_run", "cancelled"):
+        return status
+    return "ok" if record.result.success and status == "ok" else "failed"
+
+
 def _done_ok(record: ToolCallRecord) -> bool:
-    return record.result.success and record.result.status == "ok"
+    return _step_state(record) == "ok"
 
 
 def _note_arg(args: Dict[str, Any]) -> str:
@@ -72,10 +84,10 @@ def _note_arg(args: Dict[str, Any]) -> str:
 def _action_notes(records: List[ToolCallRecord], limit: int = _NOTES_LIMIT) -> str:
     """`` [did: open_app(whatsapp) ✓, send_message(whatsapp) ✗]`` — one trailing segment, ≤ ``limit`` chars.
 
-    ✓ = the tool actually did it (status ok); ✗ = failed, blocked, dry run or still awaiting confirmation.
+    Marks (STEP_MARKS): ✓ done, ✗ failed / blocked, … awaiting confirmation, (dry run), (cancelled).
     When too long, the oldest items are dropped first (replaced by "…").
     """
-    items = [f"{r.name}({_note_arg(r.arguments)}) {'✓' if _done_ok(r) else '✗'}"
+    items = [f"{r.name}({_note_arg(r.arguments)}) {STEP_MARKS[_step_state(r)]}"
              for r in records if r.name not in _BOOKKEEPING_TOOLS]
     if not items:
         return ""
@@ -128,6 +140,8 @@ class Brain:
         load_builtin_tools()
         self._persisting: set = set()  # post-turn log + index tasks (kept referenced until done)
         self._extracting: set = set()  # post-turn fact-extraction tasks
+        # session → (tool, args, task id or None) of the action waiting for confirmation there
+        self._awaiting: Dict[str, Tuple[str, Dict[str, Any], Optional[str]]] = {}
 
     # ── Public API ──────────────────────────────────────────────────────
     async def handle(self, query: str, session_id: Optional[str] = None, **kwargs: Any) -> TurnResult:
@@ -161,6 +175,7 @@ class Brain:
         conversation_manager.add_user_message(sid, query)
         ctx = ToolContext(session_id=sid, channel=channel, dry_run=dry_run, source=channel)
         note = ""
+        carried: List[ToolCallRecord] = []  # e.g. the confirmation this message cancelled
 
         def finish(response: str, records: Optional[List[ToolCallRecord]] = None, **kw: Any) -> Dict[str, Any]:
             total = (time.perf_counter() - started) * 1000
@@ -171,7 +186,7 @@ class Brain:
             result.metadata.update(session_id=sid, total_latency_ms=round(total, 1), timing_breakdown_ms=timing)
             result.metadata["channel"] = channel
             # History (and the intent step) see what was done; the user-visible response stays clean.
-            remembered = response + _action_notes(records or [])
+            remembered = response + _action_notes(carried + (records or []))
             conversation_manager.add_assistant_message(sid, remembered)
             recent_turns.add(channel, sid, query, remembered)
             bus.publish("turn", {"session_id": sid, "channel": channel, "query": query, "response": response[:2000],
@@ -187,15 +202,26 @@ class Brain:
         # Remote agents (MCP) may never confirm their own actions: the human approves them elsewhere.
         pending = gateway.pending_for(sid) if allow_confirm else None
         if pending is not None:
+            awaiting = self._awaiting.pop(sid, None)
             if router.is_affirmative(query):
                 res = await gateway.confirm(pending.pending_id, sid)
-                yield finish(res.message, route="confirmation", intent="confirm",
+                record = self._confirmation_record(pending, awaiting, from_gateway(res))
+                if self._task_owns(awaiting):
+                    self._record_step(record)
+                    self._close_task(True, [record])
+                yield finish(res.message, records=[record], route="confirmation", intent="confirm",
                              status="ok" if res.success else "error", tools=[{"name": "confirm", "steps": res.steps}])
                 return
             gateway.cancel(pending.pending_id, "user said something else")
+            record = self._confirmation_record(pending, awaiting, ToolResult(
+                False, "Cancelled by the user; nothing was done.", status="cancelled"))
+            if self._task_owns(awaiting):
+                self._record_step(record)
             if router.is_negative(query):
-                yield finish("Okay, cancelled — nothing was done.", route="confirmation", intent="cancel")
+                yield finish("Okay, cancelled — nothing was done.", records=[record], route="confirmation",
+                             intent="cancel")
                 return
+            carried.append(record)
             note = "(I cancelled the action that was waiting for confirmation.)\n\n"
 
         # 2 ── Fast path ──────────────────────────────────────────────────
@@ -210,8 +236,10 @@ class Brain:
             record = await self._run_tool(tool, args, ctx, origin="fast")
             timing["tool_ms"] = round(record.elapsed_ms, 1)
             yield {"type": "tool", "name": tool.name, "result": record.to_dict()}
-            if active is not None and tool.side_effect:
+            linked = active is not None and tool.side_effect
+            if linked:
                 self._record_step(record)
+            self._remember_pending(sid, record, linked)
             if self._fast_path_done(tool, record):
                 yield finish(note + record.result.message, records=[record], route="fast_path", intent=tool.name,
                              status=record.result.status, pending=self._pending_dict(record.result),
@@ -246,8 +274,9 @@ class Brain:
                 yield {"type": "tool", "name": tool.name, "result": record.to_dict()}
                 if intent.kind == "action":
                     self._record_step(record)
+                self._remember_pending(sid, record, intent.kind == "action")
                 if self._fast_path_done(tool, record):
-                    self._close_task(intent, [record])
+                    self._close_task(intent.kind == "action", [record])
                     yield finish(note + record.result.message, records=[record], route="fast_path", intent=tool.name,
                                  status=record.result.status, pending=self._pending_dict(record.result),
                                  tools=[record.to_dict()], metadata={"rule": decision.rule, "request": intent.request})
@@ -259,8 +288,7 @@ class Brain:
                                        model_override, timing, stream_tokens, note, prefilled):
             if event["type"] == "final":
                 records = event.get("records") or []
-                if not event.get("incomplete"):
-                    self._close_task(intent, records)
+                self._close_task(intent.kind == "action", records, event.get("outcome"))
                 yield finish(records=records, **event["kwargs"])
                 return
             yield event
@@ -285,44 +313,82 @@ class Brain:
 
     @staticmethod
     def _begin_task(intent: Intent, ctx: ToolContext) -> None:
-        """A new action starts a task; a continuation with no current task revives the last shelved one."""
+        """A new action starts a task; a continuation resumes the current one (waiting_for_user → active)
+        or revives the last shelved one. Without the intent step (legacy) we can't tell a follow-up from a
+        new request, so an action message while a task is current continues it ("next" must not replace it)."""
         if intent.kind != "action":
             return  # questions / chat never start, replace, shelve or mark the task
-        if not intent.continues_task:
+        current = tasks.current()
+        continues = intent.continues_task or (intent.source == "legacy" and current is not None)
+        if not continues:
             tasks.start(intent.request, ctx.channel)
-        elif tasks.current() is None and tasks.revive_last() is None:
-            tasks.start(intent.request, ctx.channel)  # nothing to continue: track this request as its own task
+        elif current is None:
+            if tasks.revive_last() is None:
+                tasks.start(intent.request, ctx.channel)  # nothing to continue: track this request as its own task
+        elif current.status != "active":
+            tasks.set_status("active")
 
     @staticmethod
     def _record_step(record: ToolCallRecord) -> None:
         if record.name in _BOOKKEEPING_TOOLS:
             return
-        tasks.record_step(record.name, record.arguments, record.result.message, _done_ok(record))
+        state = _step_state(record)
+        tasks.record_step(record.name, record.arguments, record.result.message, state == "ok", state=state)
 
     @staticmethod
-    def _close_task(intent: Intent, records: List[ToolCallRecord]) -> None:
-        """Turn end: done when the last step succeeded and no plan item is left; failed after a failed step."""
-        if intent.kind != "action":
-            return
+    def _close_task(is_action: bool, records: List[ToolCallRecord], outcome: Optional[str] = None) -> None:
+        """Turn end for an action turn's task.
+
+        outcome "waiting" (clarify asked the user) → waiting_for_user; "stopped" (emergency stop) → shelved,
+        so "continue" can bring it back after "resume"; "incomplete" (step budget / no LLM) → unchanged.
+        Otherwise: done when the last step succeeded and no plan item is left; failed after a failed step.
+        """
         current = tasks.current()
-        steps = [r for r in records if r.name not in _BOOKKEEPING_TOOLS]
-        if current is None or not steps:
+        if not is_action or current is None or outcome == "incomplete":
             return
-        last = steps[-1]
-        if _done_ok(last) and not any(p.status in ("todo", "doing") for p in current.plan):
+        if outcome in ("waiting", "stopped"):
+            tasks.set_status("waiting_for_user" if outcome == "waiting" else "shelved")
+            return
+        steps = [r for r in records if r.name not in _BOOKKEEPING_TOOLS]
+        if not steps:
+            return
+        state = _step_state(steps[-1])
+        if state == "ok" and not any(p.status in ("todo", "doing") for p in current.plan):
             tasks.set_status("done")
-        elif not last.result.success:
+        elif state == "failed":
             tasks.set_status("failed")
+
+    def _remember_pending(self, sid: str, record: ToolCallRecord, linked: bool) -> None:
+        """Note which tool queued a confirmation (and for which task) so "yes" / "no" can be booked on it."""
+        if record.result.status == "needs_confirmation":
+            current = tasks.current() if linked else None
+            self._awaiting[sid] = (record.name, dict(record.arguments), current.id if current else None)
+
+    @staticmethod
+    def _task_owns(awaiting: Optional[Tuple[str, Dict[str, Any], Optional[str]]]) -> bool:
+        current = tasks.current()
+        return bool(awaiting and awaiting[2] and current is not None and current.id == awaiting[2])
+
+    @staticmethod
+    def _confirmation_record(pending, awaiting, result: ToolResult) -> ToolCallRecord:
+        if awaiting:
+            name, args = awaiting[0], awaiting[1]
+        else:  # queued before this process saw it (e.g. via the API): name it after the gateway op
+            first = pending.actions[0] if getattr(pending, "actions", None) else None
+            name, args = (first.op, dict(first.args)) if first is not None else ("confirm", {})
+        return ToolCallRecord(name, args, result, 0.0, "confirm")
 
     # ── Agent loop ──────────────────────────────────────────────────────
     async def _agent(self, query, intent: Intent, facts, memories, history, state, ctx, personality, model_override,
                      timing, stream_tokens, note, prefilled=None) -> AsyncIterator[Dict[str, Any]]:
-        """Final events carry ``records`` (every tool run this turn) and ``incomplete`` (step budget ran out)."""
+        """Final events carry ``records`` (every tool run this turn) and ``outcome``:
+        None | "incomplete" (step budget / no LLM) | "waiting" (asked the user) | "stopped" (emergency stop)."""
         is_action = intent.kind == "action"
         base = registry.all() if is_action else registry.read_only()  # questions never act
         recent = " ".join(m.get("content", "")[:200] for m in history[-4:])
-        offered: Dict[str, Tool] = {
-            t.name: t for t in select_tools(intent.request, base, recent, groups=intent.tool_groups or None)}
+        offered: Dict[str, Tool] = {t.name: t for t in select_tools(
+            intent.request, base, recent, groups=intent.tool_groups or None,
+            include=("task_plan",) if is_action else ())}  # the rules tell the model to plan multi-step work
         if not is_action:
             offered.pop("task_plan", None)  # a question must not edit the current task's plan
         multi_step = is_action and not intent.single_step
@@ -358,9 +424,19 @@ class Brain:
         last: Optional[LLMResponse] = None
         llm_ms = 0.0
 
+        def stopped(text: str = _STOPPED) -> Dict[str, Any]:
+            timing["llm_ms"] = round(llm_ms, 1)
+            return {"type": "final", "kwargs": dict(
+                response=note + text, route="agent", intent="automation_control", status="error",
+                tools=[r.to_dict() for r in records], metadata={**self._llm_meta(last, model_label), "stopped": True}),
+                "records": records, "outcome": "stopped"}
+
         max_steps = settings.AGENT_MAX_STEPS_ACTION if is_action else settings.AGENT_MAX_STEPS
         incomplete = False
         for step in range(max_steps):
+            if is_action and gateway.is_stopped:  # emergency stop ends a running task at once
+                yield stopped(_STOPPED if step or records else _STOPPED_BEFORE)
+                return
             tools_now = [tl for tl in offered.values() if not (tainted and tl.side_effect)]
             local_only = settings.PRIVACY_MODE == "local" and sensitive
             t = time.perf_counter()
@@ -377,7 +453,7 @@ class Brain:
                     response=note + "I can't reach a language model right now, so I can't answer that. "
                              "Start Ollama or add an API key to .env. Direct commands like “volume up” or “open chrome” still work.",
                     route="error", intent="conversation", status="error", tools=[r.to_dict() for r in records],
-                    metadata={"error": str(exc)}), "records": records, "incomplete": True}
+                    metadata={"error": str(exc)}), "records": records, "outcome": "incomplete"}
                 return
             llm_ms += (time.perf_counter() - t) * 1000
             assert resp is not None
@@ -409,7 +485,19 @@ class Brain:
                 messages.append({"role": "tool", "tool_call_id": call.id, "content": content or ("ok" if record.result.success else "failed")})
                 tainted = tainted or tool.untrusted_output
                 sensitive = sensitive or tool.sensitive_output
+                self._remember_pending(ctx.session_id, record, is_action)
 
+                if is_action and gateway.is_stopped:
+                    yield stopped()
+                    return
+                if tool.ends_turn and record.result.success:  # clarify: the question is the reply; wait for the user
+                    timing["llm_ms"] = round(llm_ms, 1)
+                    lead = (resp.content + "\n\n") if resp.content else ""
+                    yield {"type": "final", "kwargs": dict(
+                        response=note + lead + record.result.message, route="agent", intent=tool.name, status="ok",
+                        tools=[r.to_dict() for r in records], metadata=self._llm_meta(resp, model_label)),
+                        "records": records, "outcome": "waiting"}
+                    return
                 if record.result.status == "needs_confirmation":
                     timing["llm_ms"] = round(llm_ms, 1)
                     yield {"type": "final", "kwargs": dict(
@@ -441,7 +529,7 @@ class Brain:
         yield {"type": "final", "kwargs": dict(
             response=note + answer, route="agent", intent=records[-1].name if records else "conversation",
             status="ok", tools=[r.to_dict() for r in records], metadata=self._llm_meta(last, model_label)),
-            "records": records, "incomplete": incomplete}
+            "records": records, "outcome": "incomplete" if incomplete else None}
 
     async def _llm_events(self, messages, tools: List[Tool], model, local_only: bool, stream_tokens: bool):
         schemas = [t.schema() for t in tools] or None

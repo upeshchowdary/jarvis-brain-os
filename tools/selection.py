@@ -91,16 +91,19 @@ GROUP_EXTRAS = ("task_plan", "chat_history")
 
 
 def select_tools(query: str, available: Iterable[Tool], context: str = "",
-                 groups: Optional[List[str]] = None) -> List[Tool]:
+                 groups: Optional[List[str]] = None, include: Sequence[str] = ()) -> List[Tool]:
     """CORE + matching groups. ``groups`` (from the intent step) replaces keyword matching:
-    CORE + those groups' tools + :data:`GROUP_EXTRAS`. ``None`` → keyword matching on query + context."""
+    CORE + :data:`GROUP_EXTRAS` + those groups' tools. ``None`` → keyword matching on query + context.
+    ``include``: names that must be offered (if available); like CORE and the extras they come first, so
+    the MAX_TOOLS cut never drops them."""
     pool = {t.name: t for t in available}
     text = f" {query.lower()} {context.lower()} "
     wanted: List[str] = [n for n in CORE if n in pool]
+    wanted += [n for n in include if n in pool]
     if groups is not None:
+        wanted += [n for n in GROUP_EXTRAS if n in pool]
         for g in groups:
             wanted += [n for n in GROUPS.get(g, {}).get("tools", []) if n in pool]
-        wanted += [n for n in GROUP_EXTRAS if n in pool]
     else:
         for group in GROUPS.values():
             if any(k in text for k in group["keywords"]):

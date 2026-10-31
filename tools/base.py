@@ -55,6 +55,7 @@ class Tool:
     sensitive_output: bool = False
     # The result message is a complete answer; no LLM synthesis step is needed.
     final: bool = True
+    ends_turn: bool = False  # e.g. clarify: its result is the reply and the turn ends (always, not only single-step)
 
     async def run(self, ctx: ToolContext, **kwargs: Any) -> ToolResult:  # pragma: no cover - interface
         raise NotImplementedError

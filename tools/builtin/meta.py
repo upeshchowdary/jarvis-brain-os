@@ -13,7 +13,10 @@ from tools.registry import register
 @register
 class Clarify(Tool):
     name = "clarify"
-    description = "Ask the user ONE short clarifying question when you are not sure whether they want an action performed or what exactly to do."
+    description = ("Last resort: ask the user ONE short question, only when a required value (e.g. the message text) "
+                   "cannot be inferred from the request, the conversation or the current task. Never ask for permission. "
+                   "Ends your turn; the user's answer comes as the next message.")
+    ends_turn = True
     parameters = obj({"question": {"type": "string"}}, ["question"])
 
     async def run(self, ctx: ToolContext, question: str = "", **_: Any) -> ToolResult:

@@ -20,6 +20,10 @@ from core.config import settings
 
 _PLAN_STATUSES = ("todo", "doing", "done", "failed")
 _MARKS = {"done": "✓", "failed": "✗"}
+# How a step (or an action note) ended. "pending" = awaiting the user's confirmation.
+STEP_MARKS = {"ok": "✓", "failed": "✗", "pending": "…", "dry_run": "(dry run)", "cancelled": "(cancelled)"}
+# Statuses that keep a task current (the others end it: done / failed / shelved).
+_CURRENT_STATUSES = ("active", "waiting_for_user")
 
 
 def _clip(text: str, n: int) -> str:
@@ -40,13 +44,18 @@ class TaskStep:
     result_summary: str
     ok: bool
     at: float
+    state: str = ""  # one of STEP_MARKS; "" = derived from ok (older rows)
+
+    @property
+    def mark(self) -> str:
+        return STEP_MARKS.get(self.state) or ("✓" if self.ok else "✗")
 
 
 @dataclass
 class Task:
     id: str
     goal: str
-    status: str  # active | shelved | done | failed
+    status: str  # active | waiting_for_user | shelved | done | failed
     channel: str
     plan: List[PlanItem] = field(default_factory=list)
     steps: List[TaskStep] = field(default_factory=list)
@@ -82,7 +91,7 @@ class Task:
         if self.steps and max_steps > 0:
             lines.append("Recent steps:")
             for s in self.steps[-max_steps:]:
-                lines.append(f" {'✓' if s.ok else '✗'} {s.tool}({s.args_summary}): {s.result_summary}")
+                lines.append(f" {s.mark} {s.tool}({s.args_summary}): {s.result_summary}")
         return "\n".join(lines)
 
 
@@ -120,13 +129,14 @@ class TaskTracker:
             self._schedule_save(t)
             return t
 
-    def record_step(self, tool: str, args: Dict[str, Any], result_message: str, ok: bool) -> None:
+    def record_step(self, tool: str, args: Dict[str, Any], result_message: str, ok: bool, state: str = "") -> None:
         args_summary = _clip(", ".join(f"{k}={v}" for k, v in (args or {}).items()), 60)
         with self._lock:
             t = self._current
             if not t:
                 return
-            t.steps.append(TaskStep(tool, args_summary, _clip(result_message, 100), bool(ok), time.time()))
+            t.steps.append(TaskStep(tool, args_summary, _clip(result_message, 100), bool(ok), time.time(),
+                                    state if state in STEP_MARKS else ""))
             del t.steps[:-50]
             self._touch(t)
 
@@ -159,7 +169,7 @@ class TaskTracker:
             if not t:
                 return
             t.status = status
-            if status != "active":  # done / failed / shelved: no longer the current task
+            if status not in _CURRENT_STATUSES:  # done / failed / shelved: no longer the current task
                 self._current, self._last = None, t
             self._touch(t)
 
