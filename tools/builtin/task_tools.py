@@ -32,16 +32,18 @@ class TaskPlan(Tool):
         task = tracker.current()
         if not task:
             return ToolResult.error("There is no active task to plan.")
+        if ctx.task_id is not None and task.id != ctx.task_id:  # another turn started a new task meanwhile
+            return ToolResult.error("The task this request belonged to is no longer current; plan not changed.")
         if action in ("set", "revise"):
             if not isinstance(subgoals, list) or not subgoals or not all(isinstance(x, str) and x.strip() for x in subgoals):
                 return ToolResult.error("subgoals must be a non-empty list of non-empty strings.")
-            tracker.set_plan(subgoals, keep_status=(action == "revise"))
+            tracker.set_plan(subgoals, keep_status=(action == "revise"), task_id=task.id)
         elif action in ("done", "failed"):
             if isinstance(index, bool) or not isinstance(index, int):
                 return ToolResult.error("index must be an integer plan position (0-based).")
             if not 0 <= index < len(task.plan):
                 return ToolResult.error(f"index {index} is out of range; the plan has {len(task.plan)} item(s).")
-            tracker.mark_plan(index, action)
+            tracker.mark_plan(index, action, task_id=task.id)
         else:
             return ToolResult.error(f"Unknown action '{action}'.")
-        return ToolResult.ok(tracker.current().summary(max_steps=0))
+        return ToolResult.ok(task.summary(max_steps=0))

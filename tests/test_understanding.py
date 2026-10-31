@@ -615,3 +615,45 @@ async def test_timing_breakdown_has_intent_and_memory(monkeypatch, tools):
     for key in ("intent_ms", "memory_ms", "llm_ms"):
         assert isinstance(timing[key], (int, float)), key
     assert "turn.intent" in pipeline.metrics.snapshot()["latency"]
+
+
+async def test_interleaved_turns_do_not_corrupt_each_others_task(monkeypatch, tools, fresh_state):
+    """I3: turn A's later steps / close must not land on task B that a concurrent turn started meanwhile."""
+    b_started, a_done = asyncio.Event(), asyncio.Event()
+
+    async def fake_analyze(query, turns, task):
+        if "alpha" in query:
+            return intent("Alpha: open WhatsApp and send A 'hi'", groups=["messaging", "system"])
+        return intent("Beta: open the site", groups=["web"])
+
+    class GatedLLM(FakeLLM):
+        async def chat(self, messages, *, model=None, tools=None, local_only=False, **kw):
+            self.calls.append({"messages": messages, "tools": [], "model": model, "local_only": local_only, "kwargs": kw})
+            user = [m for m in messages if m["role"] == "user"][-1]["content"]
+            done = sum(1 for m in messages if m["role"] == "tool")
+            if user.startswith("Alpha"):
+                if done == 0:
+                    return call("open_app", name="whatsapp")
+                if done == 1:
+                    await b_started.wait()  # turn B starts its own task now
+                    return call("task_plan", action="set", subgoals=["Open WhatsApp", "Send"])
+                if done == 2:
+                    return call("send_message", app="whatsapp", contact="A", text="hi")
+                return text("A done.")
+            b_started.set()
+            await a_done.wait()  # B is still running while A finishes
+            return text("B is thinking.")
+
+    monkeypatch.setattr(pipeline, "analyze", fake_analyze)
+    install(monkeypatch, GatedLLM([]))
+
+    async def run_a():
+        try:
+            return await brain.handle("alpha go", "u-a")
+        finally:
+            a_done.set()
+
+    await asyncio.gather(run_a(), brain.handle("beta go", "u-b"))
+    current = fresh_state.current()
+    assert current is not None and current.goal.startswith("Beta")
+    assert current.steps == [] and current.plan == [] and current.status == "active"

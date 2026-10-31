@@ -117,6 +117,8 @@ class TaskTracker:
             return t
 
     # -- mutations ------------------------------------------------------
+    # Mutations take an optional ``task_id`` guard: when given and it is not the current task (another turn
+    # started a new one meanwhile), the call is a no-op, so concurrent turns never write into each other's task.
     def start(self, goal: str, channel: str) -> Task:
         with self._lock:
             if self._current:
@@ -129,10 +131,11 @@ class TaskTracker:
             self._schedule_save(t)
             return t
 
-    def record_step(self, tool: str, args: Dict[str, Any], result_message: str, ok: bool, state: str = "") -> None:
+    def record_step(self, tool: str, args: Dict[str, Any], result_message: str, ok: bool, state: str = "",
+                    task_id: Optional[str] = None) -> None:
         args_summary = _clip(", ".join(f"{k}={v}" for k, v in (args or {}).items()), 60)
         with self._lock:
-            t = self._current
+            t = self._target(task_id)
             if not t:
                 return
             t.steps.append(TaskStep(tool, args_summary, _clip(result_message, 100), bool(ok), time.time(),
@@ -140,32 +143,32 @@ class TaskTracker:
             del t.steps[:-50]
             self._touch(t)
 
-    def set_plan(self, subgoals: List[str], keep_status: bool = False) -> None:
+    def set_plan(self, subgoals: List[str], keep_status: bool = False, task_id: Optional[str] = None) -> None:
         """Replace the plan. With keep_status, items whose text matches an existing one keep their status."""
         def norm(x: str) -> str:
             return " ".join(x.lower().split())
 
         with self._lock:
-            t = self._current
+            t = self._target(task_id)
             if not t:
                 return
             old = {norm(p.subgoal): p.status for p in t.plan} if keep_status else {}
             t.plan = [PlanItem(s.strip(), old.get(norm(s), "todo")) for s in subgoals if s and s.strip()]
             self._touch(t)
 
-    def mark_plan(self, index: int, status: str) -> None:
+    def mark_plan(self, index: int, status: str, task_id: Optional[str] = None) -> None:
         if status not in _PLAN_STATUSES:
             return
         with self._lock:
-            t = self._current
+            t = self._target(task_id)
             if not t or not 0 <= index < len(t.plan):
                 return
             t.plan[index].status = status
             self._touch(t)
 
-    def set_status(self, status: str) -> None:
+    def set_status(self, status: str, task_id: Optional[str] = None) -> None:
         with self._lock:
-            t = self._current
+            t = self._target(task_id)
             if not t:
                 return
             t.status = status
@@ -215,6 +218,10 @@ class TaskTracker:
                 break
 
     # -- internals (call with the lock held) ----------------------------
+    def _target(self, task_id: Optional[str]) -> Optional[Task]:
+        t = self._current
+        return t if t is not None and (task_id is None or t.id == task_id) else None
+
     def _shelve_locked(self, t: Task) -> None:
         t.status = "shelved"
         self._last = t

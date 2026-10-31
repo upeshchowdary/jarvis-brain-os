@@ -160,3 +160,30 @@ async def test_rapid_mutations_persist_latest():
     t2 = TaskTracker()
     await t2.load()
     assert len(t2.current().steps) == 10
+
+
+def test_task_id_guard_ignores_mutations_for_another_task():
+    """I3: a turn only mutates the task it began; a stale id (another turn started a new task) is a no-op."""
+    t = TaskTracker()
+    a = t.start("A", "voice")
+    b = t.start("B", "text")
+    t.record_step("open_app", {"name": "x"}, "ok", True, task_id=a.id)
+    t.set_plan(["one", "two"], task_id=a.id)
+    t.mark_plan(0, "done", task_id=a.id)
+    t.set_status("done", task_id=a.id)
+    assert t.current() is b and b.steps == [] and b.plan == [] and b.status == "active"
+    t.record_step("open_app", {"name": "x"}, "ok", True, task_id=b.id)
+    t.set_plan(["one"], task_id=b.id)
+    t.mark_plan(0, "done", task_id=b.id)
+    assert len(b.steps) == 1 and b.plan[0].status == "done"
+    t.set_status("done", task_id=b.id)
+    assert t.current() is None and b.status == "done"
+
+
+async def test_task_plan_tool_respects_the_turns_task(monkeypatch):
+    t = TaskTracker()
+    monkeypatch.setattr(task_state, "tasks", t)
+    a = t.start("A", "voice")
+    t.start("B", "text")
+    res = await registry.get("task_plan").run(ToolContext(task_id=a.id), action="set", subgoals=["x", "y"])
+    assert not res.success and t.current().plan == []
