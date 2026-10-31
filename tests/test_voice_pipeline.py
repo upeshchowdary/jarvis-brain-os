@@ -158,7 +158,7 @@ async def test_progress_events_are_spoken(monkeypatch):
                                 {"type": "done", "result": _Result("All done, sir.")}])
     await voice_manager.respond("message mom")
     assert spoken[:2] == ["Opening WhatsApp.", "Message sent."]
-    assert spoken[2] == "All done, sir."
+    assert spoken[2] == "All done, sir." and len(spoken) == 3
 
 
 async def test_progress_duplicate_of_final_response_is_heard_once(monkeypatch):
@@ -169,3 +169,31 @@ async def test_progress_duplicate_of_final_response_is_heard_once(monkeypatch):
                                 {"type": "done", "result": _Result("Message sent.")}])
     await voice_manager.respond("message mom")
     assert spoken == ["Message sent."]
+
+
+async def _run(monkeypatch, events):
+    spoken = []
+    monkeypatch.setattr(vm_module, "tts_engine", MagicMock(speak=lambda t, **k: spoken.append(t), stop=lambda: None))
+    _patch_stream(monkeypatch, events)
+    await voice_manager.respond("do it")
+    return spoken
+
+
+async def test_streamed_sentence_then_matching_progress_heard_once(monkeypatch):
+    spoken = await _run(monkeypatch, [{"type": "text", "delta": "Opening WhatsApp. "},
+                                      {"type": "progress", "text": "Opening WhatsApp."},
+                                      {"type": "done", "result": _Result("Opening WhatsApp.")}])
+    assert spoken == ["Opening WhatsApp."]
+
+
+async def test_final_response_repeats_only_new_sentences(monkeypatch):
+    spoken = await _run(monkeypatch, [{"type": "progress", "text": "Message sent."},
+                                      {"type": "done", "result": _Result("Message sent. Anything else?")}])
+    assert spoken == ["Message sent.", "Anything else?"]
+
+
+async def test_progress_longer_than_six_words_is_skipped(monkeypatch):
+    spoken = await _run(monkeypatch, [{"type": "progress", "text": "I have now opened the chat with your mother."},
+                                      {"type": "progress", "text": "Chat is open now."},
+                                      {"type": "done", "result": _Result("Finished.")}])
+    assert spoken == ["Chat is open now.", "Finished."]

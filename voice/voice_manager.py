@@ -29,6 +29,7 @@ from voice.vad import vad_detector
 from voice.voice_config import voice_config
 from voice.wake_word import acoustic_wake_word, wake_word_detector
 
+_PROGRESS_MAX_WORDS = 6  # spoken progress lines stay short (spec 4.5)
 _SENTENCE_END = re.compile(r"([.!?])(\s+|$)")
 
 
@@ -153,10 +154,19 @@ class VoiceManager:
         def norm(t: str) -> str:
             return re.sub(r"\W+", " ", t).strip().lower()
 
+        def speak_unheard(text: str, **kw) -> None:
+            """Speak a final text sentence by sentence, skipping sentences already heard this turn."""
+            sentences, rest = split_sentences(text)
+            for sentence in sentences + ([rest] if rest.strip() else []):
+                line = speakable(sentence)
+                if line and norm(line) not in heard:
+                    heard.add(norm(line))
+                    tts_engine.speak(line, **kw)
+
         async for event in brain.stream(command, self.session_id, channel="voice", stream_tokens=voice_config.STREAM_TTS):
             if event["type"] == "progress":
                 line = speakable(event.get("text", ""))
-                if line and norm(line) not in heard:
+                if line and len(line.split()) <= _PROGRESS_MAX_WORDS and norm(line) not in heard:
                     heard.add(norm(line))
                     tts_engine.speak(line, concise=False)  # queued, does not block the stream
             elif event["type"] == "text":
@@ -165,6 +175,7 @@ class VoiceManager:
                 for sentence in sentences:
                     line = speakable(sentence)
                     if norm(line) not in heard:
+                        heard.add(norm(line))
                         tts_engine.speak(line, concise=False)
                     spoken_any = True
             elif event["type"] == "tool":
@@ -177,12 +188,13 @@ class VoiceManager:
         if result["status"] == "needs_confirmation":
             tts_engine.speak(confirmation_speech(result), priority=True, concise=False)
         elif buffer.strip() and spoken_any:
-            if norm(speakable(buffer)) not in heard:
-                tts_engine.speak(speakable(buffer), concise=False)
+            speak_unheard(buffer, concise=False)
         elif not spoken_any:
             final = speakable(result["response"])
-            if not (final and norm(final) in heard):  # already heard as a progress line
-                tts_engine.speak(final or "Done.")
+            if not final:
+                tts_engine.speak("Done.")
+            else:
+                speak_unheard(final)
         return {"success": True, "command": command, "intent": result["intent"]["intent"],
                 "response": result["response"], "status": result["status"], "metadata": result["metadata"]}
 
