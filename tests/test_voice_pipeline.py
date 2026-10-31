@@ -197,3 +197,119 @@ async def test_progress_longer_than_six_words_is_skipped(monkeypatch):
                                       {"type": "progress", "text": "Chat is open now."},
                                       {"type": "done", "result": _Result("Finished.")}])
     assert spoken == ["Chat is open now.", "Finished."]
+
+
+# ── I4: a running spoken command can be stopped by voice; M2: no replay of audio heard during a turn ──
+
+def _scripted_loop(monkeypatch, utterances):
+    """Voice loop with a live fake mic: each scripted utterance is one completed VAD segment."""
+    from unittest.mock import AsyncMock
+
+    from voice.audio_capture import AudioCaptureManager
+
+    mic = AudioCaptureManager()
+    monkeypatch.setattr(vm_module, "audio_capture", mic)
+    monkeypatch.setattr(vm_module, "tts_engine", MagicMock(is_speaking=False))
+    monkeypatch.setattr(vm_module.voice_config, "WAKE_WORD_ENABLED", False)
+    monkeypatch.setattr(voice_manager, "_use_acoustic_wake", lambda: False)
+    segments = list(utterances)
+    vad = MagicMock()
+
+    def process_frame(raw_frame, energy_threshold, pre_buffer):
+        if raw_frame == b"SEG" and segments:
+            return False, True, segments.pop(0).encode()
+        return False, False, None
+
+    vad.process_frame.side_effect = process_frame
+    monkeypatch.setattr(vm_module, "vad_detector", vad)
+    stt = MagicMock()
+    stt.transcribe = AsyncMock(side_effect=lambda audio: {"success": True, "text": audio.decode()})
+    monkeypatch.setattr(vm_module, "stt_engine", stt)
+    return mic
+
+
+async def test_voice_stop_during_a_running_command_triggers_emergency_stop(monkeypatch):
+    import asyncio
+
+    import voice.barge_in as barge_mod
+
+    mic = _scripted_loop(monkeypatch, ["open notepad and write a long poem", "stop"])
+    monkeypatch.setattr(barge_mod, "tts_engine", MagicMock())
+    running, release, commands, seen = asyncio.Event(), asyncio.Event(), [], {}
+
+    async def slow_respond(command):
+        commands.append(command)
+        running.set()
+        await release.wait()  # a multi-step task still working
+        return {"success": True}
+
+    monkeypatch.setattr(voice_manager, "respond", slow_respond)
+    monkeypatch.setattr(voice_manager, "_is_running", True)
+    gateway.resume()
+
+    async def driver():
+        mic._push_frame(b"SEG")
+        await asyncio.wait_for(running.wait(), 2)
+        mic._push_frame(b"SEG")  # "stop" while the command runs
+        for _ in range(100):
+            if gateway.is_stopped:
+                break
+            await asyncio.sleep(0.01)
+        seen["stopped_while_running"] = gateway.is_stopped
+        release.set()
+        await asyncio.sleep(0.05)
+        voice_manager._is_running = False
+
+    try:
+        await asyncio.wait_for(asyncio.gather(voice_manager._voice_loop(), driver()), 5)
+        assert seen["stopped_while_running"], "the spoken stop did not reach the emergency stop while the task ran"
+        assert commands == ["open notepad and write a long poem"]  # "stop" never started a second command
+    finally:
+        gateway.resume()
+        voice_manager._command_task = None
+
+
+async def test_other_speech_during_a_running_command_is_ignored(monkeypatch):
+    import asyncio
+
+    mic = _scripted_loop(monkeypatch, ["open notepad and write a long poem", "what a nice day"])
+    running, release, commands = asyncio.Event(), asyncio.Event(), []
+
+    async def slow_respond(command):
+        commands.append(command)
+        running.set()
+        await release.wait()
+        return {"success": True}
+
+    monkeypatch.setattr(voice_manager, "respond", slow_respond)
+    monkeypatch.setattr(voice_manager, "_is_running", True)
+    gateway.resume()
+
+    async def driver():
+        mic._push_frame(b"SEG")
+        await asyncio.wait_for(running.wait(), 2)
+        mic._push_frame(b"SEG")
+        await asyncio.sleep(0.2)
+        release.set()
+        await asyncio.sleep(0.05)
+        voice_manager._is_running = False
+
+    try:
+        await asyncio.wait_for(asyncio.gather(voice_manager._voice_loop(), driver()), 5)
+        assert commands == ["open notepad and write a long poem"] and not gateway.is_stopped
+    finally:
+        gateway.resume()
+        voice_manager._command_task = None
+
+
+async def test_audio_heard_during_a_command_is_not_replayed(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    mic = MagicMock()
+    vad = MagicMock()
+    monkeypatch.setattr(vm_module, "audio_capture", mic)
+    monkeypatch.setattr(vm_module, "vad_detector", vad)
+    monkeypatch.setattr(voice_manager, "process_spoken_command", AsyncMock(return_value={"success": True}))
+    await voice_manager._run_command(b"audio", False)
+    mic.skip_to_live.assert_called_once_with()
+    vad.reset.assert_called_once_with()
