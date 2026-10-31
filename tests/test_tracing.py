@@ -24,36 +24,39 @@ def _intent(kind="action"):
 
 
 def _fake_langfuse(monkeypatch):
-    """A stand-in for the Langfuse v3 client: records every span/generation it is asked to make."""
+    """A stand-in mirroring the Langfuse 3.15 signatures (keyword-only, no start_span/start_generation on the
+    client path): calling anything the real SDK lacks, or with a wrong keyword, raises TypeError/AttributeError."""
     log = []
 
     class Obs:
-        def __init__(self, kind, name, kw, parent=None):
+        __slots__ = ("kind", "name", "kw", "updates", "ended")
+
+        def __init__(self, kind, name, kw):
             self.kind, self.name, self.kw, self.updates, self.ended = kind, name, kw, [], False
             log.append(self)
 
-        def start_span(self, name, **kw):
-            return Obs("span", name, kw)
+        def start_observation(self, *, name, as_type, input=None, output=None, metadata=None, model=None,
+                              usage_details=None, cost_details=None, model_parameters=None, level=None,
+                              status_message=None, version=None, completion_start_time=None, prompt=None):
+            return Obs(as_type, name, dict(input=input, metadata=metadata, model=model, usage_details=usage_details))
 
-        def start_generation(self, name, **kw):
-            return Obs("generation", name, kw)
-
-        def update(self, **kw):
-            self.updates.append(kw)
+        def update(self, *, name=None, input=None, output=None, metadata=None, model=None, usage_details=None,
+                   level=None, status_message=None, **kwargs):
+            self.updates.append(dict(output=output, metadata=metadata, usage_details=usage_details))
             return self
 
-        def end(self, **kw):
+        def end(self, *, end_time=None):
             self.ended = True
 
     class Langfuse:
         instances = []
 
-        def __init__(self, **kw):
-            self.kw = kw
+        def __init__(self, *, public_key=None, secret_key=None, base_url=None, host=None, timeout=None, **kw):
+            self.kw = dict(public_key=public_key, secret_key=secret_key, base_url=base_url)
             Langfuse.instances.append(self)
 
-        def start_span(self, name, **kw):
-            return Obs("span", name, kw)
+        def start_observation(self, *, name, as_type="span", input=None, output=None, metadata=None, **kw):
+            return Obs(as_type, name, dict(input=input, metadata=metadata))
 
     mod = types.ModuleType("langfuse")
     mod.Langfuse = Langfuse
@@ -80,16 +83,20 @@ def open_app(monkeypatch):
 async def test_tracing_noop_when_disabled(monkeypatch, open_app):
     monkeypatch.setattr(settings, "LANGFUSE_ENABLED", False)
     real_import = builtins.__import__
+    attempts = []
 
     def guarded(name, *a, **kw):
         if name.split(".")[0] == "langfuse":
-            raise AssertionError("langfuse must not be imported when tracing is off")
+            attempts.append(name)
+            raise ImportError("blocked")
         return real_import(name, *a, **kw)
 
     monkeypatch.setattr(builtins, "__import__", guarded)
     install(monkeypatch, FakeLLM([call("open_app", name="whatsapp")]))
     res = await brain.handle("whatsapp kholo", "u-trace-off")
     assert res.status == "ok"
+    assert attempts == [] and "langfuse" not in sys.modules
+    assert tracing._client is None and not tracing._client_failed
 
 
 async def test_tracing_records_when_enabled(monkeypatch, open_app):
@@ -102,7 +109,7 @@ async def test_tracing_records_when_enabled(monkeypatch, open_app):
     res = await brain.handle("whatsapp kholo", "u-trace-on")
     assert res.status == "ok"
     assert len(Langfuse.instances) == 1
-    assert Langfuse.instances[0].kw["host"] == "http://langfuse.invalid"
+    assert Langfuse.instances[0].kw["base_url"] == "http://langfuse.invalid"
     turns = [o for o in log if o.name == "turn"]
     assert len(turns) == 1 and turns[0].ended
     assert [o.name for o in log if o.name == "intent"] == ["intent"]
