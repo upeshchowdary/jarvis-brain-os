@@ -152,3 +152,51 @@ def test_keyboard_group_selects_tools():
 
     names = {t.name for t in select_tools("scroll down", registry.all())}
     assert {"press_keys", "type_text", "focus_window"} <= names
+
+
+# ── fix round 1 ──────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("utterance,text", [
+    ("type Hello.", "Hello."),
+    ("type see you tomorrow thanks", "see you tomorrow thanks"),
+    ("type please call me", "please call me"),
+    ("type Hello, World!", "Hello, World!"),
+    ("Jarvis, type Mixed CASE text", "Mixed CASE text"),
+    ("please type Thanks please", "Thanks please"),
+])
+def test_type_text_is_raw(utterance, text):
+    d = fast_route(utterance)
+    assert d.tool == "type_text" and d.args == {"text": text}
+
+
+@pytest.mark.parametrize("utterance", [
+    "type of file is this?", "type of file is this", "what type is this?", "type 2 diabetes symptoms",
+    "type 1 diabetes", "type something?", "type",
+])
+def test_type_is_not_a_catch_all(utterance):
+    d = fast_route(utterance)
+    assert d is None or d.tool != "type_text"
+
+
+def test_last_tab_vs_previous_tab():
+    assert fast_route("last tab").args == {"keys": "ctrl+9"}
+    assert fast_route("previous tab").args == {"keys": "ctrl+shift+tab"}
+
+
+@pytest.mark.parametrize("utterance,tool", [
+    ("close chrome", "close_app"),
+    ("open chrome", "open_app"),
+    ("go to github.com", "open_website"),
+    ("next track", "media_control"),
+    ("stop", "automation_control"),
+])
+def test_existing_rules_still_win(utterance, tool):
+    assert fast_route(utterance).tool == tool
+
+
+def test_new_tool_flags():
+    from tools.registry import registry
+
+    for name in ("press_keys", "type_text", "focus_window"):
+        t = registry.get(name)
+        assert t.side_effect is True and t.final is True

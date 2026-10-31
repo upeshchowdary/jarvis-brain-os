@@ -242,7 +242,8 @@ for _pat, _keys_, _nm in (
     (r"(?:go|jump|scroll) to (?:the )?top(?: of the page)?", "ctrl+home", "go_top"),
     (r"(?:go|jump|scroll) to (?:the )?bottom(?: of the page)?", "ctrl+end", "go_bottom"),
     (r"next tab|tab right", "ctrl+tab", "next_tab"),
-    (r"(?:previous|prev|last) tab|tab left", "ctrl+shift+tab", "prev_tab"),
+    (r"(?:previous|prev) tab|tab left", "ctrl+shift+tab", "prev_tab"),
+    (r"(?:last|final) tab|go to (?:the )?last tab", "ctrl+9", "last_tab"),
     (r"new tab|open (?:a )?new tab", "ctrl+t", "new_tab"),
     (r"close (?:this |the |current )?tab", "ctrl+w", "close_tab"),
     (r"reopen (?:the )?(?:last )?(?:closed )?tab|restore (?:the )?(?:closed|last) tab", "ctrl+shift+t", "reopen_tab"),
@@ -280,7 +281,9 @@ def _press_key(m: re.Match) -> Optional[RouteDecision]:
 
 @rule(r"type (?P<t>.+)", "type_text")
 def _type_text(m: re.Match) -> Optional[RouteDecision]:
-    text = m.group("t")  # original casing preserved (rules only match case-insensitively)
+    text = m.group("t")  # fast_route replaces this with the raw (un-normalised) text
+    if re.match(r"(?:of\b|\d)", text.strip(), re.I):  # "type of file...", "type 2 diabetes" are not dictation
+        return None
     return RouteDecision("type_text", {"text": text}) if text.strip() else None
 
 
@@ -483,6 +486,22 @@ CONTEXT_WORDS = {"next", "previous", "back", "again", "that", "it", "do it", "co
 SAFETY_RULES = ("stop", "resume", "dry_run_on", "dry_run_off", "automation_status")
 
 
+def _raw_type_text(text: str) -> str:
+    """Text after the leading "type" verb, from the raw utterance: casing, punctuation and polite words kept.
+    Only a wake word and polite prefix before the verb are removed. "" when it ends with "?" (a question)."""
+    t = _WAKE.sub("", re.sub(r"\s+", " ", text.strip()))
+    for _ in range(4):
+        new = _POLITE_PREFIX.sub("", t)
+        if new == t:
+            break
+        t = new
+    m = re.match(r"type\s+(.+)$", t.strip(), re.I | re.S)
+    if not m:
+        return ""
+    raw = m.group(1).strip()
+    return "" if raw.endswith("?") else raw
+
+
 def fast_route(text: str, task_active: bool = False) -> Optional[RouteDecision]:
     """Match the whole utterance against the command grammar. None → use the LLM.
 
@@ -502,5 +521,14 @@ def fast_route(text: str, task_active: bool = False) -> Optional[RouteDecision]:
             decision = fn(m)
             if decision is not None:
                 decision.rule = name
+                if name == "type_text":
+                    raw = _raw_type_text(text)
+                    if not raw:
+                        return None  # question-like ("...?") or nothing to type: let the intent step decide
+                    decision.args = {"text": raw}
                 return decision
+    if not t or t.lower() == "type" or t.lower().startswith("type "):
+        raw = _raw_type_text(text)  # normalisation can eat polite words that are part of the text ("type thanks")
+        if raw and len(raw) <= 160 and not re.match(r"(?:of\b|\d)", raw, re.I):
+            return RouteDecision("type_text", {"text": raw}, rule="type_text")
     return None
