@@ -443,3 +443,47 @@ async def test_hanging_primary_still_lets_the_fallback_answer(monkeypatch):
     assert elapsed < intent_mod.TIMEOUT_SECONDS + 0.5
     assert fake.calls[1]["timeout"] >= intent_mod.FALLBACK_RESERVE_SECONDS
     assert intent_mod._COOLDOWN.get(INTENT_MODEL)  # the timeout started a cooldown
+
+
+# ── I2c: token budget (Groq free tier is 8k tokens/minute) ──────────────
+
+def _tokens(chars: int) -> int:
+    return round(chars / 4)  # rough estimate; no tokenizer for gpt-oss is installed
+
+
+_SCHEMA_CHARS = len(json.dumps(intent_mod.RESPONSE_FORMAT, separators=(",", ":")))
+
+
+def test_static_prompt_is_small():
+    static = len(intent_mod.SYSTEM_PROMPT) + _SCHEMA_CHARS
+    assert _tokens(static) <= 1150  # system prompt + JSON schema (was ~1.8k)
+
+
+def test_typical_call_stays_trimmed():
+    now = time.time()
+    turns = [Turn("voice", "s1", "open whatsapp and message nithesh saying ee em chesadu bro",
+                  "Opened WhatsApp. Shall I send the message to Nithesh now? [did: open_app(whatsapp) ✓]", now - 90 + i)
+             for i in range(settings.INTENT_HISTORY_TURNS)]
+    messages = intent_mod.build_messages("next do", turns, whatsapp_task())
+    total = sum(len(m["content"]) for m in messages) + _SCHEMA_CHARS
+    assert _tokens(total) <= 1400  # 4 turns + a task (was ~2.2k with 8 turns and the long prompt)
+
+
+def test_history_defaults_and_clips():
+    from core.config import Settings
+
+    assert Settings.model_fields["INTENT_HISTORY_TURNS"].default == 4
+    notes = "[did: open_app(whatsapp) ✓]"
+    turn = Turn("voice", "s1", "u" * 500, "a" * 500 + " " + notes, time.time())
+    lines = intent_mod.render_context("m", [turn], None).splitlines()
+    user = next(ln for ln in lines if "User:" in ln)
+    jarvis = next(ln for ln in lines if "JARVIS:" in ln)
+    assert len(user.split("User: ", 1)[1]) <= 200
+    assert jarvis.endswith(notes) and len(jarvis.split("JARVIS: ", 1)[1]) <= 200 + 1 + len(notes)
+
+
+def test_task_summary_clips_plan_subgoals():
+    task = whatsapp_task()
+    task.plan.append(PlanItem("x" * 300, "todo"))
+    line = next(ln for ln in task.summary().splitlines() if "xxx" in ln)
+    assert len(line) <= 80 + 8

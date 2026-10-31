@@ -24,6 +24,7 @@ _MARKS = {"done": "✓", "failed": "✗"}
 STEP_MARKS = {"ok": "✓", "failed": "✗", "pending": "…", "dry_run": "(dry run)", "cancelled": "(cancelled)"}
 # Statuses that keep a task current (the others end it: done / failed / shelved).
 _CURRENT_STATUSES = ("active", "waiting_for_user")
+_SUBGOAL_CLIP = 80  # plan items in summary() (it goes into every intent / agent prompt)
 
 
 def _clip(text: str, n: int) -> str:
@@ -87,7 +88,7 @@ class Task:
             lines.append("Plan:")
             for i, p in enumerate(self.plan):
                 mark = _MARKS.get(p.status) or ("→" if i == nxt else " ")
-                lines.append(f" {mark} {i + 1}. {p.subgoal}")
+                lines.append(f" {mark} {i + 1}. {_clip(p.subgoal, _SUBGOAL_CLIP)}")
         if self.steps and max_steps > 0:
             lines.append("Recent steps:")
             for s in self.steps[-max_steps:]:

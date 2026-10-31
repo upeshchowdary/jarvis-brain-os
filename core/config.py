@@ -85,7 +85,7 @@ class Settings(BaseSettings):
     LANGFUSE_SECRET_KEY: str = ""
     LANGFUSE_HOST: str = ""
     TASK_IDLE_SECONDS: int = Field(default=900, ge=1)  # a task idle this long is shelved
-    INTENT_HISTORY_TURNS: int = Field(default=8, ge=0)  # recent cross-channel turns shown to the intent step
+    INTENT_HISTORY_TURNS: int = Field(default=4, ge=0)  # recent cross-channel turns shown to the intent step
     INTENT_HISTORY_WINDOW_SECONDS: int = Field(default=1800, ge=1)
     GEMINI_MODEL: str = "gemini-3.5-flash-lite"
     TEMPERATURE: float = Field(default=0.2, ge=0.0, le=2.0)

@@ -297,6 +297,12 @@ async def test_eval_cases_live(monkeypatch):
     if lat:
         print(f"latency ({LIVE_INTENT_MODEL}, whole analyze): min {min(lat)} / median "
               f"{statistics.median(lat):.0f} / max {max(lat)} ms over {len(lat)} cases")
+    used = [c["usage"] for c in recorder.calls if c["model"] == LIVE_INTENT_MODEL and c.get("usage")]
+    if used:
+        print(f"tokens per {LIVE_INTENT_MODEL} call (provider usage): prompt median "
+              f"{statistics.median(u.get('prompt_tokens', 0) for u in used):.0f}, total median "
+              f"{statistics.median(u.get('total_tokens', 0) for u in used):.0f} / max "
+              f"{max(u.get('total_tokens', 0) for u in used)} over {len(used)} calls")
     others = [r["id"] for r in rows if r["answered_by"] != LIVE_INTENT_MODEL]
     print(f"answered by fallback/legacy: {others or 'none'}; rate-limited attempts: {rate_limited}")
     print("--- all outputs ---")
