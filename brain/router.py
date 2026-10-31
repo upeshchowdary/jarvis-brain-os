@@ -229,6 +229,75 @@ rule(r"(?:next|skip)(?: the)?(?: track| song)?|skip (?:this )?(?:track|song)|pla
 rule(r"previous(?: track| song)?|(?:play )?(?:the )?(?:previous|last) (?:track|song)|go back a (?:track|song)", "media_prev")(
     lambda m: RouteDecision("media_control", {"action": "previous"}))
 
+# Keyboard fast path: acts on the foreground window, no LLM. Registered before model switching / app opening so
+# "switch to tab 3" and "switch to chrome" are caught here (model names fall through to switch_model).
+# Bare context words ("next", "back", "again") are deliberately NOT rules — see CONTEXT_WORDS.
+def _keys(keys: str) -> Callable[[re.Match], RouteDecision]:
+    return lambda m: RouteDecision("press_keys", {"keys": keys})
+
+
+for _pat, _keys_, _nm in (
+    (r"scroll down|page down|pagedown", "pagedown", "scroll_down"),
+    (r"scroll up|page up|pageup", "pageup", "scroll_up"),
+    (r"(?:go|jump|scroll) to (?:the )?top(?: of the page)?", "ctrl+home", "go_top"),
+    (r"(?:go|jump|scroll) to (?:the )?bottom(?: of the page)?", "ctrl+end", "go_bottom"),
+    (r"next tab|tab right", "ctrl+tab", "next_tab"),
+    (r"(?:previous|prev|last) tab|tab left", "ctrl+shift+tab", "prev_tab"),
+    (r"new tab|open (?:a )?new tab", "ctrl+t", "new_tab"),
+    (r"close (?:this |the |current )?tab", "ctrl+w", "close_tab"),
+    (r"reopen (?:the )?(?:last )?(?:closed )?tab|restore (?:the )?(?:closed|last) tab", "ctrl+shift+t", "reopen_tab"),
+    (r"go back|navigate back|back a page", "alt+left", "go_back"),
+    (r"go forward|navigate forward|forward a page", "alt+right", "go_forward"),
+    (r"refresh|reload|refresh (?:the |this )?page|reload (?:the |this )?page", "f5", "refresh"),
+    (r"select all", "ctrl+a", "select_all"),
+    (r"copy|copy (?:this|selection|the selection)", "ctrl+c", "copy"),
+    (r"paste|paste (?:it|this|here)", "ctrl+v", "paste"),
+    # Bare "undo" stays the JARVIS action-undo rule below; this is the in-app edit undo.
+    (r"undo (?:typing|the typing|text|the text|edit|the edit|in the app)", "ctrl+z", "undo_edit"),
+    (r"redo|redo (?:that|it|typing)", "ctrl+y", "redo"),
+):
+    rule(_pat, _nm)(_keys(_keys_))
+
+
+@rule(r"(?:go to|switch to|open) tab (?P<n>[1-8]|last)", "goto_tab")
+def _goto_tab(m: re.Match) -> RouteDecision:
+    n = m.group("n").lower()
+    return RouteDecision("press_keys", {"keys": f"ctrl+{9 if n == 'last' else n}"})
+
+
+_PRESS_KEYS = {
+    "enter": "enter", "return": "enter", "escape": "escape", "esc": "escape", "tab": "tab", "space": "space",
+    "spacebar": "space", "backspace": "backspace", "delete": "delete", "up": "up", "down": "down", "left": "left",
+    "right": "right", "home": "home", "end": "end", **{f"f{i}": f"f{i}" for i in range(1, 13)},
+}
+
+
+@rule(r"press (?:the )?(?P<k>[a-z0-9]{1,9})(?: key| button)?", "press_key")
+def _press_key(m: re.Match) -> Optional[RouteDecision]:
+    key = _PRESS_KEYS.get(m.group("k").lower())
+    return RouteDecision("press_keys", {"keys": key}) if key else None
+
+
+@rule(r"type (?P<t>.+)", "type_text")
+def _type_text(m: re.Match) -> Optional[RouteDecision]:
+    text = m.group("t")  # original casing preserved (rules only match case-insensitively)
+    return RouteDecision("type_text", {"text": text}) if text.strip() else None
+
+
+_MODEL_WORDS = {"gemini", "groq", "llama", "openai", "gpt", "claude", "anthropic", "deepseek", "openrouter", "ollama",
+                "local", "offline", "vision", "default", "reset", "lm studio", "lmstudio"}
+
+
+@rule(r"(?:switch|change) to (?:the )?(?P<x>[\w .+&'-]{2,40}?)(?: app| application| window)?", "focus_window")
+def _focus_window(m: re.Match) -> Optional[RouteDecision]:
+    x = m.group("x").strip().lower()
+    if x in _MODEL_WORDS or x.startswith(("model", "gpt", "gemini", "claude", "llama")) or x.endswith(" mode"):
+        return None  # model switching / routine modes handle these
+    if x in ("tab", "desktop", "window", "windows") or x.startswith("tab "):
+        return None
+    return RouteDecision("focus_window", {"name": x}) if _is_known_app(x) else None
+
+
 # Windows.
 rule(r"(?P<a>minimi[sz]e|maximi[sz]e|restore|close) (?:this |the |current |active |that )?window|(?P<a2>minimi[sz]e|maximi[sz]e) (?:it|this|that)", "window_active")(
     lambda m: RouteDecision("window_control", {"action": (m.group("a") or m.group("a2")).lower().replace("ise", "ize")}))

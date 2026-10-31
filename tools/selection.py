@@ -27,6 +27,11 @@ GROUPS: Dict[str, Dict[str, Sequence[str]]] = {
                      "bluetooth", "process", "kill", "task", "screenshot", "app", "apps", "close", "quit", "recycle", "settings",
                      "battery", "cpu", "ram", "memory usage", "running", "installed", "stop", "dry run", "program"],
     },
+    "keyboard": {
+        "tools": ["press_keys", "type_text", "focus_window"],
+        "keywords": ["tab", "scroll", "type", "press", "paste", "copy", "select all", "refresh", "go back", "switch to",
+                     "enter", "escape"],
+    },
     "files": {
         "tools": ["files_list", "files_size", "files_info", "files_read", "file_create", "file_append", "folder_create",
                   "file_rename", "file_move", "file_copy", "file_delete", "organize_folder", "bulk_rename", "zip_files",

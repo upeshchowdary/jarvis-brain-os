@@ -8,6 +8,7 @@ from tools.builtin import (  # noqa: F401
     files_manage,
     history,
     info,
+    keyboard,
     memory_tools,
     messaging,
     meta,
