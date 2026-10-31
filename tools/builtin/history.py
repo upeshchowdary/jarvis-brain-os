@@ -6,6 +6,7 @@ import re
 from datetime import date, datetime, timedelta, timezone, tzinfo
 from typing import Any, List, Optional, Tuple
 
+from brain.prompts import wrap_untrusted
 from memory import search as memory_search
 from tools.base import Tool, ToolContext, ToolResult, obj
 from tools.registry import register
@@ -85,6 +86,8 @@ class ChatHistory(Tool):
                   **_: Any) -> ToolResult:
         if limit is None or limit == "":
             limit = DEFAULT_LIMIT
+        if isinstance(limit, float) and limit.is_integer():  # models often send 5.0
+            limit = int(limit)
         if isinstance(limit, bool) or not (isinstance(limit, int) or (isinstance(limit, str) and limit.strip().isdigit())):
             return ToolResult.error("limit must be a whole number between 1 and 50.")
         limit = max(1, min(int(limit), MAX_LIMIT))
@@ -126,5 +129,8 @@ class ChatHistory(Tool):
             else:
                 lines.append(f"[{when}] Memory: {_clip(hit.text)}")
         text = "\n".join(lines)
-        return ToolResult.ok(text, data=[{"chat_id": h.chat_id, "created_at": h.created_at} for h in ordered],
-                             content_for_llm=text)
+        # Past replies can quote web pages / files: the model gets them as untrusted data. The tool is deliberately
+        # not untrusted_output (that would withdraw every action for the rest of the turn, e.g. "send it again").
+        return ToolResult.ok(f"Found {len(lines)} chat turn{'s' if len(lines) != 1 else ''}.",
+                             data=[{"chat_id": h.chat_id, "created_at": h.created_at} for h in ordered],
+                             content_for_llm=wrap_untrusted(self.name, text))
