@@ -2,6 +2,8 @@
 
 from unittest.mock import AsyncMock
 
+import pytest
+
 from automation.gateway import Risk, gateway
 from integrations.mcp_client import make_tool, manager
 from tools import ToolContext
@@ -183,3 +185,56 @@ async def test_mcp_cannot_lift_the_users_emergency_stop_or_dry_run(monkeypatch):
     finally:
         gateway.resume()
         monkeypatch.setattr(settings, "DRY_RUN", False)
+
+
+# ── N1: MCP can't type or press keys without approval via the fast path ──
+
+@pytest.fixture
+def keyboard_ready(monkeypatch):
+    import automation.ops.keyboard as kb
+
+    monkeypatch.setattr(kb, "_IS_WINDOWS", True)
+    monkeypatch.setattr(kb.impl, "foreground_title", lambda: "Windows PowerShell")
+    gateway.resume()
+    yield kb
+    gateway.cancel_session("mcp")
+    gateway.cancel_session("owner-kb")
+
+
+@pytest.mark.parametrize("message", ["type Remove-Item -Recurse C:/temp/x", "press enter"])
+async def test_mcp_fast_path_keyboard_needs_approval_in_full_control(monkeypatch, keyboard_ready, message):
+    from unittest.mock import patch
+
+    from integrations.mcp_server import build_server
+
+    _full_control(monkeypatch)
+    with patch("automation.ops.keyboard.send_keys") as sk:
+        out = str(await build_server().call_tool("jarvis", {"message": message}))
+    sk.assert_not_called()
+    assert "confirm" in out.lower()
+    assert gateway.pending_for("mcp") is not None
+
+
+async def test_gateway_confirms_remote_keyboard_input_whatever_its_risk(monkeypatch, keyboard_ready):
+    from unittest.mock import patch
+
+    from automation.gateway import ActionRequest
+
+    _full_control(monkeypatch)
+    with patch("automation.ops.keyboard.send_keys") as sk:
+        for op, args in (("keyboard.type", {"text": "x", "origin": "fast"}), ("keyboard.press", {"keys": "enter", "origin": "fast"})):
+            res = await gateway.execute(ActionRequest(op, args), "mcp", source="mcp")
+            assert res.status == "needs_confirmation", op
+    sk.assert_not_called()
+
+
+async def test_owner_fast_path_typing_is_still_instant(monkeypatch, keyboard_ready):
+    from unittest.mock import patch
+
+    from brain.pipeline import brain
+
+    _full_control(monkeypatch)
+    with patch("automation.ops.keyboard.send_keys") as sk:
+        res = await brain.handle("type hello there", "owner-kb", channel="text")
+    assert res.status == "ok" and res.route == "fast_path"
+    sk.assert_called_once_with("hello there", with_spaces=True)

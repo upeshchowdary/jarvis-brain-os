@@ -246,7 +246,8 @@ class Brain:
         hit = self._fast_hit(decision)
         if hit is not None:
             tool, args = hit
-            record = await self._run_tool(tool, args, ctx, origin="fast")
+            # A remote agent's words are never "the user's own words": its tools run with origin "remote".
+            record = await self._run_tool(tool, args, ctx, origin="fast", ctx_origin="remote" if remote else None)
             timing["tool_ms"] = round(record.elapsed_ms, 1)
             yield {"type": "tool", "name": tool.name, "result": record.to_dict()}
             linked = active is not None and tool.side_effect
@@ -292,7 +293,8 @@ class Brain:
             if hit is not None:
                 tool, args = hit
                 # The model's rewrite, not the user's own words: tools see origin "rewrite" (e.g. typing is MEDIUM).
-                record = await self._run_tool(tool, args, ctx, origin="fast", ctx_origin="rewrite")
+                record = await self._run_tool(tool, args, ctx, origin="fast",
+                                              ctx_origin="remote" if remote else "rewrite")
                 yield {"type": "tool", "name": tool.name, "result": record.to_dict()}
                 if task_id:
                     self._record_step(record, task_id)
