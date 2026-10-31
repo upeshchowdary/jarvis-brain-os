@@ -562,3 +562,46 @@ async def test_task_plan_offered_for_every_action(monkeypatch, tools):
     fake = install(monkeypatch, FakeLLM([text("ok")]))
     await brain.handle("open chrome and then go to github and send the file and play music", "u-plan-legacy")
     assert "task_plan" in fake.offered(0)
+
+
+# ── Fix round 2 ─────────────────────────────────────────────────────────
+
+async def test_prefilled_fast_path_does_not_close_unrelated_task(monkeypatch, fresh_state):
+    """'run the tests' (fast path, non-final) mid-WhatsApp-task must not finish the WhatsApp task."""
+    task = fresh_state.start("Open WhatsApp and message Nithesh 'hi'", "voice")
+    monkeypatch.setattr(load_builtin_tools().get("run_tests"), "run", AsyncMock(return_value=ToolResult.ok("3 passed.")))
+    analyze = patch_intent(monkeypatch, intent("unused"))
+    fake = install(monkeypatch, FakeLLM([text("All 3 tests passed.")]))
+    res = await brain.handle("run the tests", "u-prefilled")
+    assert res.response == "All 3 tests passed." and len(fake.calls) == 1
+    analyze.assert_not_awaited()
+    assert fresh_state.current() is task and task.status == "active"
+
+
+async def test_fallback_success_does_not_mark_task_done(monkeypatch, tools, fresh_state):
+    task = fresh_state.start("Open WhatsApp and message Nithesh 'hi'", "voice")
+    patch_intent(monkeypatch, lambda message, turns, t: legacy_intent(message))
+    install(monkeypatch, FakeLLM([call("open_app", name="chrome")]))
+    await brain.handle("open chrome and then go to github", "u-fallback")
+    tools["open_app"].assert_awaited_once()
+    assert fresh_state.current() is task and task.status == "active"
+    assert [s.tool for s in task.steps] == ["open_app"]  # booked, but the task is not closed
+
+
+async def test_stop_on_rewritten_fast_path_shelves_task(monkeypatch, fresh_state):
+    gateway.emergency_stop("test")
+    patch_intent(monkeypatch, intent("open whatsapp", single=True))
+    fake = install(monkeypatch, FakeLLM([]))
+    res = await brain.handle("yes do that one", "u-stop-rewrite")
+    assert res.route == "fast_path" and res.status != "ok" and fake.calls == []
+    assert fresh_state.current() is None and fresh_state._last.goal == "open whatsapp"
+    assert fresh_state._last.status == "shelved"
+
+
+async def test_fast_path_stop_shelves_active_task(monkeypatch, fresh_state):
+    task = fresh_state.start("Open WhatsApp and message Nithesh 'hi'", "voice")
+    patch_intent(monkeypatch, intent("unused"))
+    await brain.handle("stop", "u-stop-shelve")
+    assert gateway.is_stopped and fresh_state.current() is None and task.status == "shelved"
+    gateway.resume()
+    assert fresh_state.revive_last() is task

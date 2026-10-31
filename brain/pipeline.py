@@ -27,7 +27,7 @@ import json
 import re
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
 from automation.gateway import gateway
@@ -208,7 +208,7 @@ class Brain:
                 record = self._confirmation_record(pending, awaiting, from_gateway(res))
                 if self._task_owns(awaiting):
                     self._record_step(record)
-                    self._close_task(True, [record])
+                    self._close_task("continued", [record])
                 yield finish(res.message, records=[record], route="confirmation", intent="confirm",
                              status="ok" if res.success else "error", tools=[{"name": "confirm", "steps": res.steps}])
                 return
@@ -240,6 +240,8 @@ class Brain:
             if linked:
                 self._record_step(record)
             self._remember_pending(sid, record, linked)
+            if active is not None and decision.rule == "stop" and gateway.is_stopped:
+                tasks.set_status("shelved")  # emergency stop ends the task the same way everywhere
             if self._fast_path_done(tool, record):
                 yield finish(note + record.result.message, records=[record], route="fast_path", intent=tool.name,
                              status=record.result.status, pending=self._pending_dict(record.result),
@@ -254,13 +256,14 @@ class Brain:
                 self._timed(timing, "intent_ms", analyze(query, turns, tasks.current())),
                 self._timed(timing, "memory_ms", self._memory_context(query, router.is_imperative(query), sid)),
             )
-        else:  # the fast path already understood it
-            intent = legacy_intent(query)
+        else:  # the fast path already understood it; source "fast": this turn never starts/continues/closes a task
+            intent = replace(legacy_intent(query), source="fast")
             facts, memories = await self._timed(timing, "memory_ms",
                                                 self._memory_context(query, intent.kind == "action", sid))
 
         # 4 ── Current task (questions and chat leave it alone) ───────────
-        self._begin_task(intent, ctx)
+        task_mode = self._begin_task(intent, ctx)
+        book = task_mode is not None  # this turn's tool calls are steps of the current task
 
         # 5 ── The rewritten request may be an exact command ("yes do that" → "open whatsapp") ──
         if prefilled is None and intent.request.strip() != query:
@@ -272,11 +275,11 @@ class Brain:
                 tool, args = hit
                 record = await self._run_tool(tool, args, ctx, origin="fast")
                 yield {"type": "tool", "name": tool.name, "result": record.to_dict()}
-                if intent.kind == "action":
+                if book:
                     self._record_step(record)
-                self._remember_pending(sid, record, intent.kind == "action")
+                self._remember_pending(sid, record, book)
                 if self._fast_path_done(tool, record):
-                    self._close_task(intent.kind == "action", [record])
+                    self._close_task(task_mode, [record])
                     yield finish(note + record.result.message, records=[record], route="fast_path", intent=tool.name,
                                  status=record.result.status, pending=self._pending_dict(record.result),
                                  tools=[record.to_dict()], metadata={"rule": decision.rule, "request": intent.request})
@@ -285,10 +288,10 @@ class Brain:
 
         # 6 ── Agent ──────────────────────────────────────────────────────
         async for event in self._agent(query, intent, facts, memories, history, state, ctx, personality,
-                                       model_override, timing, stream_tokens, note, prefilled):
+                                       model_override, timing, stream_tokens, note, prefilled, book):
             if event["type"] == "final":
                 records = event.get("records") or []
-                self._close_task(intent.kind == "action", records, event.get("outcome"))
+                self._close_task(task_mode, records, event.get("outcome"))
                 yield finish(records=records, **event["kwargs"])
                 return
             yield event
@@ -312,21 +315,33 @@ class Brain:
             timing[key] = round((time.perf_counter() - t) * 1000, 1)
 
     @staticmethod
-    def _begin_task(intent: Intent, ctx: ToolContext) -> None:
-        """A new action starts a task; a continuation resumes the current one (waiting_for_user → active)
-        or revives the last shelved one. Without the intent step (legacy) we can't tell a follow-up from a
-        new request, so an action message while a task is current continues it ("next" must not replace it)."""
-        if intent.kind != "action":
-            return  # questions / chat never start, replace, shelve or mark the task
+    def _begin_task(intent: Intent, ctx: ToolContext) -> Optional[str]:
+        """Bind this turn to the current task. Returns the mode, used by :meth:`_close_task`:
+
+        * ``None`` — the turn has no task: questions / chat, and fast-path turns (source "fast").
+        * ``"started"`` — a new action (the previous task is shelved), or a continuation with nothing to continue.
+        * ``"continued"`` — the intent step said it continues the task (waiting_for_user → active, or revived).
+        * ``"fallback"`` — the intent step failed (source "legacy") while a task is current: we can't tell a
+          follow-up ("next") from a new request, so the task is kept and its steps booked, but never closed.
+        """
+        if intent.kind != "action" or intent.source == "fast":
+            return None
         current = tasks.current()
-        continues = intent.continues_task or (intent.source == "legacy" and current is not None)
-        if not continues:
+        if intent.source == "legacy" and current is not None and not intent.continues_task:
+            if current.status != "active":
+                tasks.set_status("active")
+            return "fallback"
+        if not intent.continues_task:
             tasks.start(intent.request, ctx.channel)
-        elif current is None:
+            return "started"
+        if current is None:
             if tasks.revive_last() is None:
                 tasks.start(intent.request, ctx.channel)  # nothing to continue: track this request as its own task
-        elif current.status != "active":
+                return "started"
+            return "continued"
+        if current.status != "active":
             tasks.set_status("active")
+        return "continued"
 
     @staticmethod
     def _record_step(record: ToolCallRecord) -> None:
@@ -336,19 +351,25 @@ class Brain:
         tasks.record_step(record.name, record.arguments, record.result.message, state == "ok", state=state)
 
     @staticmethod
-    def _close_task(is_action: bool, records: List[ToolCallRecord], outcome: Optional[str] = None) -> None:
-        """Turn end for an action turn's task.
+    def _close_task(mode: Optional[str], records: List[ToolCallRecord], outcome: Optional[str] = None) -> None:
+        """Turn end for the task this turn started or continued (``mode`` from :meth:`_begin_task`).
 
-        outcome "waiting" (clarify asked the user) → waiting_for_user; "stopped" (emergency stop) → shelved,
-        so "continue" can bring it back after "resume"; "incomplete" (step budget / no LLM) → unchanged.
-        Otherwise: done when the last step succeeded and no plan item is left; failed after a failed step.
+        Emergency stop (outcome "stopped", or the stop is on) → shelved, so "continue" can bring it back after
+        "resume"; outcome "waiting" (clarify asked the user) → waiting_for_user; "incomplete" (step budget /
+        no LLM) → unchanged. A "fallback" turn never finishes the task. Otherwise: done when the last step
+        succeeded and no plan item is left; failed after a failed step.
         """
         current = tasks.current()
-        if not is_action or current is None or outcome == "incomplete":
+        if mode is None or current is None or outcome == "incomplete":
             return
-        if outcome in ("waiting", "stopped"):
-            tasks.set_status("waiting_for_user" if outcome == "waiting" else "shelved")
+        if outcome == "stopped" or gateway.is_stopped:
+            tasks.set_status("shelved")
             return
+        if outcome == "waiting":
+            tasks.set_status("waiting_for_user")
+            return
+        if mode == "fallback":
+            return  # it idles out normally if this was really something else
         steps = [r for r in records if r.name not in _BOOKKEEPING_TOOLS]
         if not steps:
             return
@@ -380,7 +401,7 @@ class Brain:
 
     # ── Agent loop ──────────────────────────────────────────────────────
     async def _agent(self, query, intent: Intent, facts, memories, history, state, ctx, personality, model_override,
-                     timing, stream_tokens, note, prefilled=None) -> AsyncIterator[Dict[str, Any]]:
+                     timing, stream_tokens, note, prefilled=None, book: bool = False) -> AsyncIterator[Dict[str, Any]]:
         """Final events carry ``records`` (every tool run this turn) and ``outcome``:
         None | "incomplete" (step budget / no LLM) | "waiting" (asked the user) | "stopped" (emergency stop)."""
         is_action = intent.kind == "action"
@@ -475,7 +496,7 @@ class Brain:
                 records.append(record)
                 round_records.append(record)
                 yield {"type": "tool", "name": tool.name, "result": record.to_dict()}
-                if is_action:
+                if book:
                     self._record_step(record)
                 if multi_step and _done_ok(record) and tool.name not in _BOOKKEEPING_TOOLS and record.result.message:
                     yield {"type": "progress", "text": _progress_text(record.result.message)}
@@ -485,7 +506,7 @@ class Brain:
                 messages.append({"role": "tool", "tool_call_id": call.id, "content": content or ("ok" if record.result.success else "failed")})
                 tainted = tainted or tool.untrusted_output
                 sensitive = sensitive or tool.sensitive_output
-                self._remember_pending(ctx.session_id, record, is_action)
+                self._remember_pending(ctx.session_id, record, book)
 
                 if is_action and gateway.is_stopped:
                     yield stopped()
