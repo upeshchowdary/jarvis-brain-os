@@ -26,6 +26,10 @@ EmbeddingFunction = Callable[[List[str]], List[List[float]]]
 QUERY_CACHE_SIZE = 256
 INDEX_BATCH = 64
 BACKFILL_LIMIT = 5000  # most recent chat turns embedded by warm_up() if Chroma lacks them
+# The first-start backfill runs while faster-whisper may be transcribing: keep the embedder to a couple of cores
+# and pause between batches so speech recognition stays responsive.
+EMBED_THREADS = 2
+BACKFILL_PAUSE_SECONDS = 0.05
 
 STOP_WORDS = {
     "the", "a", "an", "is", "are", "was", "were", "be", "what", "how", "why", "who", "where", "when", "which",
@@ -116,7 +120,8 @@ class VectorMemoryManager:
         """Load the local fastembed model (downloads it once into data/models). Blocking: run in a thread."""
         from fastembed import TextEmbedding
 
-        model = TextEmbedding(settings.EMBEDDING_MODEL, cache_dir=str(data_path("models", "fastembed")))
+        model = TextEmbedding(settings.EMBEDDING_MODEL, cache_dir=str(data_path("models", "fastembed")),
+                              threads=EMBED_THREADS)
         return lambda texts: [vec.tolist() for vec in model.embed(texts)]
 
     def _embed_query(self, fn: EmbeddingFunction, query: str) -> List[float]:
@@ -216,6 +221,8 @@ class VectorMemoryManager:
                 missing[doc.id] = doc
         docs = list(missing.values())
         for start in range(0, len(docs), INDEX_BATCH):
+            if start:
+                time.sleep(BACKFILL_PAUSE_SECONDS)  # worker thread: give the CPU back between batches
             self._upsert_sync(docs[start:start + INDEX_BATCH], fn)
         return len(docs)
 

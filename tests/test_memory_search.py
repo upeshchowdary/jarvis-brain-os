@@ -255,3 +255,41 @@ async def test_search_channel_filter(db):
     assert [h.text.startswith("User: whatsapp from voice") for h in voice] == [True]
     both = await memory_search.search("whatsapp")
     assert len(both) == 2
+
+
+# ── M4: first-start backfill must not starve faster-whisper ─────────────
+
+def test_embedding_model_uses_few_threads(monkeypatch):
+    import fastembed
+
+    vm_mod = vector_memory_module
+
+    seen = {}
+
+    class FakeEmbedding:
+        def __init__(self, model_name, **kwargs):
+            seen.update(kwargs, model_name=model_name)
+
+        def embed(self, texts):
+            return []
+
+    monkeypatch.setattr(fastembed, "TextEmbedding", FakeEmbedding)
+    vm_mod.VectorMemoryManager()._load_model()
+    assert seen["threads"] == vm_mod.EMBED_THREADS <= 2
+
+
+def test_backfill_pauses_between_batches(monkeypatch):
+    from types import SimpleNamespace
+
+    vm_mod = vector_memory_module
+
+    mgr = vm_mod.VectorMemoryManager()
+    monkeypatch.setattr(mgr, "_ensure_collection", lambda: SimpleNamespace(get=lambda include: {"ids": []}))
+    batches, sleeps = [], []
+    monkeypatch.setattr(mgr, "_upsert_sync", lambda docs, fn=None: batches.append(len(docs)))
+    monkeypatch.setattr(vm_mod.time, "sleep", lambda s: sleeps.append(s))
+    rows = [{"id": i, "user_query": f"q{i}", "response_text": "r", "created_at": "2026-10-30T10:00:00+00:00"}
+            for i in range(vm_mod.INDEX_BATCH * 2 + 5)]
+    assert mgr._index_missing_sync(fake_embedding, rows) == len(rows)
+    assert batches == [vm_mod.INDEX_BATCH, vm_mod.INDEX_BATCH, 5]
+    assert len(sleeps) == 2 and all(0 < s <= 0.2 for s in sleeps)
