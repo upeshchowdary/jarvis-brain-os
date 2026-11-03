@@ -95,6 +95,8 @@ class Settings(BaseSettings):
     MAX_RETRIES: int = Field(default=2, ge=0)
 
     GROQ_API_KEY: Optional[str] = None
+    # Extra Groq keys (comma separated), rotated like GEMINI_API_KEYS. Limits are per Groq organisation.
+    GROQ_API_KEYS: StrList = Field(default_factory=list)
     GEMINI_API_KEY: Optional[str] = None
     # Extra Gemini keys (comma separated). The gateway rotates to the next one when a key
     # hits its quota (429) or is rejected (401/403).
@@ -172,7 +174,8 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
     LOG_FILE_PATH: str = "logs/jarvis.log"
 
-    @field_validator("CORS_ORIGINS", "LLM_FALLBACKS", "PROTECTED_PROCESSES", "GEMINI_API_KEYS", mode="before")
+    @field_validator("CORS_ORIGINS", "LLM_FALLBACKS", "PROTECTED_PROCESSES", "GEMINI_API_KEYS", "GROQ_API_KEYS",
+                     mode="before")
     @classmethod
     def _split_list(cls, v: Any) -> Any:
         if isinstance(v, str):
@@ -220,8 +223,9 @@ class Settings(BaseSettings):
     def api_keys_for(self, provider: str) -> List[str]:
         """Every key for a provider, primary first, without duplicates."""
         keys = [self.api_key_for(provider)]
-        if provider == "gemini":
-            keys += self.GEMINI_API_KEYS
+        extra = {"gemini": self.GEMINI_API_KEYS, "groq": self.GROQ_API_KEYS}.get(provider)
+        if extra:
+            keys += extra
         out: List[str] = []
         for key in keys:
             if key and key not in out:

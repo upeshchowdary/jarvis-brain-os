@@ -532,3 +532,75 @@ def test_task_summary_clips_plan_subgoals():
     task.plan.append(PlanItem("x" * 300, "todo"))
     line = next(ln for ln in task.summary().splitlines() if "xxx" in ln)
     assert len(line) <= 80 + 8
+
+
+# ── G2: the 429 cooldown benches the primary only once every Groq key is exhausted ──
+
+def _real_gateway(monkeypatch, handler):
+    import httpx
+
+    from core import connectivity
+    from core.llm import gateway as gateway_module
+    from core.llm import llm as real_llm
+
+    monkeypatch.setattr(settings, "GROQ_API_KEY", "groq-key")
+    monkeypatch.setattr(settings, "GROQ_API_KEYS", ["groq-2"])
+    monkeypatch.setattr(settings, "GEMINI_API_KEY", "gem-key")
+    monkeypatch.setattr(settings, "GEMINI_API_KEYS", [])
+    monkeypatch.setattr(gateway_module, "_KEY_CURSOR", {})
+    monkeypatch.setattr(intent_mod, "llm", real_llm)
+    connectivity.set_state_for_tests(True)
+    real_llm.set_transport(httpx.MockTransport(handler))
+
+
+def _intent_reply():
+    import httpx
+
+    body = {"model": "m", "choices": [{"message": {"role": "assistant", "content": json.dumps(NEXT_DO)},
+                                       "finish_reason": "stop"}]}
+    return httpx.Response(200, json=body)
+
+
+async def test_groq_second_key_answers_and_no_cooldown(monkeypatch):
+    import httpx
+
+    from core import connectivity
+    from core.llm import llm as real_llm
+
+    seen = []
+
+    def handler(request):
+        seen.append((request.url.host, request.headers["authorization"]))
+        if request.headers["authorization"] == "Bearer groq-key":
+            return httpx.Response(429, text="rate limited", headers={"retry-after": "30"})
+        return _intent_reply()
+
+    _real_gateway(monkeypatch, handler)
+    try:
+        got = await analyze("next do", whatsapp_turns(), whatsapp_task())
+    finally:
+        real_llm.set_transport(None)
+        connectivity.set_state_for_tests(None)
+    assert got.source == "llm"
+    assert seen == [("api.groq.com", "Bearer groq-key"), ("api.groq.com", "Bearer groq-2")]  # answered by groq
+    assert not intent_mod._COOLDOWN
+
+
+async def test_every_groq_key_exhausted_benches_the_primary(monkeypatch):
+    import httpx
+
+    from core import connectivity
+    from core.llm import llm as real_llm
+
+    def handler(request):
+        if request.url.host == "api.groq.com":
+            return httpx.Response(429, text="rate limited", headers={"retry-after": "30"})
+        return _intent_reply()
+
+    _real_gateway(monkeypatch, handler)
+    try:
+        got = await analyze("next do", whatsapp_turns(), whatsapp_task())
+    finally:
+        real_llm.set_transport(None)
+        connectivity.set_state_for_tests(None)
+    assert got.source == "llm" and intent_mod._COOLDOWN.get(INTENT_MODEL)

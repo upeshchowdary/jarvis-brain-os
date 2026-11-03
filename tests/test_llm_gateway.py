@@ -467,3 +467,50 @@ async def test_extra_content_is_stripped_for_non_gemini_providers(gw):
     gw(lambda r: httpx.Response(200, text=body, headers={"content-type": "text/event-stream"}))
     _ = [e async for e in llm.stream_events(history, model="groq/llama-test")]
     assert "extra_content" not in json.loads(seen[0].content)["messages"][1]["tool_calls"][0]
+
+
+# ── G2: Groq key rotation (keys from separate Groq organisations add capacity) ──
+
+def test_groq_keys_primary_first_and_deduplicated(monkeypatch):
+    monkeypatch.setattr(settings, "GROQ_API_KEY", "groq-key")
+    monkeypatch.setattr(settings, "GROQ_API_KEYS", ["groq-2", "groq-key", "groq-3"])
+    assert settings.api_keys_for("groq") == ["groq-key", "groq-2", "groq-3"]
+    from core.config import Settings
+
+    assert Settings(GROQ_API_KEYS="a, b").GROQ_API_KEYS == ["a", "b"]  # comma list from the environment
+
+
+async def test_groq_rotates_on_429_even_with_retries_off(gw, monkeypatch):
+    monkeypatch.setattr(settings, "GROQ_API_KEYS", ["groq-2"])
+
+    def handler(request):
+        if request.headers["authorization"] == "Bearer groq-key":
+            return httpx.Response(429, text="rate limited", headers={"retry-after": "20"})
+        return ok("second key works")
+
+    seen = gw(handler)
+    res = await llm.chat([{"role": "user", "content": "x"}], model="groq/llama-test", fallbacks=False, retries=0)
+    assert res.content == "second key works" and res.provider == "groq"
+    assert [r.headers["authorization"] for r in seen] == ["Bearer groq-key", "Bearer groq-2"]
+
+
+async def test_groq_streaming_rotates_on_401(gw, monkeypatch):
+    monkeypatch.setattr(settings, "GROQ_API_KEYS", ["groq-2"])
+    body = f"data: {json.dumps({'choices': [{'delta': {'content': 'ok'}}]})}\n\ndata: [DONE]\n\n"
+
+    def handler(request):
+        if request.headers["authorization"] == "Bearer groq-key":
+            return httpx.Response(401, text="invalid key")
+        return httpx.Response(200, text=body, headers={"content-type": "text/event-stream"})
+
+    seen = gw(handler)
+    events = [e async for e in llm.stream_events([{"role": "user", "content": "x"}], model="groq/llama-test")]
+    assert events[-1][1].content == "ok" and events[-1][1].provider == "groq" and len(seen) == 2
+
+
+async def test_all_groq_keys_exhausted_reports_429(gw, monkeypatch):
+    monkeypatch.setattr(settings, "GROQ_API_KEYS", ["groq-2", "groq-3"])
+    seen = gw(lambda r: httpx.Response(429, text="rate limited", headers={"retry-after": "9"}))
+    with pytest.raises(LLMUnavailable) as info:
+        await llm.chat([{"role": "user", "content": "x"}], model="groq/llama-test", fallbacks=False, retries=0)
+    assert len(seen) == 3 and info.value.status == 429 and info.value.headers["retry-after"] == "9"

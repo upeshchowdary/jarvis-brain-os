@@ -28,7 +28,7 @@ os.environ["INTENT_FALLBACK_MODEL"] = ""
 os.environ["OLLAMA_BASE_URL"] = "http://127.0.0.1:9"
 os.environ["LM_STUDIO_BASE_URL"] = "http://127.0.0.1:9/v1"
 # No real provider keys in tests: every LLM call is mocked.
-for _key in ("GROQ_API_KEY", "GEMINI_API_KEY", "GEMINI_API_KEYS", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
+for _key in ("GROQ_API_KEY", "GROQ_API_KEYS", "GEMINI_API_KEY", "GEMINI_API_KEYS", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
              "OPENROUTER_API_KEY", "DEEPSEEK_API_KEY"):
     os.environ[_key] = ""
 
