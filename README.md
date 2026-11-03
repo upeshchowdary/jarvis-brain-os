@@ -19,7 +19,8 @@ safety gateway that previews risky actions and asks before doing them.
 ## Quick start (≈10 minutes)
 
 **You need:** Windows 10/11, Python 3.12+ ([python.org](https://www.python.org/downloads/)), and either one free API
-key (e.g. [Gemini](https://aistudio.google.com/app/apikey) or [Groq](https://console.groq.com/keys)) **or**
+key — [Gemini](https://aistudio.google.com/app/apikey) is the default for everything; a
+[Groq](https://console.groq.com/keys) key is optional and only used as the last fallback — **or**
 [Ollama](https://ollama.com) for fully offline use (`ollama pull qwen3.5`).
 
 ```bash
@@ -167,8 +168,9 @@ More: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · [docs/SAFETY.md](docs/SAFE
 **Full-control mode** (`CONFIRM_MEDIUM_RISK=false` and `CONFIRM_HIGH_RISK=false`): JARVIS shuts down, kills
 processes, deletes, sends messages and runs shell commands **without asking**. A misheard voice command or a
 model mistake then acts at once; only dry-run, the emergency stop, undo for file operations and the 30 s
-shutdown delay remain. Use it only on your own PC. Requests from MCP clients (other programs) still always wait
-for your approval in this mode.
+shutdown delay remain. Use it only on your own PC. MCP clients (other programs) still need your approval for
+every MEDIUM or HIGH action in this mode, and for any key press or typing; their LOW actions (open an app or a
+website, set the volume) run at once.
 
 Everything is logged to `data/audit.jsonl` and visible in the console's activity log. Dry-run (`DRY_RUN=true` or "enable dry run")
 simulates everything. Web pages, files and screen text are treated as untrusted data and can't trigger actions.
@@ -177,8 +179,9 @@ simulates everything. Web pages, files and screen text are treated as untrusted 
 
 **What leaves your PC:** every message that isn't an instant command goes through the *intent step*, which sends
 it with the last few turns (`INTENT_HISTORY_TURNS`, from voice, console and API) and the current task to
-`INTENT_MODEL`'s provider (Groq by default). `PRIVACY_MODE=local` does not change that: set `INTENT_MODEL` to an
-Ollama model, or empty to switch the step off. Replies use `DEFAULT_MODEL` / `ACTION_MODEL`.
+`INTENT_MODEL`'s provider (Google Gemini by default; Groq only when Gemini fails). `PRIVACY_MODE=local` does not
+change that: set `INTENT_MODEL` to an Ollama model, or empty to switch the step off. Replies use `DEFAULT_MODEL` /
+`ACTION_MODEL` (Gemini by default).
 
 ---
 
@@ -190,8 +193,8 @@ All settings live in `.env` (see [.env.example](.env.example)). The important on
 |---|---|---|
 | `DEFAULT_MODEL` | `gemini/gemini-3.5-flash-lite` | `provider/model` used for chat |
 | `ACTION_MODEL` | `gemini/gemini-3.5-flash` | model for turns that act on the PC |
-| `LLM_FALLBACKS` | groq → openai → ollama | tried in order if the default fails |
-| `INTENT_MODEL` / `INTENT_FALLBACK_MODEL` | `groq/openai/gpt-oss-120b` / `gemini/gemini-3.5-flash-lite` | rewrites each message into a complete request ("next do" → "send Nithesh 'hi' on WhatsApp"); empty = off |
+| `LLM_FALLBACKS` | openai → groq | tried in order if the default fails (Groq is the last cloud fallback) |
+| `INTENT_MODEL` / `INTENT_FALLBACK_MODEL` | `gemini/gemini-3.5-flash-lite` / `groq/openai/gpt-oss-120b` | rewrites each message into a complete request ("next do" → "send Nithesh 'hi' on WhatsApp"); empty = off |
 | `INTENT_HISTORY_TURNS` | `4` | recent turns (any channel) the intent step sees |
 | `GEMINI_API_KEYS` | empty | extra Gemini keys, comma separated: on a 429 / rejected key JARVIS moves to the next one |
 | `LLM_KEEPWARM` | `true` | keep provider connections warm (lists models, no tokens) for 15 min after a request |
@@ -206,10 +209,12 @@ All settings live in `.env` (see [.env.example](.env.example)). The important on
 | `STT_ENGINE` / `WHISPER_MODEL` | `auto` / `base.en` | speech-to-text engine and model size |
 | `TTS_ENGINE` | `auto` | `kokoro` (if model files present) or `pyttsx3` |
 
-**Free-tier quota:** with the default `INTENT_MODEL` on Groq's free tier, only a few intent turns per minute (and a
-daily cap) fit. When Groq answers 429, JARVIS skips it until its reset time and uses `INTENT_FALLBACK_MODEL`. For
-steady use, switch Groq to pay-as-you-go or set `INTENT_MODEL=gemini/gemini-3.5-flash-lite` with several
-`GEMINI_API_KEYS`.
+**Free-tier quota:** Gemini is used for everything by default (chat, actions and the intent step), so every turn
+uses Gemini requests. Gemini's free limits (requests per minute and per day) are **per Google Cloud project**: put
+keys from *different* projects in `GEMINI_API_KEYS` and JARVIS moves to the next key when one answers 429; keys
+from the same project share one quota and don't help. When the intent model answers 429, JARVIS skips it until
+the reset time and uses `INTENT_FALLBACK_MODEL` (Groq, if `GROQ_API_KEY` is set). For heavy use, enable billing on
+the Gemini project.
 
 ---
 
@@ -223,8 +228,11 @@ JARVIS speaks the [Model Context Protocol](https://modelcontextprotocol.io):
                              "args": ["-m", "integrations.mcp_server"],
                              "cwd": "C:/path/to/jarvis-brain-os"}}}
   ```
-  MCP clients can never approve their own risky actions — you approve them in JARVIS, even in full-control mode.
-  Their requests don't see or change your recent conversation or current task.
+  MCP clients can never approve their own MEDIUM/HIGH actions or any key press / typing — you approve them in
+  JARVIS, even in full-control mode. Their LOW actions (open an app or a website, volume, system status) run
+  directly. MCP turns don't see your recent conversation, current task, saved facts or recalled memories, can't
+  save or erase facts, and aren't recalled into your own conversations later. They are still kept in the chat
+  log (audit), and `chat_history` shows them only when asked for `channel=mcp`.
 * **As a client** — list servers (GitHub, filesystem, Google Calendar/Gmail …) in `data/mcp_servers.json`; see
   [integrations/mcp_servers.example.json](integrations/mcp_servers.example.json). Their write tools go through the gateway.
 

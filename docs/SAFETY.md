@@ -29,8 +29,9 @@ Risk overrides (`data/risk_policy.json`, e.g. `{"keyboard.type": "low"}`) can re
 **Full-control mode** — `CONFIRM_MEDIUM_RISK=false` and `CONFIRM_HIGH_RISK=false` (the owner's choice for their own
 PC) run every action, including shutdown, kill, delete, send and shell, *without asking*. A misheard voice command,
 a misunderstood follow-up or a model mistake then acts immediately; what remains is dry-run, the emergency stop,
-undo for file operations, the 30 s shutdown delay and the specific protections below. MCP requests still wait
-for your approval. The defaults (both `true`) are what anyone else running JARVIS should keep.
+undo for file operations, the 30 s shutdown delay and the specific protections below. MCP requests for MEDIUM/HIGH
+actions and any key press or typing still wait for your approval. The defaults (both `true`) are what anyone else
+running JARVIS should keep.
 
 | Risk | Operations |
 |---|---|
@@ -53,10 +54,16 @@ for your approval. The defaults (both `true`) are what anyone else running JARVI
   → paste and send → restore the clipboard. Discord/Slack say "not supported yet" and never fall back to WhatsApp.
   Email opens a Gmail draft that you send yourself.
 * **Browser agent** — never types into password fields (asks you to log in); stops before buy/pay/send/delete/post.
-* **Remote agents (MCP)** — can request actions but can never confirm them; approval happens in JARVIS, even in
-  full-control mode. MCP turns never enter the PC-wide recent-turns buffer or the current task, so a later "yes" or
-  "continue" from you can't be bent into an MCP request. They may trigger the emergency stop or dry-run, but never
-  resume after a stop or switch dry-run off.
+* **Remote agents (MCP)** — can request actions but can never confirm them; MEDIUM/HIGH actions wait for approval
+  in JARVIS, even in full-control mode. `keyboard.press` / `keyboard.type` from a remote source always wait too,
+  whatever risk they computed (their fast-path commands run with origin `remote`, never `fast`). LOW actions run.
+  MCP turns never enter the PC-wide recent-turns buffer or the current task, so a later "yes" or "continue" from you
+  can't be bent into an MCP request. They may trigger the emergency stop or dry-run, but never resume after a stop
+  or switch dry-run off.
+* **Remote agents and memory** — MCP turns get none of your saved facts or recalled turns, can't use
+  `memory_remember` / `memory_forget`, and are logged (audit) but never indexed into vector memory, backfilled or
+  mined for facts, so they can't plant text that is later recalled into your prompts. `chat_history` hides them
+  unless asked for `channel=mcp`, and from an MCP turn it only shows MCP turns.
 * **Keyboard commands from the console** — when the JARVIS console itself is the window in front, key presses and
   typing first switch back to the previous window (Alt+Tab); if there is none, they fail with "Click the window you
   want first." instead of acting on the console.
@@ -81,8 +88,9 @@ for your approval. The defaults (both `true`) are what anyone else running JARVI
 * `chat_history` output (past turns, which can quote web or file text) reaches the model inside an
   `<untrusted_data>` block. It does not withdraw side-effect tools, so "send that message again" still works.
 * **The intent step** sends each message that isn't an instant command, the last few turns (`INTENT_HISTORY_TURNS`,
-  from every channel) and the current task to `INTENT_MODEL`'s provider (Groq by default). `PRIVACY_MODE=local` does
-  not change that: use an Ollama `INTENT_MODEL`, or leave it empty to switch the step off.
+  from every channel) and the current task to `INTENT_MODEL`'s provider (Google Gemini by default, Groq only as the
+  last fallback). `PRIVACY_MODE=local` does not change that: use an Ollama `INTENT_MODEL`, or leave it empty to
+  switch the step off.
 * **Langfuse traces** are opt-in (`LANGFUSE_ENABLED=true`); when on, the query, reply and rewritten request are sent
   to the Langfuse host.
 
