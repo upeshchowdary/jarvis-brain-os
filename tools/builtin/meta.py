@@ -26,7 +26,6 @@ class Clarify(Tool):
 MODEL_ALIASES = {
     "gemini": "gemini/gemini-3.5-flash-lite",
     "groq": "groq/openai/gpt-oss-120b",
-    "llama": "groq/llama-3.3-70b-versatile",  # Llama 3.3 70B on Groq (the id this project used before gpt-oss)
     "openai": "openai/gpt-4o-mini",
     "gpt": "openai/gpt-4o-mini",
     "claude": "anthropic/claude-sonnet-4-5",
@@ -37,6 +36,13 @@ MODEL_ALIASES = {
     "local": None,
     "lm studio": "lmstudio/local-model",
     "lmstudio": "lmstudio/local-model",
+}
+
+
+# Names people say that map to no model this setup can run: answered clearly instead of switching to a dead id.
+UNAVAILABLE_MODELS = {
+    "llama": "There's no Llama chat model available here (Groq no longer serves one for this key). "
+             "Try “switch to gemini”, “switch to groq” or “switch to ollama”.",
 }
 
 
@@ -64,6 +70,8 @@ class SwitchModel(Tool):
     side_effect = True  # changes session config; never triggered by untrusted content
 
     async def run(self, ctx: ToolContext, model: str = "", **_: Any) -> ToolResult:
+        if model.strip().lower() in UNAVAILABLE_MODELS:
+            return ToolResult.error(UNAVAILABLE_MODELS[model.strip().lower()])
         target = resolve_alias(model)
         state = sessions.get(ctx.session_id)
         if not target:

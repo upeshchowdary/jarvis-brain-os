@@ -156,12 +156,16 @@ def test_model_aliases():
     assert resolve_alias("gpt-4o") == "openai/gpt-4o"
 
 
-def test_llama_alias_is_a_llama_model_on_groq():
-    """M7: "switch to llama" must not silently pick an OpenAI-family model."""
-    from core.llm import resolve_model
+async def test_switch_to_llama_does_not_select_a_dead_model():
+    """M7: this Groq key serves no Llama chat model (llama-3.3-70b-versatile → 404): say so, change nothing."""
+    from brain.pipeline import brain
+    from core.session import sessions
 
-    provider, model = resolve_model(resolve_alias("llama"))
-    assert provider == "groq" and model.startswith("llama-")
+    assert "llama-3.3-70b-versatile" not in resolve_alias("llama")
+    res = await brain.handle("switch to llama", "llama-switch")
+    assert res.route == "fast_path" and res.intent == "switch_model"
+    assert "no llama" in res.response.lower()
+    assert sessions.get("llama-switch").model_override is None
 
 
 @pytest.mark.parametrize("query,url_part", [
