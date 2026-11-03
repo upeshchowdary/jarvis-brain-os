@@ -3,7 +3,7 @@
 * ``test_eval_cases_offline`` (always runs): validates every case and the scoring harness with a FakeLLM
   that returns each case's expected output.
 * ``test_eval_cases_live`` (``-m network``): real ``analyze`` against the configured default ``INTENT_MODEL``
-  (Gemini; ``INTENT_FALLBACK_MODEL`` behind it); prints a per-case
+  (Groq gpt-oss, rotating every Groq key; Gemini Flash behind it); prints a per-case
   table, failing cases with the actual output, and latency; asserts accuracy ≥ ``TARGET``.
 
 The suite's conftest blanks every API key and disables the intent step, so the live test reads the real
@@ -36,7 +36,8 @@ LIVE_FALLBACK_MODEL = Settings.model_fields["INTENT_FALLBACK_MODEL"].default
 _EXPECT_KEYS = {"kind", "continues_task", "single_step", "request_contains", "tool_groups_include"}
 
 # Pace calls so the eval measures the model, not 429s: Gemini's free tier allows ~15 requests/minute per Google
-# Cloud project; Groq's free tier for gpt-oss-120b is 8k tokens/minute (only applied when Groq is the primary).
+# Cloud project; Groq's free tier for gpt-oss-120b is 8k tokens/minute per organisation (only applied when Groq is
+# the primary, multiplied by the number of Groq keys since each key is its own organisation).
 _REQUESTS_PER_MINUTE = 12
 _TOKENS_PER_MINUTE = 7500
 _RATE_LIMIT_RETRIES = 2
@@ -209,21 +210,25 @@ class _Recorder:
             rec["ms"] = round((time.perf_counter() - started) * 1000)
 
 
-def _live_keys() -> Tuple[str, List[str]]:
+def _keys(env: Dict[str, Any], single: str, many: str) -> List[str]:
+    raw = [env.get(single) or "", *(env.get(many) or "").split(",")]
+    return list(dict.fromkeys(k.strip() for k in raw if k.strip()))
+
+
+def _live_keys() -> Tuple[List[str], List[str]]:
     from dotenv import dotenv_values
 
     env_file = BASE_DIR / ".env"
     if not env_file.exists():
         pytest.skip(f"{env_file} not found")
     env = dotenv_values(env_file)
-    groq = (env.get("GROQ_API_KEY") or "").strip()  # optional: only the silent last fallback
-    gemini = [k.strip() for k in [env.get("GEMINI_API_KEY") or "", *(env.get("GEMINI_API_KEYS") or "").split(",")]
-              if k.strip()]
+    groq = _keys(env, "GROQ_API_KEY", "GROQ_API_KEYS")
+    gemini = _keys(env, "GEMINI_API_KEY", "GEMINI_API_KEYS")
     if not gemini and LIVE_INTENT_MODEL.startswith("gemini/"):
         pytest.skip("GEMINI_API_KEY / GEMINI_API_KEYS missing in .env")
     if not groq and LIVE_INTENT_MODEL.startswith("groq/"):
         pytest.skip("GROQ_API_KEY missing in .env")
-    return groq, list(dict.fromkeys(gemini))
+    return groq, gemini
 
 
 async def _pace(recorder: _Recorder, budget: int = _TOKENS_PER_MINUTE) -> None:
@@ -235,7 +240,8 @@ async def _pace(recorder: _Recorder, budget: int = _TOKENS_PER_MINUTE) -> None:
         now = time.monotonic()
         recent = [c for c in calls if now - c["at"] < 60]
         used = sum((c.get("usage") or {}).get("total_tokens", 0) for c in recent)
-        tokens_ok = not LIVE_INTENT_MODEL.startswith("groq/") or used + est <= budget
+        capacity = budget * max(1, len(settings.api_keys_for("groq")))  # one TPM counter per Groq organisation
+        tokens_ok = not LIVE_INTENT_MODEL.startswith("groq/") or used + est <= capacity
         if len(recent) < _REQUESTS_PER_MINUTE and tokens_ok:
             return
         oldest = min(c["at"] for c in recent)
@@ -247,13 +253,14 @@ async def test_eval_cases_live(monkeypatch):
     from core import connectivity
 
     groq, gemini = _live_keys()
-    monkeypatch.setattr(settings, "GROQ_API_KEY", groq)
+    monkeypatch.setattr(settings, "GROQ_API_KEY", groq[0] if groq else "")
+    monkeypatch.setattr(settings, "GROQ_API_KEYS", groq[1:])
     monkeypatch.setattr(settings, "GEMINI_API_KEY", gemini[0] if gemini else "")
     monkeypatch.setattr(settings, "GEMINI_API_KEYS", gemini[1:])
     monkeypatch.setattr(settings, "INTENT_MODEL", LIVE_INTENT_MODEL)
     monkeypatch.setattr(settings, "INTENT_FALLBACK_MODEL", LIVE_FALLBACK_MODEL)
     connectivity.set_state_for_tests(True)
-    recorder = _Recorder(intent_mod.llm, [groq, *gemini])
+    recorder = _Recorder(intent_mod.llm, [*groq, *gemini])
     monkeypatch.setattr(intent_mod, "llm", recorder)
 
     cases = load_cases()
