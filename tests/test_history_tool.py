@@ -191,3 +191,26 @@ async def test_integral_float_limit_is_accepted(db, limit):
 @pytest.mark.parametrize("limit", [2.5, float("nan"), float("inf"), True])
 async def test_non_integral_limit_is_rejected(db, limit):
     assert not (await run(limit=limit)).success
+
+
+# ── C: MCP turns stay out of the owner's history unless asked for ──
+
+async def test_mcp_turns_hidden_unless_channel_mcp(db):
+    await log_turn(db, "owner whatsapp question", "r1", created_at=NOW - timedelta(hours=2), channel="text")
+    await log_turn(db, "remote whatsapp injection", "r2", created_at=NOW - timedelta(hours=1), channel="mcp")
+    for kwargs in ({}, {"query": "whatsapp"}):
+        text = listing(await run(**kwargs))
+        assert "owner whatsapp" in text and "remote whatsapp" not in text, kwargs
+        text = listing(await run(channel="mcp", **kwargs))
+        assert "remote whatsapp" in text and "owner whatsapp" not in text, kwargs
+
+
+async def test_remote_caller_only_sees_mcp_turns(db):
+    await log_turn(db, "owner private whatsapp", "r1", created_at=NOW - timedelta(hours=2), channel="text")
+    await log_turn(db, "remote whatsapp", "r2", created_at=NOW - timedelta(hours=1), channel="mcp")
+    res = await history.ChatHistory().run(ToolContext(session_id="mcp", channel="mcp", source="mcp"), channel="text")
+    assert "owner private" not in listing(res) and "remote whatsapp" in listing(res)
+
+
+def test_channel_description_lists_mcp():
+    assert "mcp" in history.ChatHistory.parameters["properties"]["channel"]["description"]

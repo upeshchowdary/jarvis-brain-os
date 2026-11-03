@@ -321,7 +321,7 @@ async def test_intent_and_memory_run_concurrently(monkeypatch):
     """analyze waits for the memory lookup to have started: a sequential pipeline would time out."""
     started = asyncio.Event()
 
-    async def memory(self, query, is_command, session_id=None):
+    async def memory(self, query, is_command, session_id=None, remote=False):
         started.set()
         await asyncio.sleep(0)
         return {}, []

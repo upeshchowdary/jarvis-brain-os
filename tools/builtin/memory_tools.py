@@ -4,9 +4,18 @@ from __future__ import annotations
 
 from typing import Any
 
+from automation.gateway import REMOTE_SOURCES
 from memory.long_term import long_term_memory
 from tools.base import Tool, ToolContext, ToolResult, obj
 from tools.registry import register
+
+
+def _remote_refusal(ctx: ToolContext) -> ToolResult | None:
+    """Remote agents (MCP) may not write or erase the owner's memory (it is injected into the owner's prompts)."""
+    if ctx.source in REMOTE_SOURCES:
+        return ToolResult(False, "Only the user can change what JARVIS remembers, from JARVIS itself.",
+                          status="blocked")
+    return None
 
 
 def _pretty_key(key: str) -> str:
@@ -23,6 +32,9 @@ class Remember(Tool):
     side_effect = True  # writes JARVIS's own memory; blocked when untrusted content is in context
 
     async def run(self, ctx: ToolContext, fact: str = "", **_: Any) -> ToolResult:
+        refused = _remote_refusal(ctx)
+        if refused:
+            return refused
         fact = fact.strip()
         if not fact:
             return ToolResult.error("What should I remember?")
@@ -57,6 +69,9 @@ class Forget(Tool):
     side_effect = True
 
     async def run(self, ctx: ToolContext, topic: str = "", **_: Any) -> ToolResult:
+        refused = _remote_refusal(ctx)
+        if refused:
+            return refused
         removed = await long_term_memory.forget(topic)
         if not removed:
             return ToolResult.ok(f"I didn't have anything saved about “{topic}”.")

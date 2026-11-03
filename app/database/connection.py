@@ -2,7 +2,7 @@
 
 import aiosqlite
 from pathlib import Path
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Sequence
 from app.database.models import ChatLogRecord
 from app.utils.logger import logger
 from core.paths import data_path
@@ -126,7 +126,8 @@ class DatabaseManager:
             return None
 
     async def search_chat_fts(self, terms: List[str], limit: int = 20, since_iso: Optional[str] = None,
-                              until_iso: Optional[str] = None, channel: Optional[str] = None) -> List[Dict[str, Any]]:
+                              until_iso: Optional[str] = None, channel: Optional[str] = None,
+                              exclude_channels: Sequence[str] = ()) -> List[Dict[str, Any]]:
         """Chat turns matching any of ``terms`` (FTS5), best bm25 first, optionally within [since, until)."""
         if not terms:
             return []
@@ -141,6 +142,9 @@ class DatabaseManager:
         if channel:
             clauses.append("c.channel = ?")
             params.append(channel)
+        for excluded in exclude_channels:
+            clauses.append("COALESCE(c.channel, 'text') != ?")
+            params.append(excluded)
         sql = f"""
         SELECT c.id, c.user_query, c.response_text, c.created_at, c.channel, bm25(chat_fts) AS score
         FROM chat_fts JOIN chat_logs c ON c.id = chat_fts.rowid
@@ -157,7 +161,7 @@ class DatabaseManager:
             return []
 
     async def recent_chats(self, limit: int, since_iso: Optional[str] = None, until_iso: Optional[str] = None,
-                           channel: Optional[str] = None) -> List[Dict[str, Any]]:
+                           channel: Optional[str] = None, exclude_channels: Sequence[str] = ()) -> List[Dict[str, Any]]:
         """Newest chat turns first, optionally within [since, until) and on one channel."""
         clauses, params = [], []
         if since_iso:
@@ -169,6 +173,9 @@ class DatabaseManager:
         if channel:
             clauses.append("channel = ?")
             params.append(channel)
+        for excluded in exclude_channels:
+            clauses.append("COALESCE(channel, 'text') != ?")
+            params.append(excluded)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         sql = f"""
         SELECT id, session_id, user_query, response_text, created_at, channel FROM chat_logs {where}

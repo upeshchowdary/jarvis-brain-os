@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 from app.database.connection import db_manager
+from automation.gateway import REMOTE_SOURCES
 from memory.vector_memory import content_words, turn_document, turn_text, vector_memory
 
 RRF_K = 60
@@ -45,7 +46,7 @@ def _terms(query: str) -> List[str]:
 async def search(query: str, limit: int = 10, since_utc: Optional[datetime] = None,
                  until_utc: Optional[datetime] = None, channel: Optional[str] = None) -> List[Hit]:
     """Best matches for ``query`` across chat turns, facts and notes, within [since_utc, until_utc);
-    with ``channel`` only chat turns logged on that channel."""
+    with ``channel`` only chat turns logged on that channel. Remote-agent (MCP) turns only when asked for."""
     query = (query or "").strip()
     if not query:
         return []
@@ -53,7 +54,8 @@ async def search(query: str, limit: int = 10, since_utc: Optional[datetime] = No
     pool = max(limit * 3, 20)
     fts_rows, vector_rows = await asyncio.gather(
         db_manager.search_chat_fts(_terms(query), pool, since.isoformat() if since else None,
-                                   until.isoformat() if until else None, channel),
+                                   until.isoformat() if until else None, channel,
+                                   exclude_channels=() if channel else tuple(REMOTE_SOURCES)),
         vector_memory.query(query, pool, since.timestamp() if since else None, until.timestamp() if until else None,
                             channel),
     )
@@ -64,6 +66,8 @@ async def search(query: str, limit: int = 10, since_utc: Optional[datetime] = No
                                          row["created_at"], 1.0 / (RRF_K + rank), "fts")
     for rank, row in enumerate(vector_rows, 1):
         meta = row["metadata"]
+        if not channel and meta.get("channel") in REMOTE_SOURCES:
+            continue
         chat_id = meta.get("chat_id")
         key = f"chat:{chat_id}" if chat_id is not None else f"doc:{row['id']}"
         if key in fused:
@@ -82,9 +86,11 @@ async def search(query: str, limit: int = 10, since_utc: Optional[datetime] = No
 
 async def recent(limit: int, since_utc: Optional[datetime] = None, until_utc: Optional[datetime] = None,
                  channel: Optional[str] = None) -> List[Hit]:
-    """Latest chat turns, newest first, within [since_utc, until_utc) and optionally on one channel."""
+    """Latest chat turns, newest first, within [since_utc, until_utc) and optionally on one channel.
+    Remote-agent (MCP) turns only when ``channel`` asks for them."""
     since, until = _utc(since_utc), _utc(until_utc)
     rows = await db_manager.recent_chats(limit, since.isoformat() if since else None,
-                                         until.isoformat() if until else None, channel)
+                                         until.isoformat() if until else None, channel,
+                                         exclude_channels=() if channel else tuple(REMOTE_SOURCES))
     return [Hit(row["id"], turn_text(row["user_query"], row["response_text"]), row["created_at"], 0.0, "recent")
             for row in rows]

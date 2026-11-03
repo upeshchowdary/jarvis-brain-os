@@ -6,6 +6,7 @@ import re
 from datetime import date, datetime, timedelta, timezone, tzinfo
 from typing import Any, List, Optional, Tuple
 
+from automation.gateway import REMOTE_SOURCES
 from brain.prompts import wrap_untrusted
 from memory import search as memory_search
 from tools.base import Tool, ToolContext, ToolResult, obj
@@ -73,11 +74,11 @@ class ChatHistory(Tool):
     description = ("Read your own past conversations with the user: what they asked you and what you answered. Use for "
                    "'what did I ask you today/yesterday', 'what did we do about X', 'what was that earlier'. "
                    "Optional query (topic), since (today|yesterday|this week|last week|YYYY-MM-DD), channel "
-                   "(text|voice|api), limit (default 20, max 50).")
+                   "(text|voice|api|mcp), limit (default 20, max 50).")
     parameters = obj({
         "query": {"type": "string", "description": "Optional topic to search for; empty = latest chats"},
         "since": {"type": "string", "description": "today | yesterday | this week | last week | YYYY-MM-DD"},
-        "channel": {"type": "string", "description": "Optional: text | voice | api"},
+        "channel": {"type": "string", "description": "Optional: text | voice | api | mcp (MCP turns only when asked)"},
         "limit": {"type": "integer", "description": "How many turns (default 20, max 50)"},
     })
     final = False
@@ -101,6 +102,8 @@ class ChatHistory(Tool):
         start_utc = start.astimezone(timezone.utc) if start else None
         end_utc = end.astimezone(timezone.utc) if end else None
         channel = (channel or "").strip().lower() or None
+        if ctx.source in REMOTE_SOURCES:
+            channel = "mcp"  # a remote agent only reads its own turns, never the owner's conversations
         query = (query or "").strip()
 
         if query:

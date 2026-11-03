@@ -17,6 +17,7 @@ from typing import Any, Callable, Dict, List, Optional
 from pydantic import BaseModel, Field
 
 from app.database.connection import db_manager
+from automation.gateway import REMOTE_SOURCES
 from core.config import settings
 from core.logging import logger
 from core.paths import data_path
@@ -215,6 +216,8 @@ class VectorMemoryManager:
         present = set(collection.get(include=[])["ids"])
         missing = {d.id: d for d in list(self._documents.values()) if d.id not in present}
         for row in turns:
+            if row.get("channel") in REMOTE_SOURCES:  # remote-agent turns are logged, never indexed for recall
+                continue
             doc = turn_document(row["id"], row["user_query"], row["response_text"], created_at=row["created_at"],
                                 channel=row.get("channel") or "text", session_id=row.get("session_id"))
             if doc.id not in present and doc.id not in missing:

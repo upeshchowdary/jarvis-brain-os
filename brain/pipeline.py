@@ -269,12 +269,13 @@ class Brain:
                                                           settings.INTENT_HISTORY_WINDOW_SECONDS)
             intent, (facts, memories) = await asyncio.gather(
                 self._timed(timing, "intent_ms", analyze(query, turns, None if remote else tasks.current())),
-                self._timed(timing, "memory_ms", self._memory_context(query, router.is_imperative(query), sid)),
+                self._timed(timing, "memory_ms",
+                            self._memory_context(query, router.is_imperative(query), sid, remote)),
             )
         else:  # the fast path already understood it; source "fast": this turn never starts/continues/closes a task
             intent = replace(legacy_intent(query), source="fast")
             facts, memories = await self._timed(timing, "memory_ms",
-                                                self._memory_context(query, intent.kind == "action", sid))
+                                                self._memory_context(query, intent.kind == "action", sid, remote))
 
         if "intent_ms" in timing:
             metrics.observe("turn.intent", timing["intent_ms"])
@@ -625,8 +626,13 @@ class Brain:
             "usage": resp.usage,
         }
 
-    async def _memory_context(self, query: str, is_command: bool, session_id: Optional[str] = None):
+    async def _memory_context(self, query: str, is_command: bool, session_id: Optional[str] = None,
+                              remote: bool = False):
+        """The owner's facts and recalled past turns for the prompt. Remote agents (MCP) get neither."""
         from memory.long_term import long_term_memory
+
+        if remote:
+            return {}, []
 
         try:
             facts = await long_term_memory.relevant_facts(query, settings.MAX_FACTS_PER_TURN)
@@ -640,6 +646,8 @@ class Brain:
 
                 # Other sessions only: this session's turns are already in the history.
                 for doc in await asyncio.to_thread(vector_memory.search_similar, query, 3, None, session_id):
+                    if doc.metadata.get("channel") in REMOTE_SOURCES:  # never recall what a remote agent said
+                        continue
                     if doc.score >= settings.MEMORY_RECALL_MIN_SCORE:
                         memories.append(doc.content[:300])
             except Exception:
@@ -680,12 +688,14 @@ class Brain:
                 channel=meta.get("channel", "text"),
             )
             chat_id = await db_manager.log_chat_telemetry(record)
-            if chat_id:
+            # A remote agent's turn stays in the chat log (audit) but is never indexed for recall.
+            if chat_id and record.channel not in REMOTE_SOURCES:
                 await index_turn(chat_id, result.query, result.response, created_at=record.created_at,
                                  channel=record.channel, session_id=result.session_id)
         except Exception as exc:  # never let bookkeeping break a turn
             logger.debug(f"[Brain] post-turn persistence skipped: {exc}")
-        if result.route == "agent" and result.intent == "conversation":
+        remote = result.metadata.get("channel") in REMOTE_SOURCES
+        if result.route == "agent" and result.intent == "conversation" and not remote:
             # Fact extraction may wait on an LLM: its own task, so flush_persistence() doesn't wait for it.
             task = asyncio.get_running_loop().create_task(self._extract_facts(result.query))
             self._extracting.add(task)
