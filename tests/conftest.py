@@ -23,6 +23,10 @@ os.environ["ROUTER_USE_LLM"] = "true"
 # Intent step off by default (no extra LLM call per turn); tests/test_intent.py enables it explicitly.
 os.environ["INTENT_MODEL"] = ""
 os.environ["INTENT_FALLBACK_MODEL"] = ""
+# A local Ollama / LM Studio may be running on the dev PC: point them at a closed port so a test that forgets
+# to mock the LLM fails fast instead of reaching a real local model.
+os.environ["OLLAMA_BASE_URL"] = "http://127.0.0.1:9"
+os.environ["LM_STUDIO_BASE_URL"] = "http://127.0.0.1:9/v1"
 # No real provider keys in tests: every LLM call is mocked.
 for _key in ("GROQ_API_KEY", "GEMINI_API_KEY", "GEMINI_API_KEYS", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
              "OPENROUTER_API_KEY", "DEEPSEEK_API_KEY"):

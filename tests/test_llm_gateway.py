@@ -21,6 +21,7 @@ def gw(monkeypatch):
     monkeypatch.setattr(settings, "DEFAULT_MODEL", "gemini/gemini-test")
     monkeypatch.setattr(settings, "LLM_FALLBACKS", ["groq/llama-test", "ollama/qwen-test"])
     monkeypatch.setattr(settings, "MAX_RETRIES", 1)
+    monkeypatch.setattr(settings, "OLLAMA_BASE_URL", "http://localhost:11434")  # HTTP is mocked here
     connectivity.set_state_for_tests(True)
     seen = []
 
