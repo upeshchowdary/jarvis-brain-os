@@ -31,6 +31,12 @@ from voice.voice_config import voice_config
 from voice.wake_word import acoustic_wake_word, wake_word_detector
 
 _PROGRESS_MAX_WORDS = 6  # spoken progress lines stay short (spec 4.5)
+# Whole utterances (after the wake word / "please" / "now" are stripped) that mean "stop what you're doing".
+# Deliberately not first/last-word matches: "pause the music", "cancel shutdown" and "wait" are not a stop.
+_STOP_PHRASES = {
+    "stop", "stop it", "stop that", "stop this", "stop everything", "stop all", "stop stop", "emergency stop",
+    "cancel", "cancel it", "cancel that", "cancel this", "abort", "abort it", "abort that", "halt",
+}
 _SENTENCE_END = re.compile(r"([.!?])(\s+|$)")
 
 
@@ -133,7 +139,7 @@ class VoiceManager:
             wake_word_detector.record_interaction()
             return {"success": True, "action": "wake_acknowledgment"}
 
-        if barge_in_monitor.is_interrupt_command(command):
+        if self.is_stop_command(command):
             barge_in_monitor.trigger_interruption("User voice stop command")
             tts_engine.speak("Stopped.", priority=True)
             return {"success": True, "action": "interrupted"}
@@ -203,10 +209,12 @@ class VoiceManager:
 
     @staticmethod
     def is_stop_command(text: str) -> bool:
-        """An interrupt word ("stop", "cancel", "wait"…) or one of the router's emergency-stop phrases."""
+        """An explicit stop phrase ("stop", "stop it", "cancel that", "jarvis stop", "emergency stop"…) or one of
+        the router's emergency-stop phrases. Anything else ("pause the music", "cancel shutdown") is a command."""
         from brain import router
 
-        if barge_in_monitor.is_interrupt_command(text):
+        phrase, _ = router.normalize(text)
+        if phrase.lower() in _STOP_PHRASES:
             return True
         decision = router.fast_route(text)
         return decision is not None and decision.rule == "stop"
