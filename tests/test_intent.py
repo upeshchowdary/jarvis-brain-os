@@ -258,10 +258,10 @@ async def test_deadline_returns_legacy_within_bound(monkeypatch):
 
 
 def test_deadline_and_per_call_timeout_values():
-    """G1: a Gemini primary answers in ~1.0-1.7 s: 2.5 s cap, 3.5 s overall, the rest for the fallback."""
-    assert intent_mod.TIMEOUT_SECONDS == 2.5
+    """G2: Groq primary (~0.5-0.7 s) capped at 1.5 s; 3.5 s overall; 2.0 s for the Gemini Flash fallback (~1.6 s)."""
+    assert intent_mod.TIMEOUT_SECONDS == 1.5
     assert intent_mod.DEADLINE_SECONDS == 3.5
-    assert intent_mod.FALLBACK_RESERVE_SECONDS == intent_mod.DEADLINE_SECONDS - intent_mod.TIMEOUT_SECONDS >= 1.0
+    assert intent_mod.FALLBACK_RESERVE_SECONDS == intent_mod.DEADLINE_SECONDS - intent_mod.TIMEOUT_SECONDS == 2.0
 
 
 async def test_429_on_primary_goes_to_fallback_once_without_sleeping(monkeypatch):

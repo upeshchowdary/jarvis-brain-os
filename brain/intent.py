@@ -37,8 +37,8 @@ KINDS = ("action", "question", "chat")
 TOOL_GROUPS: List[str] = sorted(set(GROUPS) | {"keyboard", "history"})
 MAX_TOKENS = 300
 DEADLINE_SECONDS = 3.5  # whole intent step (both models, retries); past it → legacy routing
-TIMEOUT_SECONDS = 2.5  # per primary call (Gemini answers in ~1.0-1.7 s); retries=0, so a 429 goes to the fallback
-FALLBACK_RESERVE_SECONDS = DEADLINE_SECONDS - TIMEOUT_SECONDS  # of the deadline always left for the fallback model
+TIMEOUT_SECONDS = 1.5  # per primary call (Groq answers in ~0.5-0.7 s); retries=0, so a 429 goes to the fallback
+FALLBACK_RESERVE_SECONDS = DEADLINE_SECONDS - TIMEOUT_SECONDS  # 2.0 s always left for the fallback (Flash ~1.6 s)
 COOLDOWN_SECONDS = 30.0  # primary skipped this long after a 429 when the provider sends no reset header
 TIMEOUT_COOLDOWN_SECONDS = 8.0  # ... and this long after two timeouts in a row (one slow call benches nothing)
 _TIMEOUTS_BEFORE_COOLDOWN = 2
