@@ -8,7 +8,7 @@ from brain import router
 
 def test_brain_config():
     assert brain_config.SYSTEM_NAME == "JARVIS"
-    assert brain_config.DEFAULT_MODEL == "gemini/gemini-3.5-flash-lite"
+    assert brain_config.DEFAULT_MODEL == "gemini/gemini-3.5-flash"  # plan B (G2)
 
 
 def test_personality_manager():
