@@ -88,8 +88,8 @@ running JARVIS should keep.
 * `chat_history` output (past turns, which can quote web or file text) reaches the model inside an
   `<untrusted_data>` block. It does not withdraw side-effect tools, so "send that message again" still works.
 * **The intent step** sends each message that isn't an instant command, the last few turns (`INTENT_HISTORY_TURNS`,
-  from every channel) and the current task to `INTENT_MODEL`'s provider (Google Gemini by default, Groq only as the
-  last fallback). `PRIVACY_MODE=local` does not change that: use an Ollama `INTENT_MODEL`, or leave it empty to
+  from every channel) and the current task to `INTENT_MODEL`'s provider (Groq by default, Google Gemini Flash as the
+  fallback). `PRIVACY_MODE=local` does not change that: use an Ollama `INTENT_MODEL`, or leave it empty to
   switch the step off.
 * **Langfuse traces** are opt-in (`LANGFUSE_ENABLED=true`); when on, the query, reply and rewritten request are sent
   to the Langfuse host.

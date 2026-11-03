@@ -19,8 +19,8 @@ safety gateway that previews risky actions and asks before doing them.
 ## Quick start (≈10 minutes)
 
 **You need:** Windows 10/11, Python 3.12+ ([python.org](https://www.python.org/downloads/)), and either one free API
-key — [Gemini](https://aistudio.google.com/app/apikey) is the default for everything; a
-[Groq](https://console.groq.com/keys) key is optional and only used as the last fallback — **or**
+key — [Gemini](https://aistudio.google.com/app/apikey) (Gemini Flash answers chat and actions) and
+[Groq](https://console.groq.com/keys) (gpt-oss-120b understands each message first) are the defaults — **or**
 [Ollama](https://ollama.com) for fully offline use (`ollama pull qwen3.5`).
 
 ```bash
@@ -179,9 +179,9 @@ simulates everything. Web pages, files and screen text are treated as untrusted 
 
 **What leaves your PC:** every message that isn't an instant command goes through the *intent step*, which sends
 it with the last few turns (`INTENT_HISTORY_TURNS`, from voice, console and API) and the current task to
-`INTENT_MODEL`'s provider (Google Gemini by default; Groq only when Gemini fails). `PRIVACY_MODE=local` does not
+`INTENT_MODEL`'s provider (Groq by default; Google Gemini when Groq fails). `PRIVACY_MODE=local` does not
 change that: set `INTENT_MODEL` to an Ollama model, or empty to switch the step off. Replies use `DEFAULT_MODEL` /
-`ACTION_MODEL` (Gemini by default).
+`ACTION_MODEL` (Gemini Flash by default).
 
 ---
 
@@ -191,12 +191,13 @@ All settings live in `.env` (see [.env.example](.env.example)). The important on
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `DEFAULT_MODEL` | `gemini/gemini-3.5-flash-lite` | `provider/model` used for chat |
+| `DEFAULT_MODEL` | `gemini/gemini-3.5-flash` | `provider/model` used for chat (flash-lite is not the default: unusably slow when measured on 2026-11-03) |
 | `ACTION_MODEL` | `gemini/gemini-3.5-flash` | model for turns that act on the PC |
-| `LLM_FALLBACKS` | openai → groq | tried in order if the default fails (Groq is the last cloud fallback) |
-| `INTENT_MODEL` / `INTENT_FALLBACK_MODEL` | `gemini/gemini-3.5-flash-lite` / `groq/openai/gpt-oss-120b` | rewrites each message into a complete request ("next do" → "send Nithesh 'hi' on WhatsApp"); empty = off |
+| `LLM_FALLBACKS` | `groq/openai/gpt-oss-120b` | tried in order if the default fails |
+| `INTENT_MODEL` / `INTENT_FALLBACK_MODEL` | `groq/openai/gpt-oss-120b` / `gemini/gemini-3.5-flash` | rewrites each message into a complete request ("next do" → "send Nithesh 'hi' on WhatsApp"); empty = off |
 | `INTENT_HISTORY_TURNS` | `4` | recent turns (any channel) the intent step sees |
 | `GEMINI_API_KEYS` | empty | extra Gemini keys, comma separated: on a 429 / rejected key JARVIS moves to the next one |
+| `GROQ_API_KEYS` | empty | extra Groq keys, comma separated, rotated the same way (limits are per Groq organisation) |
 | `LLM_KEEPWARM` | `true` | keep provider connections warm (lists models, no tokens) for 15 min after a request |
 | `PRIVACY_MODE` | `cloud` | `local` = files/screens only go to local models |
 | `CONFIRM_MEDIUM_RISK` | `true` | ask before medium-risk actions |
@@ -209,12 +210,14 @@ All settings live in `.env` (see [.env.example](.env.example)). The important on
 | `STT_ENGINE` / `WHISPER_MODEL` | `auto` / `base.en` | speech-to-text engine and model size |
 | `TTS_ENGINE` | `auto` | `kokoro` (if model files present) or `pyttsx3` |
 
-**Free-tier quota:** Gemini is used for everything by default (chat, actions and the intent step), so every turn
-uses Gemini requests. Gemini's free limits (requests per minute and per day) are **per Google Cloud project**: put
-keys from *different* projects in `GEMINI_API_KEYS` and JARVIS moves to the next key when one answers 429; keys
-from the same project share one quota and don't help. When the intent model answers 429, JARVIS skips it until
-the reset time and uses `INTENT_FALLBACK_MODEL` (Groq, if `GROQ_API_KEY` is set). For heavy use, enable billing on
-the Gemini project.
+**Free-tier quota:** the intent step runs on Groq (gpt-oss-120b, ~0.5–0.7 s) and chat and actions on Gemini Flash.
+Groq's free tier allows 8,000 tokens per minute and 1,000 requests per day **per Groq organisation**, which is only
+a few intent turns per minute. Put keys from *separate* organisations in `GROQ_API_KEYS`: JARVIS moves to the next
+key when one answers 429, so each extra organisation adds capacity (keys from the same account share one limit).
+Only when every Groq key is exhausted does JARVIS skip Groq until its reset time and use Gemini Flash for the
+intent step. Gemini's free limits are **per Google Cloud project**, so only `GEMINI_API_KEYS` from different
+projects add quota. `gemini-3.5-flash-lite` is no longer a default: when measured on 2026-11-03 it took 18 s for
+a one-token reply.
 
 ---
 
