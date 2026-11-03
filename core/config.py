@@ -69,11 +69,11 @@ class Settings(BaseSettings):
     DEFAULT_MODEL: str = "gemini/gemini-3.5-flash-lite"
     FAST_MODEL: str = "gemini/gemini-3.5-flash-lite"
     LLM_FALLBACKS: StrList = Field(
-        default_factory=lambda: ["groq/openai/gpt-oss-120b", "openai/gpt-4o-mini", "ollama/qwen3.5:latest"]
+        default_factory=lambda: ["openai/gpt-4o-mini", "groq/openai/gpt-oss-120b"]  # Groq: the last cloud fallback
     )
     # Intent step (empty INTENT_MODEL disables it) and the model used for action turns.
-    INTENT_MODEL: str = "groq/openai/gpt-oss-120b"
-    INTENT_FALLBACK_MODEL: str = "gemini/gemini-3.5-flash-lite"
+    INTENT_MODEL: str = "gemini/gemini-3.5-flash-lite"
+    INTENT_FALLBACK_MODEL: str = "groq/openai/gpt-oss-120b"
     ACTION_MODEL: str = "gemini/gemini-3.5-flash"
     # reasoning_effort per model name (as sent to the provider); JSON object in the environment.
     REASONING_EFFORT: Annotated[Dict[str, str], NoDecode] = Field(default_factory=lambda: {

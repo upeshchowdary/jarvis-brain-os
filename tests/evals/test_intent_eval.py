@@ -2,7 +2,8 @@
 
 * ``test_eval_cases_offline`` (always runs): validates every case and the scoring harness with a FakeLLM
   that returns each case's expected output.
-* ``test_eval_cases_live`` (``-m network``): real ``analyze`` against ``INTENT_MODEL``; prints a per-case
+* ``test_eval_cases_live`` (``-m network``): real ``analyze`` against the configured default ``INTENT_MODEL``
+  (Gemini; ``INTENT_FALLBACK_MODEL`` behind it); prints a per-case
   table, failing cases with the actual output, and latency; asserts accuracy ≥ ``TARGET``.
 
 The suite's conftest blanks every API key and disables the intent step, so the live test reads the real
@@ -24,16 +25,19 @@ import yaml
 from brain import intent as intent_mod
 from brain.intent import KINDS, TOOL_GROUPS, Intent, analyze
 from brain.task_state import PlanItem, Task, TaskStep, Turn
-from core.config import BASE_DIR, settings
+from core.config import BASE_DIR, Settings, settings
 from tests.fakes import FakeLLM, text
 
 CASES_FILE = Path(__file__).with_name("intent_cases.yaml")
 TARGET = 0.90
-LIVE_INTENT_MODEL = "groq/openai/gpt-oss-120b"
-LIVE_FALLBACK_MODEL = "gemini/gemini-3.5-flash-lite"
+# The configured defaults (conftest blanks the runtime settings for the offline suite).
+LIVE_INTENT_MODEL = Settings.model_fields["INTENT_MODEL"].default
+LIVE_FALLBACK_MODEL = Settings.model_fields["INTENT_FALLBACK_MODEL"].default
 _EXPECT_KEYS = {"kind", "continues_task", "single_step", "request_contains", "tool_groups_include"}
 
-# Groq free tier for gpt-oss-120b is 8k tokens/minute: pace calls so the eval measures the model, not 429s.
+# Pace calls so the eval measures the model, not 429s: Gemini's free tier allows ~15 requests/minute per Google
+# Cloud project; Groq's free tier for gpt-oss-120b is 8k tokens/minute (only applied when Groq is the primary).
+_REQUESTS_PER_MINUTE = 12
 _TOKENS_PER_MINUTE = 7500
 _RATE_LIMIT_RETRIES = 2
 _RATE_LIMIT_WAIT_S = 30.0
@@ -212,24 +216,29 @@ def _live_keys() -> Tuple[str, List[str]]:
     if not env_file.exists():
         pytest.skip(f"{env_file} not found")
     env = dotenv_values(env_file)
-    groq = (env.get("GROQ_API_KEY") or "").strip()
+    groq = (env.get("GROQ_API_KEY") or "").strip()  # optional: only the silent last fallback
     gemini = [k.strip() for k in [env.get("GEMINI_API_KEY") or "", *(env.get("GEMINI_API_KEYS") or "").split(",")]
               if k.strip()]
-    if not groq:
+    if not gemini and LIVE_INTENT_MODEL.startswith("gemini/"):
+        pytest.skip("GEMINI_API_KEY / GEMINI_API_KEYS missing in .env")
+    if not groq and LIVE_INTENT_MODEL.startswith("groq/"):
         pytest.skip("GROQ_API_KEY missing in .env")
-    return groq, gemini
+    return groq, list(dict.fromkeys(gemini))
 
 
 async def _pace(recorder: _Recorder, budget: int = _TOKENS_PER_MINUTE) -> None:
-    """Wait until the last minute's primary-model token use leaves room for one more call."""
-    primary = [c for c in recorder.calls if c["model"] == LIVE_INTENT_MODEL and c.get("usage")]
-    est = (primary[-1]["usage"].get("total_tokens", 0) if primary else 0) or 2500
+    """Wait until the last minute's primary-model use leaves room for one more call (requests; tokens for Groq)."""
+    calls = [c for c in recorder.calls if c["model"] == LIVE_INTENT_MODEL]
+    with_usage = [c for c in calls if c.get("usage")]
+    est = (with_usage[-1]["usage"].get("total_tokens", 0) if with_usage else 0) or 2500
     while True:
         now = time.monotonic()
-        used = sum(c["usage"].get("total_tokens", 0) for c in primary if now - c["at"] < 60)
-        if used + est <= budget:
+        recent = [c for c in calls if now - c["at"] < 60]
+        used = sum((c.get("usage") or {}).get("total_tokens", 0) for c in recent)
+        tokens_ok = not LIVE_INTENT_MODEL.startswith("groq/") or used + est <= budget
+        if len(recent) < _REQUESTS_PER_MINUTE and tokens_ok:
             return
-        oldest = min(c["at"] for c in primary if now - c["at"] < 60)
+        oldest = min(c["at"] for c in recent)
         await asyncio.sleep(max(0.5, 60 - (now - oldest) + 0.5))
 
 
@@ -257,6 +266,7 @@ async def test_eval_cases_live(monkeypatch):
                 # Score the primary model on every case: the eval paces and retries rate limits itself, so the
                 # runtime cooldown (skip the primary after a 429 / timeout) must not carry over between cases.
                 intent_mod._COOLDOWN.clear()
+                intent_mod._TIMEOUTS.clear()
                 first = len(recorder.calls)
                 started = time.perf_counter()
                 got = await analyze(case["message"], build_turns(case), build_task(case))

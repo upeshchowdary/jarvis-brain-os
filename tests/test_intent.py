@@ -258,8 +258,10 @@ async def test_deadline_returns_legacy_within_bound(monkeypatch):
 
 
 def test_deadline_and_per_call_timeout_values():
-    assert intent_mod.DEADLINE_SECONDS <= 3.0
-    assert intent_mod.TIMEOUT_SECONDS <= 2.0
+    """G1: a Gemini primary answers in ~1.0-1.7 s: 2.5 s cap, 3.5 s overall, the rest for the fallback."""
+    assert intent_mod.TIMEOUT_SECONDS == 2.5
+    assert intent_mod.DEADLINE_SECONDS == 3.5
+    assert intent_mod.FALLBACK_RESERVE_SECONDS == intent_mod.DEADLINE_SECONDS - intent_mod.TIMEOUT_SECONDS >= 1.0
 
 
 async def test_429_on_primary_goes_to_fallback_once_without_sleeping(monkeypatch):
@@ -355,6 +357,7 @@ def test_correction_example_present():
 @pytest.fixture(autouse=True)
 def no_cooldown(monkeypatch):
     monkeypatch.setattr(intent_mod, "_COOLDOWN", {})
+    monkeypatch.setattr(intent_mod, "_TIMEOUTS", {})
 
 
 def rate_limited(headers=None):
@@ -393,16 +396,54 @@ async def test_primary_429_skips_primary_until_reset(monkeypatch, headers, secon
     assert [c["model"] for c in fake.calls][3:] == [INTENT_MODEL, FALLBACK_MODEL]  # tried again after it
 
 
-async def test_primary_timeout_starts_default_cooldown(monkeypatch):
+def _timeout_exc():
+    exc = LLMUnavailable(["gemini: ReadTimeout"])
+    exc.status, exc.headers, exc.timed_out = None, {}, True
+    return exc
+
+
+async def test_one_slow_primary_call_does_not_bench_it(monkeypatch):
+    """G1: a single timeout must not push the next turns to the fallback."""
     now = [50.0]
     monkeypatch.setattr(intent_mod, "_clock", lambda: now[0])
-    exc = LLMUnavailable(["groq: ReadTimeout"])
-    exc.status, exc.headers, exc.timed_out = None, {}, True
-    fake = primary_fails_with(monkeypatch, exc)
+    fake = primary_fails_with(monkeypatch, _timeout_exc())
     await analyze("next do", [], None)
-    now[0] += 29.0
+    now[0] += 1.0
     await analyze("next do", [], None)
-    assert [c["model"] for c in fake.calls] == [INTENT_MODEL, FALLBACK_MODEL, FALLBACK_MODEL]
+    assert [c["model"] for c in fake.calls] == [INTENT_MODEL, FALLBACK_MODEL, INTENT_MODEL, FALLBACK_MODEL]
+
+
+async def test_two_consecutive_primary_timeouts_start_a_short_cooldown(monkeypatch):
+    now = [50.0]
+    monkeypatch.setattr(intent_mod, "_clock", lambda: now[0])
+    fake = primary_fails_with(monkeypatch, _timeout_exc())
+    await analyze("next do", [], None)
+    await analyze("next do", [], None)  # second timeout in a row → short cooldown
+    assert 5.0 <= intent_mod.TIMEOUT_COOLDOWN_SECONDS <= 10.0
+    now[0] += intent_mod.TIMEOUT_COOLDOWN_SECONDS - 0.5
+    await analyze("next do", [], None)
+    now[0] += 1.0
+    await analyze("next do", [], None)
+    assert [c["model"] for c in fake.calls] == [INTENT_MODEL, FALLBACK_MODEL, INTENT_MODEL, FALLBACK_MODEL,
+                                                FALLBACK_MODEL, INTENT_MODEL, FALLBACK_MODEL]
+
+
+async def test_a_primary_success_resets_the_timeout_count(monkeypatch):
+    now = [50.0]
+    monkeypatch.setattr(intent_mod, "_clock", lambda: now[0])
+    outcomes = iter(["timeout", "ok", "timeout", "ok"])
+
+    def script(messages, tools):
+        if fake.calls[-1]["model"] == INTENT_MODEL and next(outcomes) == "timeout":
+            raise _timeout_exc()
+        return text(json.dumps(NEXT_DO))
+
+    fake = use(monkeypatch, script)
+    for _ in range(3):
+        await analyze("next do", [], None)
+    assert [c["model"] for c in fake.calls] == [INTENT_MODEL, FALLBACK_MODEL, INTENT_MODEL, INTENT_MODEL,
+                                                FALLBACK_MODEL]
+    assert not intent_mod._COOLDOWN.get(INTENT_MODEL)
 
 
 async def test_other_primary_errors_do_not_cool_down(monkeypatch):
@@ -414,10 +455,9 @@ async def test_other_primary_errors_do_not_cool_down(monkeypatch):
     assert [c["model"] for c in fake.calls] == [INTENT_MODEL, FALLBACK_MODEL] * 2
 
 
-def test_primary_timeout_leaves_the_fallback_at_least_1_5_s():
-    assert intent_mod.TIMEOUT_SECONDS <= 1.3
+def test_primary_timeout_leaves_the_fallback_at_least_1_s():
     assert intent_mod.DEADLINE_SECONDS - intent_mod.FALLBACK_RESERVE_SECONDS >= intent_mod.TIMEOUT_SECONDS
-    assert intent_mod.FALLBACK_RESERVE_SECONDS >= 1.5
+    assert intent_mod.FALLBACK_RESERVE_SECONDS >= 1.0
 
 
 class HangingPrimary:
@@ -434,6 +474,11 @@ class HangingPrimary:
 
 
 async def test_hanging_primary_still_lets_the_fallback_answer(monkeypatch):
+    # Same proportions as the real values (2.5 s cap, 3.5 s deadline), scaled down so the test is quick.
+    monkeypatch.setattr(intent_mod, "TIMEOUT_SECONDS", 0.5)
+    monkeypatch.setattr(intent_mod, "DEADLINE_SECONDS", 0.7)
+    monkeypatch.setattr(intent_mod, "FALLBACK_RESERVE_SECONDS", 0.2)
+    monkeypatch.setattr(intent_mod, "_MIN_CALL_SECONDS", 0.05)
     fake = HangingPrimary()
     monkeypatch.setattr(intent_mod, "llm", fake)
     started = time.perf_counter()
@@ -441,8 +486,8 @@ async def test_hanging_primary_still_lets_the_fallback_answer(monkeypatch):
     elapsed = time.perf_counter() - started
     assert got.source == "llm" and [c["model"] for c in fake.calls] == [INTENT_MODEL, FALLBACK_MODEL]
     assert elapsed < intent_mod.TIMEOUT_SECONDS + 0.5
-    assert fake.calls[1]["timeout"] >= intent_mod.FALLBACK_RESERVE_SECONDS
-    assert intent_mod._COOLDOWN.get(INTENT_MODEL)  # the timeout started a cooldown
+    assert fake.calls[1]["timeout"] >= intent_mod.FALLBACK_RESERVE_SECONDS - 0.05
+    assert not intent_mod._COOLDOWN.get(INTENT_MODEL)  # one slow call does not bench the primary
 
 
 # ── I2c: token budget (Groq free tier is 8k tokens/minute) ──────────────

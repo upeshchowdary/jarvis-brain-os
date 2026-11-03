@@ -10,8 +10,8 @@ through the general fallback chain), one retry each on invalid output. If both f
 ``INTENT_MODEL`` is empty, :func:`legacy_intent` keeps today's first-word routing. Never raises.
 
 Free-tier quota: the primary gets at most ``DEADLINE_SECONDS - FALLBACK_RESERVE_SECONDS`` so the fallback
-always has time, and after a 429 or a timeout it is skipped until the provider's ``retry-after`` /
-``x-ratelimit-reset-tokens`` (``COOLDOWN_SECONDS`` when neither is sent).
+always has time. After a 429 it is skipped until the provider's ``retry-after`` / ``x-ratelimit-reset-tokens``
+(``COOLDOWN_SECONDS`` when neither is sent); after two timeouts in a row, for ``TIMEOUT_COOLDOWN_SECONDS``.
 
 The prompt is ordered for provider prompt caching: the system message is static (rules + examples,
 identical on every call); everything that changes per turn goes in the last (user) message.
@@ -36,13 +36,16 @@ from tools.selection import GROUPS
 KINDS = ("action", "question", "chat")
 TOOL_GROUPS: List[str] = sorted(set(GROUPS) | {"keyboard", "history"})
 MAX_TOKENS = 300
-DEADLINE_SECONDS = 3.0  # whole intent step (both models, retries); past it → legacy routing
-TIMEOUT_SECONDS = 1.3  # per primary call; gateway retries are off (retries=0), so a 429 moves straight to the fallback
-FALLBACK_RESERVE_SECONDS = 1.5  # of the deadline always left for the fallback model
-COOLDOWN_SECONDS = 30.0  # primary skipped this long after a 429 / timeout when the provider sends no reset header
+DEADLINE_SECONDS = 3.5  # whole intent step (both models, retries); past it → legacy routing
+TIMEOUT_SECONDS = 2.5  # per primary call (Gemini answers in ~1.0-1.7 s); retries=0, so a 429 goes to the fallback
+FALLBACK_RESERVE_SECONDS = DEADLINE_SECONDS - TIMEOUT_SECONDS  # of the deadline always left for the fallback model
+COOLDOWN_SECONDS = 30.0  # primary skipped this long after a 429 when the provider sends no reset header
+TIMEOUT_COOLDOWN_SECONDS = 8.0  # ... and this long after two timeouts in a row (one slow call benches nothing)
+_TIMEOUTS_BEFORE_COOLDOWN = 2
 _MIN_CALL_SECONDS = 0.3  # don't start a call (retry / fallback) with less time than this left
 _ATTEMPTS_PER_MODEL = 2  # first try + one retry on invalid output
 _COOLDOWN: Dict[str, float] = {}  # model → _clock() time until which it is skipped
+_TIMEOUTS: Dict[str, int] = {}  # model → consecutive timeouts
 _clock = time.monotonic
 _DURATION = re.compile(r"(\d+(?:\.\d+)?)(ms|h|m|s)")
 _USER_CLIP, _ASSISTANT_CLIP = 200, 200
@@ -258,10 +261,19 @@ def _duration(value: Any) -> Optional[float]:
     return sum(float(n) * {"ms": 0.001, "s": 1.0, "m": 60.0, "h": 3600.0}[u] for n, u in parts)
 
 
-def _cooldown_for(exc: BaseException) -> Optional[float]:
-    """How long to skip a model after ``exc``: 429 → reset header (or COOLDOWN_SECONDS), timeout → COOLDOWN_SECONDS."""
-    if isinstance(exc, asyncio.TimeoutError) or getattr(exc, "timed_out", False):
-        return COOLDOWN_SECONDS
+def _timed_out(exc: BaseException) -> bool:
+    return isinstance(exc, asyncio.TimeoutError) or bool(getattr(exc, "timed_out", False))
+
+
+def _cooldown_for(exc: BaseException, model: str) -> Optional[float]:
+    """How long to skip ``model`` after ``exc``: 429 → reset header (or COOLDOWN_SECONDS); a timeout →
+    TIMEOUT_COOLDOWN_SECONDS, but only when it is the second in a row."""
+    if _timed_out(exc):
+        _TIMEOUTS[model] = _TIMEOUTS.get(model, 0) + 1
+        if _TIMEOUTS[model] < _TIMEOUTS_BEFORE_COOLDOWN:
+            return None
+        _TIMEOUTS[model] = 0
+        return TIMEOUT_COOLDOWN_SECONDS
     if getattr(exc, "status", None) == 429:
         headers = getattr(exc, "headers", None) or {}
         for name in ("retry-after", "x-ratelimit-reset-tokens"):
@@ -301,12 +313,14 @@ async def _ask_models(message: str, turns: Sequence[Turn], task: Optional[Task],
                              timeout=timeout, purpose="intent"),
                     timeout)
             except Exception as exc:  # unavailable / rate-limited / slow → next model (no in-gateway retry or sleep)
-                cooldown = _cooldown_for(exc) if primary else None
+                cooldown = _cooldown_for(exc, model) if primary else None
                 if cooldown:
                     _COOLDOWN[model] = _clock() + cooldown
                 logger.warning(f"[intent] {model} unavailable: {exc!r}"
                                + (f"; skipping it for {cooldown:.0f}s" if cooldown else ""))
                 break
+            if primary:
+                _TIMEOUTS.pop(model, None)  # it answered: earlier timeouts no longer count as "in a row"
             intent, reason = parse_intent(resp.content)
             if intent:
                 logger.debug(f"[intent] {model} ({resp.latency_ms} ms): {intent}")
