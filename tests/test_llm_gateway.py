@@ -720,3 +720,54 @@ def test_hedge_setting_default():
     from core.config import Settings
 
     assert Settings().LLM_HEDGE_AFTER_SECONDS == 3.0
+
+
+# ── P1 fix round 1: hedges fail fast, never rotate, never reuse a key the primary used ──
+
+def _auths(seen, prefix="Bearer "):
+    return [r.headers.get("authorization") for r in seen if (r.headers.get("authorization") or "").startswith(prefix)]
+
+
+async def test_key_hedge_is_a_single_attempt(hedge, monkeypatch):
+    seen = hedge(slow={"Bearer gem-key": 1.0},
+                 reply={"Bearer gem-2": lambda r: httpx.Response(429, text="quota", headers={"retry-after": "0"})})
+    res = await llm.chat([{"role": "user", "content": "x"}])
+    assert res.content == "from Bearer gem-key"
+    assert _auths(seen).count("Bearer gem-2") == 1  # no retry after the 429
+    assert gateway_module._KEY_CURSOR.get("gemini", 0) == 0
+
+
+async def test_provider_hedge_is_a_single_attempt_and_never_rotates(hedge, monkeypatch):
+    monkeypatch.setattr(settings, "GEMINI_API_KEYS", [])
+    monkeypatch.setattr(settings, "GROQ_API_KEYS", ["groq-2"])
+    seen = hedge(slow={"Bearer gem-key": 1.0},
+                 reply={"Bearer groq-key": lambda r: httpx.Response(429, text="rate limited")})
+    res = await llm.chat([{"role": "user", "content": "x"}])
+    assert res.content == "from Bearer gem-key"
+    groq = [a for a in _auths(seen) if "groq" in a]
+    assert groq == ["Bearer groq-key"]  # one attempt, no rotation to groq-2, no retry
+    assert gateway_module._KEY_CURSOR.get("groq", 0) == 0  # the intent step's Groq key choice is untouched
+
+
+async def test_streaming_provider_hedge_never_rotates(hedge, monkeypatch):
+    monkeypatch.setattr(settings, "GEMINI_API_KEYS", [])
+    monkeypatch.setattr(settings, "GROQ_API_KEYS", ["groq-2"])
+    seen = hedge(slow={"Bearer gem-key": 0.3}, reply={
+        "Bearer gem-key": _stream("primary"), "Bearer groq-key": lambda r: httpx.Response(401, text="invalid key")})
+    events = [e async for e in llm.stream_events([{"role": "user", "content": "x"}])]
+    assert events[-1][1].content == "primary"
+    assert [a for a in _auths(seen) if "groq" in a] == ["Bearer groq-key"]
+    assert gateway_module._KEY_CURSOR.get("groq", 0) == 0
+
+
+async def test_no_provider_hedge_onto_the_intent_providers_only_key(hedge, monkeypatch):
+    monkeypatch.setattr(settings, "GEMINI_API_KEYS", [])
+    monkeypatch.setattr(settings, "INTENT_MODEL", "groq/llama-test")
+    seen = hedge(slow={"Bearer gem-key": 0.2})
+    res = await llm.chat([{"role": "user", "content": "x"}])
+    assert res.content == "from Bearer gem-key" and len(seen) == 1
+    # With a second Groq key the hedge is allowed again.
+    monkeypatch.setattr(settings, "GROQ_API_KEYS", ["groq-2"])
+    seen.clear()
+    res = await llm.chat([{"role": "user", "content": "x"}])
+    assert len(seen) == 2

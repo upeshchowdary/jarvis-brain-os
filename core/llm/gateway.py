@@ -302,9 +302,9 @@ class LLMGateway:
         return chain
 
     # ── HTTP ────────────────────────────────────────────────────────────
-    def _headers(self, provider: ProviderSpec, key_offset: int = 0) -> Dict[str, str]:
+    def _headers(self, provider: ProviderSpec, key: Optional[str] = None) -> Dict[str, str]:
         headers = {"Content-Type": "application/json"}
-        key = provider.api_key(key_offset)
+        key = key or provider.api_key()
         if key:
             headers["Authorization"] = f"Bearer {key}"
             if provider.name == "anthropic":
@@ -334,16 +334,16 @@ class LLMGateway:
         return payload
 
     async def _post(self, provider: ProviderSpec, payload: Dict[str, Any], timeout: Optional[float],
-                    retries: Optional[int] = None, key_offset: int = 0) -> Dict[str, Any]:
-        """``key_offset`` > 0 (a hedge on a spare key) never rotates the shared key cursor."""
+                    retries: Optional[int] = None, key: Optional[str] = None) -> Dict[str, Any]:
+        """``key``: use exactly this key (a hedge request) and never rotate the shared key cursor."""
         url = f"{provider.base_url()}/chat/completions"
         max_retries = settings.MAX_RETRIES if retries is None else max(0, retries)
         self._last_request = time.monotonic()
         attempt = 0
-        keys_left = 0 if key_offset else len(provider.keys()) - 1
+        keys_left = 0 if key else len(provider.keys()) - 1
         while True:
             try:
-                resp = await self._client().post(url, json=payload, headers=self._headers(provider, key_offset),
+                resp = await self._client().post(url, json=payload, headers=self._headers(provider, key),
                                                  timeout=timeout or settings.TIMEOUT_SECONDS)
                 if keys_left > 0 and _key_exhausted(resp.status_code, resp.text):
                     provider.rotate_key()
@@ -369,16 +369,26 @@ class LLMGateway:
 
     # ── Hedging (tail latency) ──────────────────────────────────────────
     @staticmethod
-    def _hedge_plan(chain: List[Tuple[str, str]], hedge: bool) -> Optional[Tuple[int, int]]:
-        """Where the one hedge for ``chain[0]`` goes: ``(chain index, key offset)``, or None (off / local / nowhere).
-        The provider's next key when it has two or more, else the next (cloud) provider of the chain."""
+    def _hedge_plan(chain: List[Tuple[str, str]], hedge: bool) -> Optional[int]:
+        """Chain index the one hedge for ``chain[0]`` goes to, or None (off / local / nowhere): 0 = the same provider
+        on another key (it has two or more), else 1 = the next (cloud) provider of the chain. Never onto the intent
+        model's provider when that has a single key: the hedge would spend the intent step's quota."""
         if not hedge or settings.LLM_HEDGE_AFTER_SECONDS <= 0 or not chain or PROVIDERS[chain[0][0]].local:
             return None
         if len(PROVIDERS[chain[0][0]].keys()) >= 2:
-            return 0, 1
+            return 0
         if len(chain) > 1 and not PROVIDERS[chain[1][0]].local:
-            return 1, 0
+            target = PROVIDERS[chain[1][0]]
+            intent = (settings.INTENT_MODEL or "").strip()
+            if intent and resolve_model(intent)[0] == target.name and len(target.keys()) < 2:
+                return None
+            return 1
         return None
+
+    @staticmethod
+    def _hedge_key(provider: ProviderSpec, same_provider: bool) -> Optional[str]:
+        """The key a hedge request uses, chosen when the hedge starts (None: no usable key → no hedge)."""
+        return provider.api_key(1) if same_provider else provider.api_key()
 
     @staticmethod
     def _failures(exc: BaseException, primary: Tuple[str, str], hedge: Optional[Tuple[str, str]]):
@@ -388,17 +398,20 @@ class LLMGateway:
         return [(*primary, exc.errors[0])] + ([(*hedge, exc.errors[1])] if hedge and len(exc.errors) > 1 else [])
 
     @staticmethod
-    async def _race(primary: Awaitable[Any], start_hedge: Callable[[], Awaitable[Any]],
+    async def _race(primary: Awaitable[Any], start_hedge: Callable[[], Optional[Awaitable[Any]]],
                     after: float) -> Tuple[Any, bool]:
-        """Await ``primary``; if it hasn't finished within ``after`` s, start ``start_hedge()`` too and take the first
-        success. Returns ``(result, hedge_won)``; raises :class:`_HedgeFailed` when every started request failed
-        (a primary that fails before ``after`` starts no hedge). The loser is cancelled and awaited."""
+        """Await ``primary``; if it hasn't finished within ``after`` s, start ``start_hedge()`` too (None: no hedge
+        possible) and take the first success. Returns ``(result, hedge_won)``; raises :class:`_HedgeFailed` when
+        every started request failed (a primary that fails before ``after`` starts no hedge). The loser is
+        cancelled and awaited."""
         tasks = [asyncio.ensure_future(primary)]
         try:
             done, pending = await asyncio.wait(tasks, timeout=after)
             if not done:
-                metrics.incr("llm.hedge.fired")
-                tasks.append(asyncio.ensure_future(start_hedge()))
+                second = start_hedge()
+                if second is not None:
+                    metrics.incr("llm.hedge.fired")
+                    tasks.append(asyncio.ensure_future(second))
                 pending = set(tasks)
             while True:
                 for task in tasks:  # the primary first when both finished together
@@ -417,7 +430,7 @@ class LLMGateway:
 
     @staticmethod
     async def _race_streams(primary: AsyncIterator[Tuple[str, Any]],
-                            start_hedge: Callable[[], AsyncIterator[Tuple[str, Any]]],
+                            start_hedge: Callable[[], Optional[AsyncIterator[Tuple[str, Any]]]],
                             after: float) -> AsyncIterator[Tuple[str, Any]]:
         """Stream ``primary``; if it has produced no event within ``after`` s, start ``start_hedge()`` too. The
         first stream to produce an event wins: the other is cancelled (never interleaved) and only the winner's
@@ -438,14 +451,18 @@ class LLMGateway:
         deadline = loop.time() + after
         tasks = [asyncio.ensure_future(pump(0, primary))]
         errors: Dict[int, BaseException] = {}
+        hedge_due = True
         try:
             while True:
-                wait = max(0.0, deadline - loop.time()) if len(tasks) == 1 else None
+                wait = max(0.0, deadline - loop.time()) if hedge_due else None
                 try:
                     tag, event, exc = await asyncio.wait_for(queue.get(), wait)
                 except asyncio.TimeoutError:
-                    metrics.incr("llm.hedge.fired")
-                    tasks.append(asyncio.ensure_future(pump(1, start_hedge())))
+                    hedge_due = False
+                    second = start_hedge()
+                    if second is not None:
+                        metrics.incr("llm.hedge.fired")
+                        tasks.append(asyncio.ensure_future(pump(1, second)))
                     continue
                 if event is not None:
                     break
@@ -513,15 +530,19 @@ class LLMGateway:
                 payload = self._payload(mod, messages, tools, tool_choice, temperature, max_tokens, False, prov_name,
                                         response_format)
                 if index == 0 and plan is not None:
-                    h_index, h_offset = plan
+                    h_index = plan
                     backup = chain[h_index]
+                    h_provider = PROVIDERS[backup[0]]
                     h_payload = payload if h_index == index else self._payload(
                         backup[1], messages, tools, tool_choice, temperature, max_tokens, False, backup[0],
                         response_format)
-                    data, hedge_won = await self._race(
-                        self._post(provider, payload, timeout, retries),
-                        lambda: self._post(PROVIDERS[backup[0]], h_payload, timeout, retries, key_offset=h_offset),
-                        settings.LLM_HEDGE_AFTER_SECONDS)
+
+                    def start_hedge():  # one attempt on a pinned key: no retry sleep, no key rotation
+                        key = self._hedge_key(h_provider, h_index == index)
+                        return self._post(h_provider, h_payload, timeout, 0, key=key) if key else None
+
+                    data, hedge_won = await self._race(self._post(provider, payload, timeout, retries), start_hedge,
+                                                       settings.LLM_HEDGE_AFTER_SECONDS)
                     if hedge_won and h_index != index:
                         index, (prov_name, mod) = h_index, backup
                 else:
@@ -548,8 +569,8 @@ class LLMGateway:
                     errors.append(f"{p_name}/{p_mod}: {err}")
                     causes.append(err)
                     logger.warning(f"[LLM] {p_name}/{p_mod} failed: {err}")
-                if isinstance(exc, _HedgeFailed) and len(exc.errors) > 1 and plan is not None and plan[0] != index:
-                    tried.add(plan[0])  # the hedge already tried that provider
+                if isinstance(exc, _HedgeFailed) and len(exc.errors) > 1 and plan is not None and plan != index:
+                    tried.add(plan)  # the hedge already tried that provider
         raise LLMUnavailable(errors, causes)
 
     async def stream_events(
@@ -583,14 +604,20 @@ class LLMGateway:
             try:
                 payload = self._payload(mod, messages, tools, None, temperature, max_tokens, True, prov_name)
                 if index == 0 and plan is not None:
-                    h_index, h_offset = plan
+                    h_index = plan
                     backup = chain[h_index]
+                    h_provider = PROVIDERS[backup[0]]
                     h_payload = payload if h_index == index else self._payload(
                         backup[1], messages, tools, None, temperature, max_tokens, True, backup[0])
-                    source = self._race_streams(
-                        self._stream_one(prov_name, mod, payload, timeout, False),
-                        lambda: self._stream_one(backup[0], backup[1], h_payload, timeout, h_index > 0, h_offset),
-                        settings.LLM_HEDGE_AFTER_SECONDS)
+
+                    def start_hedge():  # one attempt on a pinned key: no key rotation
+                        key = self._hedge_key(h_provider, h_index == index)
+                        if not key:
+                            return None
+                        return self._stream_one(backup[0], backup[1], h_payload, timeout, h_index > 0, key)
+
+                    source = self._race_streams(self._stream_one(prov_name, mod, payload, timeout, False), start_hedge,
+                                                settings.LLM_HEDGE_AFTER_SECONDS)
                 else:
                     source = self._stream_one(prov_name, mod, payload, timeout, index > 0)
                 try:
@@ -604,16 +631,17 @@ class LLMGateway:
                     metrics.incr(f"llm.errors.{p_name}")
                     errors.append(f"{p_name}/{p_mod}: {err}")
                     logger.warning(f"[LLM] stream {p_name}/{p_mod} failed: {err}")
-                if isinstance(exc, _HedgeFailed) and len(exc.errors) > 1 and plan is not None and plan[0] != index:
-                    tried.add(plan[0])
+                if isinstance(exc, _HedgeFailed) and len(exc.errors) > 1 and plan is not None and plan != index:
+                    tried.add(plan)
         raise LLMUnavailable(errors)
 
     async def _stream_one(self, prov_name: str, mod: str, payload: Dict[str, Any], timeout: Optional[float],
-                          fallback_used: bool, key_offset: int = 0) -> AsyncIterator[Tuple[str, Any]]:
+                          fallback_used: bool, key: Optional[str] = None) -> AsyncIterator[Tuple[str, Any]]:
         """One provider's stream: ("text", delta)..., then ("done", LLMResponse). Raises when it fails before any
-        output; a failure after output ends it with an ``"error"`` response (partial output is never restarted)."""
+        output; a failure after output ends it with an ``"error"`` response (partial output is never restarted).
+        ``key``: use exactly this key (a hedge stream), never rotating the shared key cursor."""
         provider = PROVIDERS[prov_name]
-        keys_left = 0 if key_offset else len(provider.keys()) - 1
+        keys_left = 0 if key else len(provider.keys()) - 1
         started = time.perf_counter()
         self._last_request = time.monotonic()
         produced = False
@@ -626,7 +654,7 @@ class LLMGateway:
                 rotated = False
                 async with self._client().stream(
                     "POST", f"{provider.base_url()}/chat/completions", json=payload,
-                    headers=self._headers(provider, key_offset), timeout=timeout or settings.TIMEOUT_SECONDS,
+                    headers=self._headers(provider, key), timeout=timeout or settings.TIMEOUT_SECONDS,
                 ) as resp:
                     if resp.status_code != 200:
                         body = (await resp.aread()).decode("utf-8", "replace")[:300]
