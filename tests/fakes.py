@@ -15,6 +15,12 @@ def call(name: str, /, **arguments: Any) -> LLMResponse:
     return LLMResponse(content="", provider="fake", model="fake-1", tool_calls=[ToolCall(f"call_{name}", name, arguments)])
 
 
+def calls(*specs: tuple) -> LLMResponse:
+    """Several tool calls in one response (parallel calls): ``calls(("open_app", {"name": "x"}), ...)``."""
+    return LLMResponse(content="", provider="fake", model="fake-1",
+                       tool_calls=[ToolCall(f"call_{i}_{name}", name, dict(args)) for i, (name, args) in enumerate(specs)])
+
+
 class FakeLLM:
     """Replays a script. ``script`` is a list of responses or a function(messages, tools) -> response."""
 

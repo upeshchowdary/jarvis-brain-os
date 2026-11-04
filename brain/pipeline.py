@@ -579,6 +579,17 @@ class Brain:
                     tools=[r.to_dict() for r in records], metadata=self._llm_meta(resp, model_label)),
                     "records": records}
                 return
+            # A multi-step action also ends without another round once its work is done (see _work_done).
+            if multi_step and self._work_done(round_records, records, task_id):
+                steps = [r for r in round_records if r.name not in _BOOKKEEPING_TOOLS]
+                text = "\n".join(r.result.message for r in steps if r.result.message)
+                lead = (resp.content + "\n\n") if resp.content else ""
+                timing["llm_ms"] = round(llm_ms, 1)
+                yield {"type": "final", "kwargs": dict(
+                    response=note + lead + text, route="agent", intent=steps[-1].name, status="ok",
+                    tools=[r.to_dict() for r in records], metadata=self._llm_meta(resp, model_label)),
+                    "records": records}
+                return
         else:
             logger.warning("[Brain] Agent hit max steps")
             incomplete = bool(last and last.tool_calls)
@@ -590,6 +601,28 @@ class Brain:
             response=note + answer, route="agent", intent=records[-1].name if records else "conversation",
             status="ok", tools=[r.to_dict() for r in records], metadata=self._llm_meta(last, model_label)),
             "records": records, "outcome": "incomplete" if incomplete else None}
+
+    @staticmethod
+    def _work_done(round_records: List[ToolCallRecord], records: List[ToolCallRecord],
+                   task_id: Optional[str]) -> bool:
+        """Latency: may a multi-step action end after this round without another LLM call?
+
+        Yes when the round ran at least one step, every call in it succeeded, every step tool is ``final``
+        (self-describing; read tools whose output needs a written answer are not) and nothing is left: every
+        item of the task's plan is done or — without a plan — at least two steps succeeded this turn (the intent
+        step said "several actions", so one step alone is not the end). Bookkeeping calls (task_plan) don't count
+        as steps and don't block it.
+        """
+        steps = [r for r in round_records if r.name not in _BOOKKEEPING_TOOLS]
+        if not steps or not all(_done_ok(r) for r in round_records):
+            return False
+        if not all(getattr(registry.get(r.name), "final", False) for r in steps):
+            return False
+        current = tasks.current() if task_id else None
+        plan = current.plan if current is not None and current.id == task_id else []
+        if plan:
+            return all(p.status == "done" for p in plan)
+        return sum(1 for r in records if r.name not in _BOOKKEEPING_TOOLS and _done_ok(r)) >= 2
 
     async def _llm_events(self, messages, tools: List[Tool], model, local_only: bool, stream_tokens: bool):
         schemas = [t.schema() for t in tools] or None

@@ -17,7 +17,7 @@ from brain.intent import Intent, legacy_intent
 from brain.pipeline import brain
 from brain.prompts import AGENT_RULES, build_system_prompt
 from core.config import settings
-from tests.fakes import FakeLLM, call, install, text
+from tests.fakes import FakeLLM, call, calls, install, text
 from tools.base import ToolResult
 from tools.registry import load_builtin_tools, registry
 from tools.selection import CORE, GROUPS, select_tools
@@ -76,7 +76,8 @@ async def test_multi_step_continues_after_final_tool(monkeypatch, tools):
     res = await brain.handle("open whatsapp and msg nithesh hi", "u-multi")
     tools["open_app"].assert_awaited_once()
     tools["send_message"].assert_awaited_once()
-    assert res.response == "Sent." and len(fake.calls) == 3
+    # P1: once both steps succeeded the turn ends without a closing round; the last result is the reply.
+    assert res.response == "Message sent to Nithesh. It may take a moment." and len(fake.calls) == 2
 
 
 async def test_single_step_keeps_shortcut(monkeypatch, tools):
@@ -88,6 +89,7 @@ async def test_single_step_keeps_shortcut(monkeypatch, tools):
 
 async def test_action_step_budget(monkeypatch, tools):
     monkeypatch.setattr(settings, "AGENT_MAX_STEPS_ACTION", 7)
+    tools["open_app"].return_value = ToolResult.error("Couldn't open WhatsApp.")  # failing steps keep the loop going
     patch_intent(monkeypatch, intent("Open WhatsApp again and again", groups=["system"]))
     fake = install(monkeypatch, FakeLLM(lambda m, t: call("open_app", name="whatsapp")))
     await brain.handle("keep opening whatsapp", "u-budget")
@@ -662,3 +664,116 @@ async def test_interleaved_turns_do_not_corrupt_each_others_task(monkeypatch, to
     current = fresh_state.current()
     assert current is not None and current.goal.startswith("Beta")
     assert current.steps == [] and current.plan == [] and current.status == "active"
+
+
+# ── P1 item 1: fewer agent rounds ───────────────────────────────────────
+
+@pytest.fixture
+def typing(monkeypatch, tools):
+    tools["open_app"].return_value = ToolResult.ok("Opened Notepad.")
+    tools["type_text"] = AsyncMock(return_value=ToolResult.ok("Typed 'testing speed'."))
+    monkeypatch.setattr(registry.get("type_text"), "run", tools["type_text"])
+    return tools
+
+
+NOTEPAD = intent("Open Notepad and type 'testing speed'", groups=["keyboard"])
+
+
+async def test_notepad_plan_and_act_then_finish_takes_two_rounds(monkeypatch, typing, fresh_state):
+    patch_intent(monkeypatch, NOTEPAD)
+    fake = install(monkeypatch, FakeLLM([
+        calls(("task_plan", {"action": "set", "subgoals": ["Open Notepad", "Type 'testing speed'"]}),
+              ("open_app", {"name": "notepad"})),
+        calls(("task_plan", {"action": "done", "index": 0}), ("type_text", {"text": "testing speed"}),
+              ("task_plan", {"action": "done", "index": 1})),
+        text("should not be reached"),
+    ]))
+    res = await brain.handle("open notepad and type testing speed", "u-p1-plan")
+    assert len(fake.calls) == 2, [c["tools"] for c in fake.calls]
+    typing["open_app"].assert_awaited_once()
+    typing["type_text"].assert_awaited_once()
+    assert res.response == "Typed 'testing speed'." and res.status == "ok"
+    assert fresh_state.current() is None and fresh_state._last.status == "done"
+
+
+async def test_all_actions_in_one_response_take_one_round(monkeypatch, typing, fresh_state):
+    patch_intent(monkeypatch, NOTEPAD)
+    fake = install(monkeypatch, FakeLLM([
+        calls(("open_app", {"name": "notepad"}), ("type_text", {"text": "testing speed"})),
+        text("should not be reached"),
+    ]))
+    res = await brain.handle("open notepad and type testing speed", "u-p1-batch")
+    assert len(fake.calls) == 1
+    typing["open_app"].assert_awaited_once()
+    typing["type_text"].assert_awaited_once()
+    assert res.response == "Opened Notepad.\nTyped 'testing speed'."
+    assert fresh_state._last.status == "done"
+
+
+async def test_two_steps_one_per_round_without_plan_take_two_rounds(monkeypatch, typing):
+    patch_intent(monkeypatch, NOTEPAD)
+    fake = install(monkeypatch, FakeLLM([call("open_app", name="notepad"), call("type_text", text="testing speed"),
+                                         text("should not be reached")]))
+    res = await brain.handle("open notepad and type testing speed", "u-p1-two")
+    assert len(fake.calls) == 2 and res.response == "Typed 'testing speed'."
+
+
+async def test_first_step_of_multi_step_request_without_plan_continues(monkeypatch, typing):
+    """One step of a request the intent step called multi-step is not the end (no plan says otherwise)."""
+    patch_intent(monkeypatch, NOTEPAD)
+    fake = install(monkeypatch, FakeLLM([call("open_app", name="notepad"), text("Notepad is open; what text?")]))
+    res = await brain.handle("open notepad and type testing speed", "u-p1-first")
+    assert len(fake.calls) == 2 and res.response == "Notepad is open; what text?"
+
+
+async def test_failed_step_still_continues(monkeypatch, typing):
+    typing["type_text"].return_value = ToolResult.error("No window to type into.")
+    patch_intent(monkeypatch, NOTEPAD)
+    fake = install(monkeypatch, FakeLLM([
+        calls(("open_app", {"name": "notepad"}), ("type_text", {"text": "testing speed"})),
+        text("Notepad opened, but typing failed: no window to type into."),
+    ]))
+    res = await brain.handle("open notepad and type testing speed", "u-p1-fail")
+    assert len(fake.calls) == 2 and res.response.startswith("Notepad opened, but typing failed")
+
+
+async def test_open_plan_items_keep_the_turn_going(monkeypatch, typing, fresh_state):
+    patch_intent(monkeypatch, intent("Open Notepad, type 'a', then save it", groups=["keyboard"]))
+    fake = install(monkeypatch, FakeLLM([
+        calls(("task_plan", {"action": "set", "subgoals": ["Open Notepad", "Type 'a'", "Save"]}),
+              ("open_app", {"name": "notepad"})),
+        calls(("task_plan", {"action": "done", "index": 0}), ("type_text", {"text": "a"}),
+              ("task_plan", {"action": "done", "index": 1})),
+        text("Typed it; saving needs a file name."),
+    ]))
+    res = await brain.handle("open notepad type a and save it", "u-p1-open-plan")
+    assert len(fake.calls) == 3 and res.response == "Typed it; saving needs a file name."
+    assert fresh_state.current() is not None and fresh_state.current().status == "active"
+
+
+async def test_read_tool_in_action_turn_gets_synthesis_round(monkeypatch, tools):
+    search = AsyncMock(return_value=ToolResult(True, "3 results.", content_for_llm="1. MrBeast - YouTube"))
+    monkeypatch.setattr(registry.get("web_search"), "run", search)
+    patch_intent(monkeypatch, intent("Find MrBeast's channel and open it", groups=["web"]))
+    fake = install(monkeypatch, FakeLLM([
+        calls(("web_search", {"query": "mrbeast youtube channel"}), ("open_website", {"url": "youtube.com"})),
+        text("Opened MrBeast's channel."),
+    ]))
+    res = await brain.handle("find mr beast channel and open it", "u-p1-read")
+    assert len(fake.calls) == 2 and res.response == "Opened MrBeast's channel."
+
+
+async def test_question_with_history_tool_gets_synthesis_round(monkeypatch):
+    history = AsyncMock(return_value=ToolResult(True, "2 turns today.", content_for_llm="09:00 open notepad"))
+    monkeypatch.setattr(load_builtin_tools().get("chat_history"), "run", history)
+    patch_intent(monkeypatch, intent("Read my chats with JARVIS from today and tell me what I asked",
+                                     kind="question", groups=["history"]))
+    fake = install(monkeypatch, FakeLLM([call("chat_history", period="today"), text("You asked me to open Notepad.")]))
+    res = await brain.handle("what did I ask you today?", "u-p1-history")
+    assert len(fake.calls) == 2 and res.response == "You asked me to open Notepad."
+
+
+def test_agent_rules_plan_only_for_three_or_more_steps():
+    assert "3 or more" in AGENT_RULES and "task_plan" in AGENT_RULES
+    assert "several tools in one response" in AGENT_RULES
+    assert all(line.startswith("- ") for line in AGENT_RULES.splitlines()[1:])  # one rule per line
