@@ -15,7 +15,7 @@ from tests.fakes import FakeLLM, text
 from tools.selection import GROUPS
 
 INTENT_MODEL = "groq/openai/gpt-oss-120b"
-FALLBACK_MODEL = "gemini/gemini-3.5-flash-lite"
+FALLBACK_MODEL = "gemini/gemini-3.5-flash"  # plan B (G2)
 
 NEXT_DO = {
     "request": "Send a WhatsApp message to Nithesh saying hi",
@@ -288,7 +288,7 @@ async def test_429_on_primary_goes_to_fallback_once_without_sleeping(monkeypatch
         seen.append(request.url.host)
         if request.url.host == "api.groq.com":
             return httpx.Response(429, text="rate limited", headers={"retry-after": "5"})
-        body = {"model": "gemini-3.5-flash-lite", "choices": [{"message": {"role": "assistant",
+        body = {"model": "gemini-3.5-flash", "choices": [{"message": {"role": "assistant",
                 "content": json.dumps(NEXT_DO)}, "finish_reason": "stop"}]}
         return httpx.Response(200, json=body)
 
@@ -455,9 +455,10 @@ async def test_other_primary_errors_do_not_cool_down(monkeypatch):
     assert [c["model"] for c in fake.calls] == [INTENT_MODEL, FALLBACK_MODEL] * 2
 
 
-def test_primary_timeout_leaves_the_fallback_at_least_1_s():
+def test_primary_timeout_leaves_the_fallback_at_least_2_s():
+    """Plan B: Gemini Flash (~1.6 s measured) needs the full 2.0 s reserve."""
     assert intent_mod.DEADLINE_SECONDS - intent_mod.FALLBACK_RESERVE_SECONDS >= intent_mod.TIMEOUT_SECONDS
-    assert intent_mod.FALLBACK_RESERVE_SECONDS >= 1.0
+    assert intent_mod.FALLBACK_RESERVE_SECONDS >= 2.0
 
 
 class HangingPrimary:
@@ -474,10 +475,10 @@ class HangingPrimary:
 
 
 async def test_hanging_primary_still_lets_the_fallback_answer(monkeypatch):
-    # Same proportions as the real values (2.5 s cap, 3.5 s deadline), scaled down so the test is quick.
-    monkeypatch.setattr(intent_mod, "TIMEOUT_SECONDS", 0.5)
+    # Same proportions as the real plan-B values (1.5 s cap, 3.5 s deadline, 2.0 s reserve), scaled down 5x.
+    monkeypatch.setattr(intent_mod, "TIMEOUT_SECONDS", 0.3)
     monkeypatch.setattr(intent_mod, "DEADLINE_SECONDS", 0.7)
-    monkeypatch.setattr(intent_mod, "FALLBACK_RESERVE_SECONDS", 0.2)
+    monkeypatch.setattr(intent_mod, "FALLBACK_RESERVE_SECONDS", 0.4)
     monkeypatch.setattr(intent_mod, "_MIN_CALL_SECONDS", 0.05)
     fake = HangingPrimary()
     monkeypatch.setattr(intent_mod, "llm", fake)
