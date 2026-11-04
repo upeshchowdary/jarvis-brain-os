@@ -571,7 +571,10 @@ class Brain:
 
             # Latency: a single-step request whose calls were all self-describing actions ends here, without
             # another LLM round. Multi-step tasks send the results back so the model can continue.
-            if intent.single_step and round_records and all(registry.get(r.name).final for r in round_records):
+            # Never when a call was refused (not offered / blocked by taint): the model must hear about it.
+            executed_all = len(round_records) == len(resp.tool_calls)
+            if (executed_all and intent.single_step and round_records
+                    and all(registry.get(r.name).final for r in round_records)):
                 text = "\n".join(r.result.message for r in round_records if r.result.message)
                 lead = (resp.content + "\n\n") if resp.content else ""
                 timing["llm_ms"] = round(llm_ms, 1)
@@ -583,7 +586,7 @@ class Brain:
                     "records": records}
                 return
             # A multi-step action also ends without another round once its work is done (see _work_done).
-            if multi_step and self._work_done(round_records, records, task_id):
+            if executed_all and multi_step and self._work_done(round_records, records, task_id):
                 steps = [r for r in round_records if r.name not in _BOOKKEEPING_TOOLS]
                 text = "\n".join(r.result.message for r in steps if r.result.message)
                 lead = (resp.content + "\n\n") if resp.content else ""

@@ -839,3 +839,28 @@ async def test_legacy_single_step_action_still_gets_task_plan(monkeypatch, tools
     fake = install(monkeypatch, FakeLLM([text("ok")]))
     await brain.handle("open chrome and then go to github", "u-p1-legacy-plan")
     assert "task_plan" in fake.offered(0) and set(n for n in CORE if registry.get(n)) <= set(fake.offered(0))
+
+
+# ── P1 fix round 1 ──────────────────────────────────────────────────────
+
+async def test_refused_call_keeps_the_multi_step_turn_going(monkeypatch, typing):
+    """A call to a tool that wasn't offered is not done work: the model must hear about it."""
+    patch_intent(monkeypatch, NOTEPAD)  # keyboard group: send_message is not offered
+    fake = install(monkeypatch, FakeLLM([
+        calls(("open_app", {"name": "notepad"}), ("type_text", {"text": "testing speed"}),
+              ("send_message", {"app": "whatsapp", "contact": "Nithesh", "text": "hi"})),
+        text("Typed it; I can't send messages for this request."),
+    ]))
+    res = await brain.handle("open notepad and type testing speed", "u-p1-refused")
+    assert len(fake.calls) == 2 and res.response == "Typed it; I can't send messages for this request."
+    typing["send_message"].assert_not_awaited()
+
+
+async def test_refused_call_keeps_a_single_step_turn_going(monkeypatch, tools):
+    patch_intent(monkeypatch, intent("Launch WhatsApp from the Start menu", single=True, groups=["system"]))
+    fake = install(monkeypatch, FakeLLM([
+        calls(("open_app", {"name": "whatsapp"}), ("send_message", {"app": "whatsapp", "contact": "A", "text": "hi"})),
+        text("WhatsApp is open; sending isn't available here."),
+    ]))
+    res = await brain.handle("whatsapp kholo", "u-p1-refused-single")
+    assert len(fake.calls) == 2 and res.response == "WhatsApp is open; sending isn't available here."
