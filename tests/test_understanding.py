@@ -20,7 +20,7 @@ from core.config import settings
 from tests.fakes import FakeLLM, call, calls, install, text
 from tools.base import ToolResult
 from tools.registry import load_builtin_tools, registry
-from tools.selection import CORE, GROUPS, select_tools
+from tools.selection import CORE, GROUP_CORE, GROUPS, select_tools
 
 
 @pytest.fixture(autouse=True)
@@ -135,7 +135,8 @@ async def test_groups_select_tools_without_keywords(monkeypatch, tools):
     fake = install(monkeypatch, FakeLLM([text("ok")]))
     await brain.handle("next do", "u-groups")
     offered = fake.offered(0)
-    assert "send_message" in offered and "task_plan" in offered and "chat_history" in offered
+    assert "send_message" in offered and "task_plan" in offered
+    assert "chat_history" not in offered  # P1: only with the history group
 
 
 # ── Fast path vs. context ───────────────────────────────────────────────
@@ -371,8 +372,8 @@ def test_safety_rules_win_mid_task(utterance, rule_name):
 def test_select_tools_with_groups_skips_keywords():
     reg = load_builtin_tools()
     names = [t.name for t in select_tools("next do", reg.all(), groups=["messaging"])]
-    assert "send_message" in names and "task_plan" in names and "chat_history" in names
-    assert set(n for n in CORE if reg.get(n)) <= set(names)
+    assert "send_message" in names
+    assert set(n for n in GROUP_CORE if reg.get(n)) <= set(names)  # P1: a slim core, not all of CORE
     assert "set_volume" not in names  # system group not requested, no keyword matching
     assert all(n in names for n in GROUPS["messaging"]["tools"] if reg.get(n))
     # None → keyword behaviour unchanged
@@ -777,3 +778,64 @@ def test_agent_rules_plan_only_for_three_or_more_steps():
     assert "3 or more" in AGENT_RULES and "task_plan" in AGENT_RULES
     assert "several tools in one response" in AGENT_RULES
     assert all(line.startswith("- ") for line in AGENT_RULES.splitlines()[1:])  # one rule per line
+
+
+# ── P1 item 3: smaller per-round prompt ─────────────────────────────────
+
+def _names(groups, pool=None, include=()):
+    reg = load_builtin_tools()
+    return [t.name for t in select_tools("x", pool if pool is not None else reg.all(), groups=groups, include=include)]
+
+
+def test_groups_offer_slim_core_plus_groups():
+    reg = load_builtin_tools()
+    names = _names(["keyboard"])
+    expected = {n for n in GROUP_CORE if reg.get(n)} | set(GROUPS["keyboard"]["tools"])
+    assert set(n for n in names if not n.startswith("mcp_")) == expected
+    for dropped in ("memory_recall", "memory_remember", "system_status", "automation_status", "search_in_browser",
+                    "chat_history", "task_plan"):
+        assert dropped not in names, dropped
+    assert {"clarify", "open_app"} <= set(names)
+
+
+def test_core_tools_come_back_with_their_group():
+    assert {"system_status", "automation_status"} <= set(_names(["system"]))
+    assert {"web_search", "search_in_browser", "open_website"} <= set(_names(["web"]))
+    assert {"memory_recall", "memory_remember"} <= set(_names(["memory"]))
+    assert "chat_history" in _names(["history"])
+    assert "task_plan" in _names(["keyboard"], include=("task_plan",))
+
+
+def test_system_and_keyboard_groups_both_fit():
+    """Before P1 the full CORE + extras + 17 system tools pushed the keyboard group past MAX_TOOLS."""
+    names = _names(["system", "keyboard"], include=("task_plan",))
+    assert {"type_text", "press_keys", "focus_window", "open_app", "task_plan"} <= set(names)
+
+
+def test_keyword_path_keeps_full_core():
+    reg = load_builtin_tools()
+    names = [t.name for t in select_tools("open notepad and type hi", reg.all())]
+    assert set(n for n in CORE if reg.get(n)) <= set(names) and "type_text" in names
+
+
+async def test_single_step_action_with_groups_gets_no_task_plan(monkeypatch, tools):
+    patch_intent(monkeypatch, intent("Launch WhatsApp from the Start menu", single=True, groups=["system"]))
+    fake = install(monkeypatch, FakeLLM([call("open_app", name="whatsapp")]))
+    await brain.handle("whatsapp kholo", "u-p1-noplan")
+    assert "task_plan" not in fake.offered(0) and "open_app" in fake.offered(0)
+
+
+async def test_multi_step_action_with_groups_gets_task_plan(monkeypatch, typing):
+    patch_intent(monkeypatch, intent("Open Notepad and type 'testing speed'", groups=["system", "keyboard"]))
+    fake = install(monkeypatch, FakeLLM([text("ok")]))
+    await brain.handle("open notepad and type testing speed", "u-p1-plan-offered")
+    offered = fake.offered(0)
+    assert "task_plan" in offered and "type_text" in offered and "open_app" in offered
+    assert "memory_remember" not in offered and "chat_history" not in offered
+
+
+async def test_legacy_single_step_action_still_gets_task_plan(monkeypatch, tools):
+    patch_intent(monkeypatch, lambda message, turns, t: legacy_intent(message))
+    fake = install(monkeypatch, FakeLLM([text("ok")]))
+    await brain.handle("open chrome and then go to github", "u-p1-legacy-plan")
+    assert "task_plan" in fake.offered(0) and set(n for n in CORE if registry.get(n)) <= set(fake.offered(0))

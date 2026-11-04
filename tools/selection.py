@@ -90,24 +90,32 @@ GROUPS: Dict[str, Dict[str, Sequence[str]]] = {
 
 MAX_TOOLS = 28
 
-
-# Always offered alongside intent-chosen groups: plan the task, look back at earlier chats.
-GROUP_EXTRAS = ("task_plan", "chat_history")
+# With intent-chosen groups only this slim core is always offered (launch things, the generic GUI fallback,
+# web facts, the time, and clarify); the rest of CORE comes with the group that needs it (CORE_BY_GROUP).
+# Fewer tool schemas = a smaller, faster agent request.
+GROUP_CORE = ("clarify", "open_app", "open_website", "computer_task", "web_search", "get_time_date")
+CORE_BY_GROUP: Dict[str, Sequence[str]] = {
+    "system": ("system_status", "automation_status"),
+    "web": ("search_in_browser",),
+    "memory": ("memory_recall", "memory_remember"),
+}
 
 
 def select_tools(query: str, available: Iterable[Tool], context: str = "",
                  groups: Optional[List[str]] = None, include: Sequence[str] = ()) -> List[Tool]:
     """CORE + matching groups. ``groups`` (from the intent step) replaces keyword matching:
-    CORE + :data:`GROUP_EXTRAS` + those groups' tools. ``None`` → keyword matching on query + context.
-    ``include``: names that must be offered (if available); like CORE and the extras they come first, so
-    the MAX_TOOLS cut never drops them."""
+    :data:`GROUP_CORE` + those groups' tools (with their :data:`CORE_BY_GROUP` part of CORE).
+    ``None`` → full CORE + keyword matching on query + context.
+    ``include``: names that must be offered (if available); like the core they come first, so the MAX_TOOLS
+    cut never drops them (e.g. ``task_plan`` for multi-step actions)."""
     pool = {t.name: t for t in available}
     text = f" {query.lower()} {context.lower()} "
-    wanted: List[str] = [n for n in CORE if n in pool]
+    wanted: List[str] = [n for n in (GROUP_CORE if groups is not None else CORE) if n in pool]
     wanted += [n for n in include if n in pool]
     if groups is not None:
-        wanted += [n for n in GROUP_EXTRAS if n in pool]
-        for g in groups:
+        # Smallest group first: if the MAX_TOOLS cut bites, it trims the tail of the biggest group, not a whole one.
+        for g in sorted(groups, key=lambda g: len(GROUPS.get(g, {}).get("tools", ()))):
+            wanted += [n for n in CORE_BY_GROUP.get(g, ()) if n in pool]
             wanted += [n for n in GROUPS.get(g, {}).get("tools", []) if n in pool]
     else:
         for group in GROUPS.values():
@@ -127,5 +135,7 @@ def select_tools(query: str, available: Iterable[Tool], context: str = "",
     # Anything not covered by groups (e.g. future tools) is still reachable when few tools were chosen.
     if len(ordered) < 14:
         grouped = set(CORE) | {n for g in GROUPS.values() for n in g["tools"]}
+        if groups is not None:
+            grouped |= {"task_plan"}  # offered only via ``include`` (multi-step actions)
         ordered += [t for n, t in pool.items() if n not in grouped and n not in seen and not n.startswith("mcp_")]
     return ordered[:MAX_TOOLS]

@@ -445,9 +445,12 @@ class Brain:
         is_action = intent.kind == "action"
         base = registry.all() if is_action else registry.read_only()  # questions never act
         recent = " ".join(m.get("content", "")[:200] for m in history[-4:])
+        # The rules tell the model to plan multi-step work: task_plan for multi-step actions (and on the legacy
+        # keyword path, whose single_step guess can't be trusted); a single-step action with groups gets none.
+        plan_tool = is_action and (not intent.single_step or not intent.tool_groups)
         offered: Dict[str, Tool] = {t.name: t for t in select_tools(
             intent.request, base, recent, groups=intent.tool_groups or None,
-            include=("task_plan",) if is_action else ())}  # the rules tell the model to plan multi-step work
+            include=("task_plan",) if plan_tool else ())}
         if not is_action or remote:
             offered.pop("task_plan", None)  # a question (or a remote agent) must not edit the current task's plan
         multi_step = is_action and not intent.single_step
