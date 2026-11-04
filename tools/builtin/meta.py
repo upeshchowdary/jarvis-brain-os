@@ -24,7 +24,7 @@ class Clarify(Tool):
 
 
 MODEL_ALIASES = {
-    "gemini": "gemini/gemini-3.5-flash-lite",
+    "gemini": "gemini/gemini-3.5-flash",  # not flash-lite: unusably slow when measured on 2026-11-03
     "groq": "groq/openai/gpt-oss-120b",
     "openai": "openai/gpt-4o-mini",
     "gpt": "openai/gpt-4o-mini",

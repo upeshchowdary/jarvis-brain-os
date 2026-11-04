@@ -186,3 +186,17 @@ def test_planner_drops_shell_steps():
         {"action": "open_app", "target": "notepad"},
     ])
     assert [s["action"] for s in steps] == ["open_app"]
+
+
+def test_gemini_alias_and_defaults_use_gemini_flash():
+    """G3: flash-lite was unusably slow (2026-11-03); "switch to gemini" and the Gemini defaults use Flash."""
+    import inspect
+
+    from core.config import Settings
+    from tools.builtin.meta import UNAVAILABLE_MODELS
+    from vision.providers.gemini import GeminiVisionProvider
+
+    assert resolve_alias("gemini") == "gemini/gemini-3.5-flash"
+    assert Settings.model_fields["GEMINI_MODEL"].default == "gemini-3.5-flash"
+    assert inspect.signature(GeminiVisionProvider.__init__).parameters["model_name"].default == "gemini-3.5-flash"
+    assert "switch to gemini" in UNAVAILABLE_MODELS["llama"]  # still a sensible suggestion
