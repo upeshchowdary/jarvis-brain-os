@@ -719,7 +719,7 @@ async def test_streaming_consumer_that_stops_early_cancels_both_requests(hedge):
 def test_hedge_setting_default():
     from core.config import Settings
 
-    assert Settings().LLM_HEDGE_AFTER_SECONDS == 3.0
+    assert Settings(_env_file=None).LLM_HEDGE_AFTER_SECONDS == 3.0  # the default, not whatever .env says
 
 
 # ── P1 fix round 1: hedges fail fast, never rotate, never reuse a key the primary used ──
