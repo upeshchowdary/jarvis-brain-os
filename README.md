@@ -233,9 +233,11 @@ JARVIS speaks the [Model Context Protocol](https://modelcontextprotocol.io):
   ```
   MCP clients can never approve their own MEDIUM/HIGH actions or any key press / typing — you approve them in
   JARVIS, even in full-control mode. Their LOW actions (open an app or a website, volume, system status) run
-  directly. MCP turns don't see your recent conversation, current task, saved facts or recalled memories, can't
-  save or erase facts, and aren't recalled into your own conversations later. They are still kept in the chat
-  log (audit), and `chat_history` shows them only when asked for `channel=mcp`.
+  directly. MCP clients **can read your chat history** (`chat_history`) and look up your saved facts with a tool
+  (`recall_memory` / `memory_recall`), but your facts and past turns are not put into their prompts automatically,
+  they don't see your recent conversation or current task, and they can't save or delete memories. Their own turns
+  are kept in the chat log (audit) but never recalled into your conversations; `chat_history` lists them only when
+  asked for `channel=mcp`.
 * **As a client** — list servers (GitHub, filesystem, Google Calendar/Gmail …) in `data/mcp_servers.json`; see
   [integrations/mcp_servers.example.json](integrations/mcp_servers.example.json). Their write tools go through the gateway.
 

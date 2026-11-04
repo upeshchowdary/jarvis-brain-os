@@ -205,11 +205,16 @@ async def test_mcp_turns_hidden_unless_channel_mcp(db):
         assert "remote whatsapp" in text and "owner whatsapp" not in text, kwargs
 
 
-async def test_remote_caller_only_sees_mcp_turns(db):
+async def test_remote_caller_reads_history_like_the_owner(db):
+    """G3 (user decision): MCP clients may read the owner's chat history; MCP turns stay hidden by default."""
     await log_turn(db, "owner private whatsapp", "r1", created_at=NOW - timedelta(hours=2), channel="text")
     await log_turn(db, "remote whatsapp", "r2", created_at=NOW - timedelta(hours=1), channel="mcp")
-    res = await history.ChatHistory().run(ToolContext(session_id="mcp", channel="mcp", source="mcp"), channel="text")
-    assert "owner private" not in listing(res) and "remote whatsapp" in listing(res)
+    remote = ToolContext(session_id="mcp", channel="mcp", source="mcp")
+    text = listing(await history.ChatHistory().run(remote))
+    assert "owner private" in text and "remote whatsapp" not in text
+    text = listing(await history.ChatHistory().run(remote, channel="text"))
+    assert "owner private" in text and "remote whatsapp" not in text
+    assert "remote whatsapp" in listing(await history.ChatHistory().run(remote, channel="mcp"))
 
 
 def test_channel_description_lists_mcp():

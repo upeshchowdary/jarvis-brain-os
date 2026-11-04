@@ -6,7 +6,6 @@ import re
 from datetime import date, datetime, timedelta, timezone, tzinfo
 from typing import Any, List, Optional, Tuple
 
-from automation.gateway import REMOTE_SOURCES
 from brain.prompts import wrap_untrusted
 from memory import search as memory_search
 from tools.base import Tool, ToolContext, ToolResult, obj
@@ -102,8 +101,6 @@ class ChatHistory(Tool):
         start_utc = start.astimezone(timezone.utc) if start else None
         end_utc = end.astimezone(timezone.utc) if end else None
         channel = (channel or "").strip().lower() or None
-        if ctx.source in REMOTE_SOURCES:
-            channel = "mcp"  # a remote agent only reads its own turns, never the owner's conversations
         query = (query or "").strip()
 
         if query:

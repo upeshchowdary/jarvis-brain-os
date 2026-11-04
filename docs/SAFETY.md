@@ -60,10 +60,11 @@ running JARVIS should keep.
   MCP turns never enter the PC-wide recent-turns buffer or the current task, so a later "yes" or "continue" from you
   can't be bent into an MCP request. They may trigger the emergency stop or dry-run, but never resume after a stop
   or switch dry-run off.
-* **Remote agents and memory** — MCP turns get none of your saved facts or recalled turns, can't use
-  `memory_remember` / `memory_forget`, and are logged (audit) but never indexed into vector memory, backfilled or
-  mined for facts, so they can't plant text that is later recalled into your prompts. `chat_history` hides them
-  unless asked for `channel=mcp`, and from an MCP turn it only shows MCP turns.
+* **Remote agents and memory** — MCP clients can read your chat history (`chat_history`) and look up saved facts via
+  tools (`recall_memory` / `memory_recall`) — the owner chose to keep that read access. Your facts and recalled turns
+  are never put into their prompts automatically, they can't use `memory_remember` / `memory_forget`, and their turns
+  are logged (audit) but never indexed into vector memory, backfilled or mined for facts, so they can't plant text
+  that is later recalled into your prompts. `chat_history` hides MCP turns unless asked for `channel=mcp`.
 * **Keyboard commands from the console** — when the JARVIS console itself is the window in front, key presses and
   typing first switch back to the previous window (Alt+Tab); if there is none, they fail with "Click the window you
   want first." instead of acting on the console.
