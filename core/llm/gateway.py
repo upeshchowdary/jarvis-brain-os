@@ -54,10 +54,9 @@ class ProviderSpec:
     def keys(self) -> List[str]:
         return [] if self.local else settings.api_keys_for(self.name)
 
-    def api_key(self, offset: int = 0) -> Optional[str]:
-        """The key in use (``offset`` > 0: the one after it, e.g. for a hedge request)."""
+    def api_key(self) -> Optional[str]:
         keys = self.keys()
-        return keys[(_KEY_CURSOR.get(self.name, 0) + offset) % len(keys)] if keys else None
+        return keys[_KEY_CURSOR.get(self.name, 0) % len(keys)] if keys else None
 
     def rotate_key(self) -> None:
         """Move to the provider's next key; the choice sticks for later calls."""
@@ -386,9 +385,19 @@ class LLMGateway:
         return None
 
     @staticmethod
-    def _hedge_key(provider: ProviderSpec, same_provider: bool) -> Optional[str]:
-        """The key a hedge request uses, chosen when the hedge starts (None: no usable key → no hedge)."""
-        return provider.api_key(1) if same_provider else provider.api_key()
+    def _hedge_key(provider: ProviderSpec, same_provider: bool, start: int) -> Optional[str]:
+        """The key a hedge request uses, chosen when the hedge starts (None: no usable key → no hedge).
+
+        Another provider: its current key. The same provider: the key after the one the primary is on now, but
+        never one the primary already went through since it started on key ``start`` (those were exhausted)."""
+        if not same_provider:
+            return provider.api_key()
+        keys = provider.keys()
+        if len(keys) < 2:
+            return None
+        current = _KEY_CURSOR.get(provider.name, 0) % len(keys)
+        used = (current - start) % len(keys) + 1  # keys start..current
+        return keys[(current + 1) % len(keys)] if used < len(keys) else None
 
     @staticmethod
     def _failures(exc: BaseException, primary: Tuple[str, str], hedge: Optional[Tuple[str, str]]):
@@ -533,12 +542,13 @@ class LLMGateway:
                     h_index = plan
                     backup = chain[h_index]
                     h_provider = PROVIDERS[backup[0]]
+                    start_key = _KEY_CURSOR.get(prov_name, 0) % max(1, len(PROVIDERS[prov_name].keys()))
                     h_payload = payload if h_index == index else self._payload(
                         backup[1], messages, tools, tool_choice, temperature, max_tokens, False, backup[0],
                         response_format)
 
                     def start_hedge():  # one attempt on a pinned key: no retry sleep, no key rotation
-                        key = self._hedge_key(h_provider, h_index == index)
+                        key = self._hedge_key(h_provider, h_index == index, start_key)
                         return self._post(h_provider, h_payload, timeout, 0, key=key) if key else None
 
                     data, hedge_won = await self._race(self._post(provider, payload, timeout, retries), start_hedge,
@@ -607,11 +617,12 @@ class LLMGateway:
                     h_index = plan
                     backup = chain[h_index]
                     h_provider = PROVIDERS[backup[0]]
+                    start_key = _KEY_CURSOR.get(prov_name, 0) % max(1, len(PROVIDERS[prov_name].keys()))
                     h_payload = payload if h_index == index else self._payload(
                         backup[1], messages, tools, None, temperature, max_tokens, True, backup[0])
 
                     def start_hedge():  # one attempt on a pinned key: no key rotation
-                        key = self._hedge_key(h_provider, h_index == index)
+                        key = self._hedge_key(h_provider, h_index == index, start_key)
                         if not key:
                             return None
                         return self._stream_one(backup[0], backup[1], h_payload, timeout, h_index > 0, key)

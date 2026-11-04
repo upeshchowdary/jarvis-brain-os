@@ -771,3 +771,19 @@ async def test_no_provider_hedge_onto_the_intent_providers_only_key(hedge, monke
     seen.clear()
     res = await llm.chat([{"role": "user", "content": "x"}])
     assert len(seen) == 2
+
+
+async def test_hedge_skips_keys_the_primary_already_used(hedge, monkeypatch):
+    """gem-key is exhausted, the primary moved on to gem-2 (slow): the hedge must use gem-3, not gem-key."""
+    monkeypatch.setattr(settings, "GEMINI_API_KEYS", ["gem-2", "gem-3"])
+    seen = hedge(slow={"Bearer gem-2": 5.0}, reply={"Bearer gem-key": lambda r: httpx.Response(429, text="quota")})
+    res = await llm.chat([{"role": "user", "content": "x"}])
+    assert res.content == "from Bearer gem-3"
+    assert _auths(seen) == ["Bearer gem-key", "Bearer gem-2", "Bearer gem-3"]
+
+
+async def test_no_key_hedge_when_the_primary_used_every_other_key(hedge):
+    seen = hedge(slow={"Bearer gem-2": 0.3}, reply={"Bearer gem-key": lambda r: httpx.Response(429, text="quota")})
+    res = await llm.chat([{"role": "user", "content": "x"}])
+    assert res.content == "from Bearer gem-2"
+    assert _auths(seen) == ["Bearer gem-key", "Bearer gem-2"]  # no hedge back onto the exhausted key
