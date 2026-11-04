@@ -792,8 +792,7 @@ def test_groups_offer_slim_core_plus_groups():
     names = _names(["keyboard"])
     expected = {n for n in GROUP_CORE if reg.get(n)} | set(GROUPS["keyboard"]["tools"])
     assert set(n for n in names if not n.startswith("mcp_")) == expected
-    for dropped in ("memory_recall", "memory_remember", "system_status", "automation_status", "search_in_browser",
-                    "chat_history", "task_plan"):
+    for dropped in ("system_status", "automation_status", "search_in_browser", "chat_history", "task_plan"):
         assert dropped not in names, dropped
     assert {"clarify", "open_app"} <= set(names)
 
@@ -831,7 +830,7 @@ async def test_multi_step_action_with_groups_gets_task_plan(monkeypatch, typing)
     await brain.handle("open notepad and type testing speed", "u-p1-plan-offered")
     offered = fake.offered(0)
     assert "task_plan" in offered and "type_text" in offered and "open_app" in offered
-    assert "memory_remember" not in offered and "chat_history" not in offered
+    assert "chat_history" not in offered and "memory_remember" in offered  # memory: slim core (fix round 1)
 
 
 async def test_legacy_single_step_action_still_gets_task_plan(monkeypatch, tools):
@@ -864,3 +863,10 @@ async def test_refused_call_keeps_a_single_step_turn_going(monkeypatch, tools):
     ]))
     res = await brain.handle("whatsapp kholo", "u-p1-refused-single")
     assert len(fake.calls) == 2 and res.response == "WhatsApp is open; sending isn't available here."
+
+
+def test_memory_tools_are_in_the_slim_core():
+    """The intent prompt doesn't describe a "memory" group, so remember/recall must not depend on it."""
+    reg = load_builtin_tools()
+    assert {"memory_recall", "memory_remember"} <= set(_names(["keyboard"]))
+    assert "memory_recall" in _names(["history"], pool=reg.read_only())

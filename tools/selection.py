@@ -91,13 +91,14 @@ GROUPS: Dict[str, Dict[str, Sequence[str]]] = {
 MAX_TOOLS = 28
 
 # With intent-chosen groups only this slim core is always offered (launch things, the generic GUI fallback,
-# web facts, the time, and clarify); the rest of CORE comes with the group that needs it (CORE_BY_GROUP).
-# Fewer tool schemas = a smaller, faster agent request.
-GROUP_CORE = ("clarify", "open_app", "open_website", "computer_task", "web_search", "get_time_date")
+# web facts, the time, remember/recall — the intent prompt doesn't describe a "memory" group — and clarify);
+# the rest of CORE comes with the group that needs it (CORE_BY_GROUP). Fewer tool schemas = a smaller, faster
+# agent request.
+GROUP_CORE = ("clarify", "open_app", "open_website", "computer_task", "web_search", "get_time_date",
+              "memory_recall", "memory_remember")
 CORE_BY_GROUP: Dict[str, Sequence[str]] = {
     "system": ("system_status", "automation_status"),
     "web": ("search_in_browser",),
-    "memory": ("memory_recall", "memory_remember"),
 }
 
 
