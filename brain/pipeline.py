@@ -106,10 +106,14 @@ _QUOTES = {"'": "'", '"': '"', "“": "”", "‘": "’"}
 
 
 def _unquote(text: str) -> str:
-    """``'hello'`` → ``hello``: one pair of matching quotes around the whole text is removed."""
+    """``'hello'`` → ``hello``: one pair of matching quotes around the whole text is removed. The quote characters
+    may appear inside only as apostrophes (``'don't forget'``), not as more quoted parts (``'a' and 'b'``)."""
     t = text.strip()
-    if len(t) > 2 and _QUOTES.get(t[0]) == t[-1] and t[0] not in t[1:-1]:
-        return t[1:-1]
+    if len(t) > 2 and _QUOTES.get(t[0]) == t[-1]:
+        inner = t[1:-1]
+        marks = "".join(sorted({t[0], t[-1]}))
+        if not re.search(rf"(?<!\w)[{re.escape(marks)}]|[{re.escape(marks)}](?!\w)", inner):
+            return inner
     return text
 
 

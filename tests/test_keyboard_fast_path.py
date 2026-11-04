@@ -383,3 +383,20 @@ def test_type_reference_with_polite_words_is_not_fast_pathed(utterance):
 def test_type_dictation_still_literal_after_reference_normalisation(utterance, text):
     d = fast_route(utterance)
     assert d is not None and d.tool == "type_text" and d.args == {"text": text}
+
+
+@pytest.mark.parametrize("quoted,text", [
+    ("'hello from jarvis'", "hello from jarvis"),
+    ("'that's all folks'", "that's all folks"),
+    ("'don't forget'", "don't forget"),
+    ("\"it's fine\"", "it's fine"),
+    ("“don’t stop”", "don’t stop"),
+    ("‘it’s here’", "it’s here"),
+    ("'hello' and 'bye'", "'hello' and 'bye'"),  # two quoted parts, not one quoted text
+    ('"a" or "b"', '"a" or "b"'),
+    ("hello", "hello"),
+])
+def test_unquote_rewritten_type_text(quoted, text):
+    from brain.pipeline import _unquote
+
+    assert _unquote(quoted) == text
