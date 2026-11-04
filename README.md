@@ -199,6 +199,7 @@ All settings live in `.env` (see [.env.example](.env.example)). The important on
 | `GEMINI_API_KEYS` | empty | extra Gemini keys, comma separated: on a 429 / rejected key JARVIS moves to the next one |
 | `GROQ_API_KEYS` | empty | extra Groq keys, comma separated, rotated the same way (limits are per Groq organisation) |
 | `LLM_KEEPWARM` | `true` | keep provider connections warm (lists models, no tokens) for 15 min after a request |
+| `LLM_HEDGE_AFTER_SECONDS` | `3.0` | a cloud call with no answer after this long gets one duplicate request on the provider's second key (or the next fallback provider); the first answer wins. Doubles requests only for slow calls; never for local models or the intent step; `0` = off |
 | `PRIVACY_MODE` | `cloud` | `local` = files/screens only go to local models |
 | `CONFIRM_MEDIUM_RISK` | `true` | ask before medium-risk actions |
 | `CONFIRM_HIGH_RISK` | `true` | ask before high-risk actions; `false` = full control (see Safety) |

@@ -6,6 +6,8 @@ Ollama and LM Studio. Features:
 
 * native tool calling (``tools`` / ``tool_calls``) and streaming (text + tool calls);
 * per-call timeouts, retries with exponential backoff on 429 / 5xx / network errors;
+* hedged calls: a cloud call still unanswered after ``LLM_HEDGE_AFTER_SECONDS`` gets one duplicate request on
+  the provider's next key (or the next fallback provider); the first to succeed wins, the other is cancelled;
 * a fallback chain from config (``DEFAULT_MODEL`` → ``LLM_FALLBACKS``);
 * per-model ``reasoning_effort``, structured output (``response_format``) and keep-warm pings
   (``GET /models``: no completion quota is spent);
@@ -22,7 +24,7 @@ import asyncio
 import json
 import time
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, Dict, List, Optional, Sequence, Tuple
+from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, Optional, Sequence, Tuple
 
 import httpx
 
@@ -52,9 +54,10 @@ class ProviderSpec:
     def keys(self) -> List[str]:
         return [] if self.local else settings.api_keys_for(self.name)
 
-    def api_key(self) -> Optional[str]:
+    def api_key(self, offset: int = 0) -> Optional[str]:
+        """The key in use (``offset`` > 0: the one after it, e.g. for a hedge request)."""
         keys = self.keys()
-        return keys[_KEY_CURSOR.get(self.name, 0) % len(keys)] if keys else None
+        return keys[(_KEY_CURSOR.get(self.name, 0) + offset) % len(keys)] if keys else None
 
     def rotate_key(self) -> None:
         """Move to the provider's next key; the choice sticks for later calls."""
@@ -169,6 +172,14 @@ class LLMUnavailable(RuntimeError):
         self.status: Optional[int] = last.status if last else None
         self.headers: Dict[str, str] = last.headers if last else {}
         self.timed_out: bool = bool(last and last.timed_out)
+
+
+class _HedgeFailed(RuntimeError):
+    """The primary request (and the hedge, if it was started) failed: ``errors`` = [primary's, hedge's]."""
+
+    def __init__(self, errors: List[BaseException]) -> None:
+        super().__init__(str(errors[0]))
+        self.errors = errors
 
 
 class _RetryableError(RuntimeError):
@@ -291,9 +302,9 @@ class LLMGateway:
         return chain
 
     # ── HTTP ────────────────────────────────────────────────────────────
-    def _headers(self, provider: ProviderSpec) -> Dict[str, str]:
+    def _headers(self, provider: ProviderSpec, key_offset: int = 0) -> Dict[str, str]:
         headers = {"Content-Type": "application/json"}
-        key = provider.api_key()
+        key = provider.api_key(key_offset)
         if key:
             headers["Authorization"] = f"Bearer {key}"
             if provider.name == "anthropic":
@@ -323,15 +334,17 @@ class LLMGateway:
         return payload
 
     async def _post(self, provider: ProviderSpec, payload: Dict[str, Any], timeout: Optional[float],
-                    retries: Optional[int] = None) -> Dict[str, Any]:
+                    retries: Optional[int] = None, key_offset: int = 0) -> Dict[str, Any]:
+        """``key_offset`` > 0 (a hedge on a spare key) never rotates the shared key cursor."""
         url = f"{provider.base_url()}/chat/completions"
         max_retries = settings.MAX_RETRIES if retries is None else max(0, retries)
         self._last_request = time.monotonic()
         attempt = 0
-        keys_left = len(provider.keys()) - 1
+        keys_left = 0 if key_offset else len(provider.keys()) - 1
         while True:
             try:
-                resp = await self._client().post(url, json=payload, headers=self._headers(provider), timeout=timeout or settings.TIMEOUT_SECONDS)
+                resp = await self._client().post(url, json=payload, headers=self._headers(provider, key_offset),
+                                                 timeout=timeout or settings.TIMEOUT_SECONDS)
                 if keys_left > 0 and _key_exhausted(resp.status_code, resp.text):
                     provider.rotate_key()
                     keys_left -= 1
@@ -354,6 +367,113 @@ class LLMGateway:
                 attempt += 1
                 await asyncio.sleep(delay)
 
+    # ── Hedging (tail latency) ──────────────────────────────────────────
+    @staticmethod
+    def _hedge_plan(chain: List[Tuple[str, str]], hedge: bool) -> Optional[Tuple[int, int]]:
+        """Where the one hedge for ``chain[0]`` goes: ``(chain index, key offset)``, or None (off / local / nowhere).
+        The provider's next key when it has two or more, else the next (cloud) provider of the chain."""
+        if not hedge or settings.LLM_HEDGE_AFTER_SECONDS <= 0 or not chain or PROVIDERS[chain[0][0]].local:
+            return None
+        if len(PROVIDERS[chain[0][0]].keys()) >= 2:
+            return 0, 1
+        if len(chain) > 1 and not PROVIDERS[chain[1][0]].local:
+            return 1, 0
+        return None
+
+    @staticmethod
+    def _failures(exc: BaseException, primary: Tuple[str, str], hedge: Optional[Tuple[str, str]]):
+        """(provider, model, error) per request of a failed attempt (two when a hedge ran and failed too)."""
+        if not isinstance(exc, _HedgeFailed):
+            return [(*primary, exc)]
+        return [(*primary, exc.errors[0])] + ([(*hedge, exc.errors[1])] if hedge and len(exc.errors) > 1 else [])
+
+    @staticmethod
+    async def _race(primary: Awaitable[Any], start_hedge: Callable[[], Awaitable[Any]],
+                    after: float) -> Tuple[Any, bool]:
+        """Await ``primary``; if it hasn't finished within ``after`` s, start ``start_hedge()`` too and take the first
+        success. Returns ``(result, hedge_won)``; raises :class:`_HedgeFailed` when every started request failed
+        (a primary that fails before ``after`` starts no hedge). The loser is cancelled and awaited."""
+        tasks = [asyncio.ensure_future(primary)]
+        try:
+            done, pending = await asyncio.wait(tasks, timeout=after)
+            if not done:
+                metrics.incr("llm.hedge.fired")
+                tasks.append(asyncio.ensure_future(start_hedge()))
+                pending = set(tasks)
+            while True:
+                for task in tasks:  # the primary first when both finished together
+                    if task in done and task.exception() is None:
+                        if task is not tasks[0]:
+                            metrics.incr("llm.hedge.won")
+                        return task.result(), task is not tasks[0]
+                if not pending:
+                    raise _HedgeFailed([t.exception() for t in tasks])
+                done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    @staticmethod
+    async def _race_streams(primary: AsyncIterator[Tuple[str, Any]],
+                            start_hedge: Callable[[], AsyncIterator[Tuple[str, Any]]],
+                            after: float) -> AsyncIterator[Tuple[str, Any]]:
+        """Stream ``primary``; if it has produced no event within ``after`` s, start ``start_hedge()`` too. The
+        first stream to produce an event wins: the other is cancelled (never interleaved) and only the winner's
+        events are passed on. Raises :class:`_HedgeFailed` when every started stream failed before any output."""
+        queue: asyncio.Queue = asyncio.Queue()
+
+        async def pump(tag: int, gen: AsyncIterator[Tuple[str, Any]]) -> None:
+            try:
+                async for item in gen:
+                    await queue.put((tag, item, None))
+                await queue.put((tag, None, None))
+            except Exception as exc:  # handed to the consumer
+                await queue.put((tag, None, exc))
+            finally:
+                await gen.aclose()
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + after
+        tasks = [asyncio.ensure_future(pump(0, primary))]
+        errors: Dict[int, BaseException] = {}
+        try:
+            while True:
+                wait = max(0.0, deadline - loop.time()) if len(tasks) == 1 else None
+                try:
+                    tag, event, exc = await asyncio.wait_for(queue.get(), wait)
+                except asyncio.TimeoutError:
+                    metrics.incr("llm.hedge.fired")
+                    tasks.append(asyncio.ensure_future(pump(1, start_hedge())))
+                    continue
+                if event is not None:
+                    break
+                errors[tag] = exc or RuntimeError("stream ended without output")
+                if len(tasks) == 1 or len(errors) == 2:
+                    raise _HedgeFailed([errors[i] for i in sorted(errors)])
+            winner = tag
+            losers = [t for i, t in enumerate(tasks) if i != winner]
+            for task in losers:
+                task.cancel()
+            await asyncio.gather(*losers, return_exceptions=True)
+            if winner:
+                metrics.incr("llm.hedge.won")
+            while event is not None:
+                yield event
+                if event[0] == "done":
+                    return
+                tag, event, exc = await queue.get()
+                while tag != winner:
+                    tag, event, exc = await queue.get()
+                if exc is not None:
+                    raise exc
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
     # ── Public API ──────────────────────────────────────────────────────
     async def chat(
         self,
@@ -370,19 +490,42 @@ class LLMGateway:
         response_format: Optional[Dict[str, Any]] = None,
         fallbacks: bool = True,
         retries: Optional[int] = None,
+        hedge: Optional[bool] = None,
     ) -> LLMResponse:
         """``fallbacks=False`` tries only ``model`` (callers that run their own fallback order, e.g. the intent step).
 
         ``retries`` overrides ``settings.MAX_RETRIES`` for 429 / 5xx / network errors (0 = fail fast, no backoff sleep).
+        ``hedge``: allow one duplicate request after ``LLM_HEDGE_AFTER_SECONDS`` (default: on, except for
+        ``fallbacks=False`` / ``purpose="intent"`` calls, which keep their own deadline).
         """
         errors: List[str] = []
         causes: List[BaseException] = []
         chain = await self.candidates(model, purpose, local_only, fallbacks)
+        plan = self._hedge_plan(chain, (fallbacks and purpose != "intent") if hedge is None else hedge)
+        tried = set()  # chain indexes a failed hedge already used
         for index, (prov_name, mod) in enumerate(chain):
+            if index in tried:
+                continue
             provider = PROVIDERS[prov_name]
             started = time.perf_counter()
+            backup: Optional[Tuple[str, str]] = None
             try:
-                data = await self._post(provider, self._payload(mod, messages, tools, tool_choice, temperature, max_tokens, False, prov_name, response_format), timeout, retries)
+                payload = self._payload(mod, messages, tools, tool_choice, temperature, max_tokens, False, prov_name,
+                                        response_format)
+                if index == 0 and plan is not None:
+                    h_index, h_offset = plan
+                    backup = chain[h_index]
+                    h_payload = payload if h_index == index else self._payload(
+                        backup[1], messages, tools, tool_choice, temperature, max_tokens, False, backup[0],
+                        response_format)
+                    data, hedge_won = await self._race(
+                        self._post(provider, payload, timeout, retries),
+                        lambda: self._post(PROVIDERS[backup[0]], h_payload, timeout, retries, key_offset=h_offset),
+                        settings.LLM_HEDGE_AFTER_SECONDS)
+                    if hedge_won and h_index != index:
+                        index, (prov_name, mod) = h_index, backup
+                else:
+                    data = await self._post(provider, payload, timeout, retries)
                 choice = (data.get("choices") or [{}])[0]
                 message = choice.get("message") or {}
                 elapsed = (time.perf_counter() - started) * 1000
@@ -400,10 +543,13 @@ class LLMGateway:
                     fallback_used=index > 0,
                 )
             except Exception as exc:
-                metrics.incr(f"llm.errors.{prov_name}")
-                errors.append(f"{prov_name}/{mod}: {exc}")
-                causes.append(exc)
-                logger.warning(f"[LLM] {prov_name}/{mod} failed: {exc}")
+                for p_name, p_mod, err in self._failures(exc, (prov_name, mod), backup):
+                    metrics.incr(f"llm.errors.{p_name}")
+                    errors.append(f"{p_name}/{p_mod}: {err}")
+                    causes.append(err)
+                    logger.warning(f"[LLM] {p_name}/{p_mod} failed: {err}")
+                if isinstance(exc, _HedgeFailed) and len(exc.errors) > 1 and plan is not None and plan[0] != index:
+                    tried.add(plan[0])  # the hedge already tried that provider
         raise LLMUnavailable(errors, causes)
 
     async def stream_events(
@@ -417,82 +563,120 @@ class LLMGateway:
         purpose: str = "chat",
         local_only: bool = False,
         timeout: Optional[float] = None,
+        hedge: Optional[bool] = None,
     ) -> AsyncIterator[Tuple[str, Any]]:
         """Yield ("text", delta) events, then a final ("done", LLMResponse).
 
         Tool-call deltas are accumulated and returned in the final response. A provider
         that fails before producing output is skipped in favour of the next candidate.
+        ``hedge`` (default: on, except ``purpose="intent"``): when the first candidate has produced no output after
+        ``LLM_HEDGE_AFTER_SECONDS``, one duplicate stream starts; the first to produce output is used.
         """
         errors: List[str] = []
         chain = await self.candidates(model, purpose, local_only)
+        plan = self._hedge_plan(chain, purpose != "intent" if hedge is None else hedge)
+        tried = set()  # chain indexes a failed hedge already used
         for index, (prov_name, mod) in enumerate(chain):
-            provider = PROVIDERS[prov_name]
-            keys_left = len(provider.keys()) - 1
-            started = time.perf_counter()
-            self._last_request = time.monotonic()
-            produced = False
-            text_parts: List[str] = []
-            calls: Dict[int, Dict[str, Any]] = {}
-            finish = None
+            if index in tried:
+                continue
+            backup: Optional[Tuple[str, str]] = None
             try:
                 payload = self._payload(mod, messages, tools, None, temperature, max_tokens, True, prov_name)
-                rotated = True
-                while rotated:
-                    rotated = False
-                    async with self._client().stream(
-                        "POST", f"{provider.base_url()}/chat/completions", json=payload,
-                        headers=self._headers(provider), timeout=timeout or settings.TIMEOUT_SECONDS,
-                    ) as resp:
-                        if resp.status_code != 200:
-                            body = (await resp.aread()).decode("utf-8", "replace")[:300]
-                            if keys_left > 0 and _key_exhausted(resp.status_code, body):
-                                provider.rotate_key()
-                                keys_left -= 1
-                                rotated = True
-                                continue
-                            raise RuntimeError(f"HTTP {resp.status_code}: {body}")
-                        async for line in resp.aiter_lines():
-                            if not line.startswith("data:"):
-                                continue
-                            chunk_str = line[5:].strip()
-                            if chunk_str == "[DONE]":
-                                break
-                            try:
-                                chunk = json.loads(chunk_str)
-                            except ValueError:
-                                continue
-                            choice = (chunk.get("choices") or [{}])[0]
-                            delta = choice.get("delta") or {}
-                            finish = choice.get("finish_reason") or finish
-                            if delta.get("content"):
-                                produced = True
-                                text_parts.append(delta["content"])
-                                yield "text", delta["content"]
-                            for tc in delta.get("tool_calls") or []:
-                                produced = True
-                                slot = calls.setdefault(int(tc.get("index", len(calls))), {"id": "", "name": "", "args": "", "extra": None})
-                                slot["id"] = tc.get("id") or slot["id"]
-                                slot["extra"] = tc.get("extra_content") or slot["extra"]
-                                fn = tc.get("function") or {}
-                                slot["name"] = fn.get("name") or slot["name"]
-                                slot["args"] += fn.get("arguments") or ""
-                elapsed = (time.perf_counter() - started) * 1000
-                metrics.observe(f"llm.{prov_name}", elapsed)
-                metrics.incr(f"llm.calls.{prov_name}")
-                tool_calls = [
-                    ToolCall(c["id"] or f"call_{i}", c["name"], _parse_arguments(c["args"]), c["args"], c["extra"])
-                    for i, c in sorted(calls.items()) if c["name"]
-                ]
-                yield "done", LLMResponse("".join(text_parts).strip(), prov_name, mod, tool_calls, round(elapsed, 1), {}, finish, index > 0)
+                if index == 0 and plan is not None:
+                    h_index, h_offset = plan
+                    backup = chain[h_index]
+                    h_payload = payload if h_index == index else self._payload(
+                        backup[1], messages, tools, None, temperature, max_tokens, True, backup[0])
+                    source = self._race_streams(
+                        self._stream_one(prov_name, mod, payload, timeout, False),
+                        lambda: self._stream_one(backup[0], backup[1], h_payload, timeout, h_index > 0, h_offset),
+                        settings.LLM_HEDGE_AFTER_SECONDS)
+                else:
+                    source = self._stream_one(prov_name, mod, payload, timeout, index > 0)
+                try:
+                    async for event in source:
+                        yield event
+                finally:
+                    await source.aclose()  # a consumer that stops early must not leave a request running
                 return
             except Exception as exc:
-                metrics.incr(f"llm.errors.{prov_name}")
-                errors.append(f"{prov_name}/{mod}: {exc}")
-                logger.warning(f"[LLM] stream {prov_name}/{mod} failed: {exc}")
-                if produced:  # partial output already sent; don't restart on another provider
-                    yield "done", LLMResponse("".join(text_parts).strip(), prov_name, mod, [], 0.0, {}, "error", index > 0)
-                    return
+                for p_name, p_mod, err in self._failures(exc, (prov_name, mod), backup):
+                    metrics.incr(f"llm.errors.{p_name}")
+                    errors.append(f"{p_name}/{p_mod}: {err}")
+                    logger.warning(f"[LLM] stream {p_name}/{p_mod} failed: {err}")
+                if isinstance(exc, _HedgeFailed) and len(exc.errors) > 1 and plan is not None and plan[0] != index:
+                    tried.add(plan[0])
         raise LLMUnavailable(errors)
+
+    async def _stream_one(self, prov_name: str, mod: str, payload: Dict[str, Any], timeout: Optional[float],
+                          fallback_used: bool, key_offset: int = 0) -> AsyncIterator[Tuple[str, Any]]:
+        """One provider's stream: ("text", delta)..., then ("done", LLMResponse). Raises when it fails before any
+        output; a failure after output ends it with an ``"error"`` response (partial output is never restarted)."""
+        provider = PROVIDERS[prov_name]
+        keys_left = 0 if key_offset else len(provider.keys()) - 1
+        started = time.perf_counter()
+        self._last_request = time.monotonic()
+        produced = False
+        text_parts: List[str] = []
+        calls: Dict[int, Dict[str, Any]] = {}
+        finish = None
+        try:
+            rotated = True
+            while rotated:
+                rotated = False
+                async with self._client().stream(
+                    "POST", f"{provider.base_url()}/chat/completions", json=payload,
+                    headers=self._headers(provider, key_offset), timeout=timeout or settings.TIMEOUT_SECONDS,
+                ) as resp:
+                    if resp.status_code != 200:
+                        body = (await resp.aread()).decode("utf-8", "replace")[:300]
+                        if keys_left > 0 and _key_exhausted(resp.status_code, body):
+                            provider.rotate_key()
+                            keys_left -= 1
+                            rotated = True
+                            continue
+                        raise RuntimeError(f"HTTP {resp.status_code}: {body}")
+                    async for line in resp.aiter_lines():
+                        if not line.startswith("data:"):
+                            continue
+                        chunk_str = line[5:].strip()
+                        if chunk_str == "[DONE]":
+                            break
+                        try:
+                            chunk = json.loads(chunk_str)
+                        except ValueError:
+                            continue
+                        choice = (chunk.get("choices") or [{}])[0]
+                        delta = choice.get("delta") or {}
+                        finish = choice.get("finish_reason") or finish
+                        if delta.get("content"):
+                            produced = True
+                            text_parts.append(delta["content"])
+                            yield "text", delta["content"]
+                        for tc in delta.get("tool_calls") or []:
+                            produced = True
+                            slot = calls.setdefault(int(tc.get("index", len(calls))), {"id": "", "name": "", "args": "", "extra": None})
+                            slot["id"] = tc.get("id") or slot["id"]
+                            slot["extra"] = tc.get("extra_content") or slot["extra"]
+                            fn = tc.get("function") or {}
+                            slot["name"] = fn.get("name") or slot["name"]
+                            slot["args"] += fn.get("arguments") or ""
+        except Exception as exc:
+            if not produced:
+                raise
+            metrics.incr(f"llm.errors.{prov_name}")
+            logger.warning(f"[LLM] stream {prov_name}/{mod} failed: {exc}")
+            yield "done", LLMResponse("".join(text_parts).strip(), prov_name, mod, [], 0.0, {}, "error", fallback_used)
+            return
+        elapsed = (time.perf_counter() - started) * 1000
+        metrics.observe(f"llm.{prov_name}", elapsed)
+        metrics.incr(f"llm.calls.{prov_name}")
+        tool_calls = [
+            ToolCall(c["id"] or f"call_{i}", c["name"], _parse_arguments(c["args"]), c["args"], c["extra"])
+            for i, c in sorted(calls.items()) if c["name"]
+        ]
+        yield "done", LLMResponse("".join(text_parts).strip(), prov_name, mod, tool_calls, round(elapsed, 1), {},
+                                  finish, fallback_used)
 
     async def stream(self, messages: List[Dict[str, Any]], **kwargs: Any) -> AsyncIterator[str]:
         """Plain text streaming convenience wrapper."""

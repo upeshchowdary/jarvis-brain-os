@@ -79,6 +79,9 @@ class Settings(BaseSettings):
         "gemini-3.5-flash-lite": "minimal", "gemini-3.5-flash": "minimal", "openai/gpt-oss-120b": "low",
     })
     LLM_KEEPWARM: bool = True  # ping the cloud providers while idle so the first real call isn't cold
+    # Tail latency: a cloud call with no answer (or, streaming, no output) after this many seconds gets ONE duplicate
+    # request on the provider's next key (or the next fallback provider); the first to succeed wins. 0 = off.
+    LLM_HEDGE_AFTER_SECONDS: float = Field(default=3.0, ge=0.0)
     LANGFUSE_ENABLED: bool = False  # optional tracing (pip install .[tracing]); off = langfuse is never imported
     LANGFUSE_PUBLIC_KEY: str = ""
     LANGFUSE_SECRET_KEY: str = ""

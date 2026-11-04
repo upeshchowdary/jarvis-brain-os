@@ -514,3 +514,209 @@ async def test_all_groq_keys_exhausted_reports_429(gw, monkeypatch):
     with pytest.raises(LLMUnavailable) as info:
         await llm.chat([{"role": "user", "content": "x"}], model="groq/llama-test", fallbacks=False, retries=0)
     assert len(seen) == 3 and info.value.status == 429 and info.value.headers["retry-after"] == "9"
+
+
+
+# ── P1 item 2: hedged calls for tail latency ─────────────────────────────
+
+import asyncio  # noqa: E402
+
+from core.metrics import metrics  # noqa: E402
+
+
+def _counter(name):
+    return metrics.snapshot()["counters"].get(name, 0)
+
+
+@pytest.fixture
+def hedge(gw, monkeypatch):
+    """Hedge after 50 ms; Gemini has two keys. ``slow`` maps an Authorization header / host to a delay."""
+    monkeypatch.setattr(settings, "LLM_HEDGE_AFTER_SECONDS", 0.05)
+    monkeypatch.setattr(settings, "GEMINI_API_KEYS", ["gem-2"])
+    state = {"cancelled": [], "slow": {}, "reply": {}}
+
+    def use(slow=None, reply=None):
+        state["slow"], state["reply"] = dict(slow or {}), dict(reply or {})
+
+        async def handler(request):
+            who = request.headers.get("authorization") or request.url.host
+            delay = state["slow"].get(who, 0.0)
+            try:
+                if delay:
+                    await asyncio.sleep(delay)
+            except asyncio.CancelledError:
+                state["cancelled"].append(who)
+                raise
+            make = state["reply"].get(who)
+            return make(request) if make else ok(f"from {who}")
+
+        return gw(handler)
+
+    use.state = state
+    return use
+
+
+def _sse(*parts):
+    body = "".join(f"data: {json.dumps({'choices': [{'delta': {'content': p}}]})}\n\n" for p in parts)
+    return body + "data: [DONE]\n\n"
+
+
+def _stream(*parts):
+    return lambda request: httpx.Response(200, text=_sse(*parts), headers={"content-type": "text/event-stream"})
+
+
+async def test_slow_primary_is_hedged_on_the_next_key(hedge):
+    fired, won = _counter("llm.hedge.fired"), _counter("llm.hedge.won")
+    seen = hedge(slow={"Bearer gem-key": 5.0})
+    started = asyncio.get_running_loop().time()
+    res = await llm.chat([{"role": "user", "content": "x"}])
+    assert asyncio.get_running_loop().time() - started < 2.0
+    assert res.content == "from Bearer gem-2" and res.provider == "gemini" and res.fallback_used is False
+    assert [r.headers["authorization"] for r in seen] == ["Bearer gem-key", "Bearer gem-2"]
+    assert hedge.state["cancelled"] == ["Bearer gem-key"]  # the loser was cancelled, not left running
+    assert _counter("llm.hedge.fired") == fired + 1 and _counter("llm.hedge.won") == won + 1
+    # A slow key is not an exhausted key: the next call still starts on the first one.
+    seen.clear()
+    hedge.state["slow"] = {}
+    await llm.chat([{"role": "user", "content": "y"}])
+    assert [r.headers["authorization"] for r in seen] == ["Bearer gem-key"]
+
+
+async def test_single_key_hedges_on_the_next_provider(hedge, monkeypatch):
+    monkeypatch.setattr(settings, "GEMINI_API_KEYS", [])
+    seen = hedge(slow={"Bearer gem-key": 5.0})
+    res = await llm.chat([{"role": "user", "content": "x"}])
+    assert res.provider == "groq" and res.fallback_used is True and res.content == "from Bearer groq-key"
+    assert len(seen) == 2 and hedge.state["cancelled"] == ["Bearer gem-key"]
+
+
+async def test_fast_primary_is_not_hedged(hedge):
+    fired = _counter("llm.hedge.fired")
+    seen = hedge()
+    res = await llm.chat([{"role": "user", "content": "x"}])
+    assert res.content == "from Bearer gem-key" and len(seen) == 1 and _counter("llm.hedge.fired") == fired
+
+
+async def test_primary_that_answers_after_the_hedge_fired_can_still_win(hedge):
+    fired, won = _counter("llm.hedge.fired"), _counter("llm.hedge.won")
+    seen = hedge(slow={"Bearer gem-key": 0.15, "Bearer gem-2": 5.0})
+    res = await llm.chat([{"role": "user", "content": "x"}])
+    assert res.content == "from Bearer gem-key" and len(seen) == 2
+    assert hedge.state["cancelled"] == ["Bearer gem-2"]
+    assert _counter("llm.hedge.fired") == fired + 1 and _counter("llm.hedge.won") == won
+
+
+async def test_failed_hedge_waits_for_the_primary(hedge):
+    seen = hedge(slow={"Bearer gem-key": 0.15},
+                 reply={"Bearer gem-2": lambda r: httpx.Response(400, text="bad request")})
+    res = await llm.chat([{"role": "user", "content": "x"}])
+    assert res.content == "from Bearer gem-key" and len(seen) == 2
+
+
+async def test_hedge_disabled_at_zero(hedge, monkeypatch):
+    monkeypatch.setattr(settings, "LLM_HEDGE_AFTER_SECONDS", 0.0)
+    seen = hedge(slow={"Bearer gem-key": 0.2})
+    res = await llm.chat([{"role": "user", "content": "x"}])
+    assert res.content == "from Bearer gem-key" and len(seen) == 1
+
+
+async def test_intent_calls_are_never_hedged(hedge):
+    seen = hedge(slow={"Bearer gem-key": 0.2})
+    res = await llm.chat([{"role": "user", "content": "x"}], model="gemini/gemini-test", fallbacks=False,
+                         retries=0, purpose="intent")
+    assert res.content == "from Bearer gem-key" and len(seen) == 1
+
+
+async def test_local_providers_are_never_hedged(hedge):
+    seen = hedge(slow={"127.0.0.1": 0.2})
+    res = await llm.chat([{"role": "user", "content": "x"}], model="ollama/qwen-test")
+    assert res.provider == "ollama" and len(seen) == 1
+    seen.clear()
+    await llm.chat([{"role": "user", "content": "x"}], local_only=True)
+    assert len(seen) == 1
+
+
+async def test_hedge_request_keeps_gemini_signature_handling(hedge, monkeypatch):
+    history = [
+        {"role": "user", "content": "x"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "fast_0", "type": "function", "function": {"name": "screen_look", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "fast_0", "content": "screen"},
+    ]
+    seen = hedge(slow={"Bearer gem-key": 5.0})
+    await llm.chat(history)
+    primary, hedged = (json.loads(r.content)["messages"] for r in seen)
+    assert primary == hedged  # the same messages, on the second key
+    assert hedged[1]["tool_calls"][0]["extra_content"]["google"]["thought_signature"] == "skip_thought_signature_validator"
+    # Hedging on another provider strips the Gemini-only field as usual.
+    monkeypatch.setattr(settings, "GEMINI_API_KEYS", [])
+    seen.clear()
+    await llm.chat(history)
+    assert "extra_content" not in json.loads(seen[1].content)["messages"][1]["tool_calls"][0]
+    assert "extra_content" not in history[1]["tool_calls"][0]
+
+
+async def test_streaming_slow_primary_is_hedged_without_interleaving(hedge):
+    fired, won = _counter("llm.hedge.fired"), _counter("llm.hedge.won")
+    seen = hedge(slow={"Bearer gem-key": 5.0},
+                 reply={"Bearer gem-key": _stream("slow ", "primary"), "Bearer gem-2": _stream("fast ", "hedge")})
+    events = [e async for e in llm.stream_events([{"role": "user", "content": "x"}])]
+    assert [v for k, v in events if k == "text"] == ["fast ", "hedge"]
+    assert events[-1][0] == "done" and events[-1][1].content == "fast hedge" and events[-1][1].provider == "gemini"
+    assert len(seen) == 2 and hedge.state["cancelled"] == ["Bearer gem-key"]
+    assert _counter("llm.hedge.fired") == fired + 1 and _counter("llm.hedge.won") == won + 1
+
+
+async def test_streaming_headers_without_output_still_get_hedged(hedge):
+    """'Started' means first output, not just response headers: a stalled body is hedged too."""
+    closed = []
+
+    async def stalled_body():
+        try:
+            await asyncio.sleep(5)
+            yield b""
+        finally:
+            closed.append(True)
+
+    seen = hedge(reply={
+        "Bearer gem-key": lambda r: httpx.Response(200, content=stalled_body(),
+                                                   headers={"content-type": "text/event-stream"}),
+        "Bearer gem-2": _stream("hedged"),
+    })
+    events = [e async for e in llm.stream_events([{"role": "user", "content": "x"}])]
+    assert [v for k, v in events if k == "text"] == ["hedged"] and len(seen) == 2
+    assert closed == [True]  # the primary's stream was closed
+
+
+async def test_streaming_primary_that_started_is_not_hedged(hedge):
+    async def slow_tail():
+        yield _sse("first ").replace("data: [DONE]\n\n", "").encode()
+        await asyncio.sleep(0.2)
+        yield _sse("second").encode()
+
+    seen = hedge(reply={"Bearer gem-key": lambda r: httpx.Response(200, content=slow_tail(),
+                                                                   headers={"content-type": "text/event-stream"})})
+    events = [e async for e in llm.stream_events([{"role": "user", "content": "x"}])]
+    assert [v for k, v in events if k == "text"] == ["first ", "second"] and len(seen) == 1
+
+
+async def test_streaming_hedge_disabled_at_zero(hedge, monkeypatch):
+    monkeypatch.setattr(settings, "LLM_HEDGE_AFTER_SECONDS", 0.0)
+    seen = hedge(slow={"Bearer gem-key": 0.2}, reply={"Bearer gem-key": _stream("primary")})
+    events = [e async for e in llm.stream_events([{"role": "user", "content": "x"}])]
+    assert events[-1][1].content == "primary" and len(seen) == 1
+
+
+async def test_streaming_consumer_that_stops_early_cancels_both_requests(hedge):
+    seen = hedge(slow={"Bearer gem-key": 5.0},
+                 reply={"Bearer gem-key": _stream("a"), "Bearer gem-2": _stream("b ", "c")})
+    gen = llm.stream_events([{"role": "user", "content": "x"}])
+    first = await gen.__anext__()
+    await gen.aclose()
+    assert first == ("text", "b ") and len(seen) == 2 and hedge.state["cancelled"] == ["Bearer gem-key"]
+
+
+def test_hedge_setting_default():
+    from core.config import Settings
+
+    assert Settings().LLM_HEDGE_AFTER_SECONDS == 3.0
