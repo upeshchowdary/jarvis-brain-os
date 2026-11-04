@@ -611,6 +611,8 @@ class LLMGateway:
             if index in tried:
                 continue
             backup: Optional[Tuple[str, str]] = None
+            sent: List[str] = []  # text already passed on: once there is any, never restart elsewhere
+            produced = False
             try:
                 payload = self._payload(mod, messages, tools, None, temperature, max_tokens, True, prov_name)
                 if index == 0 and plan is not None:
@@ -633,6 +635,9 @@ class LLMGateway:
                     source = self._stream_one(prov_name, mod, payload, timeout, index > 0)
                 try:
                     async for event in source:
+                        produced = True
+                        if event[0] == "text":
+                            sent.append(event[1])
                         yield event
                 finally:
                     await source.aclose()  # a consumer that stops early must not leave a request running
@@ -642,6 +647,9 @@ class LLMGateway:
                     metrics.incr(f"llm.errors.{p_name}")
                     errors.append(f"{p_name}/{p_mod}: {err}")
                     logger.warning(f"[LLM] stream {p_name}/{p_mod} failed: {err}")
+                if produced:  # partial output already sent; don't restart on another provider
+                    yield "done", LLMResponse("".join(sent).strip(), prov_name, mod, [], 0.0, {}, "error", index > 0)
+                    return
                 if isinstance(exc, _HedgeFailed) and len(exc.errors) > 1 and plan is not None and plan != index:
                     tried.add(plan)
         raise LLMUnavailable(errors)

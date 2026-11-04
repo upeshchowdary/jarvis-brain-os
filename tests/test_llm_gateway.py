@@ -787,3 +787,25 @@ async def test_no_key_hedge_when_the_primary_used_every_other_key(hedge):
     res = await llm.chat([{"role": "user", "content": "x"}])
     assert res.content == "from Bearer gem-2"
     assert _auths(seen) == ["Bearer gem-key", "Bearer gem-2"]  # no hedge back onto the exhausted key
+
+
+async def test_stream_failure_after_output_is_never_restarted_on_another_provider(gw, monkeypatch):
+    """stream_events itself guards partial output, whatever a single-provider stream does after it."""
+    from core.llm import LLMResponse
+
+    tried = []
+
+    async def fake_stream_one(prov_name, mod, payload, timeout, fallback_used, key=None):
+        tried.append(prov_name)
+        if prov_name == "gemini":
+            yield "text", "partial "
+            raise RuntimeError("connection dropped")
+        yield "text", "other provider"
+        yield "done", LLMResponse("other provider", prov_name, mod)
+
+    monkeypatch.setattr(settings, "LLM_HEDGE_AFTER_SECONDS", 0.0)
+    monkeypatch.setattr(llm, "_stream_one", fake_stream_one)
+    events = [e async for e in llm.stream_events([{"role": "user", "content": "x"}])]
+    assert tried == ["gemini"]
+    assert [v for k, v in events if k == "text"] == ["partial "]
+    assert events[-1][0] == "done" and events[-1][1].finish_reason == "error" and events[-1][1].content == "partial"
