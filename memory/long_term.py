@@ -255,7 +255,9 @@ class LongTermMemoryManager:
             'Reply JSON only: {"facts": [{"key": "snake_case_topic", "value": "short value"}]} or {"facts": []}'
         )
         try:
-            res = await llm.chat([{"role": "user", "content": prompt}], temperature=0.0, max_tokens=150, purpose="fast")
+            # Runs after the turn (off the critical path): never worth a duplicate hedge request.
+            res = await llm.chat([{"role": "user", "content": prompt}], temperature=0.0, max_tokens=150, purpose="fast",
+                                 hedge=False)
             data = extract_json(res.content) or {}
         except Exception:
             return []
