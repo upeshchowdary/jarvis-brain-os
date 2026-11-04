@@ -490,8 +490,20 @@ SAFETY_RULES = ("stop", "resume", "dry_run_on", "dry_run_off", "automation_statu
 # "type it again", "type that", "type the same thing": a reference to earlier text, not dictation. Only the whole
 # text counts ("type it is raining" is typed); the intent step resolves the reference from history.
 _TYPE_REFERENCE = re.compile(
-    r"(?:(?:it|that|this|the same(?: thing| text| one)?|same(?: thing| text)?)(?: (?:again|once more|one more time))?"
-    r"|again|once more|one more time)[.!]*", re.I)
+    r"(?:(?:it|that(?: one)?|this(?: one)?|the same(?: thing| text| one)?|same(?: thing| text)?)"
+    r"(?: (?:again|once again|once more|one more time))?|again|once again|once more|one more time)", re.I)
+# Trailing courtesy / address around a reference: "it again please", "it again, jarvis", "that, thanks".
+_TYPE_REFERENCE_TAIL = re.compile(r"(?:[\s,.!]+(?:please|pls|thanks|thank you|jarvis|now))+[\s,.!]*$|[\s,.!]+$", re.I)
+
+
+def _is_type_reference(raw: str) -> bool:
+    core = raw.strip()
+    for _ in range(4):
+        new = _TYPE_REFERENCE_TAIL.sub("", core)
+        if new == core:
+            break
+        core = new
+    return bool(_TYPE_REFERENCE.fullmatch(core.replace(",", " ").strip()))
 
 
 def _raw_type_text(text: str) -> str:
@@ -508,7 +520,7 @@ def _raw_type_text(text: str) -> str:
     if not m:
         return ""
     raw = m.group(1).strip()
-    return "" if raw.endswith("?") or _TYPE_REFERENCE.fullmatch(raw) else raw
+    return "" if raw.endswith("?") or _is_type_reference(raw) else raw
 
 
 def fast_route(text: str, task_active: bool = False) -> Optional[RouteDecision]:

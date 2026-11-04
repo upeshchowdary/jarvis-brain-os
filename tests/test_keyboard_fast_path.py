@@ -360,3 +360,26 @@ async def test_type_it_again_goes_to_the_intent_step(monkeypatch, on_windows):
     assert res.route == "fast_path" and res.status == "needs_confirmation", res.response
     assert res.tools[0]["arguments"] == {"text": "hello from jarvis"}
     sk.assert_not_called()
+
+
+# ── P1 fix round 1: reference phrasings with polite words / wake word / commas ──
+
+@pytest.mark.parametrize("utterance", [
+    "type it again please", "type it again, jarvis", "type that once again", "type that one", "type this one",
+    "type it again please jarvis", "type that, please", "Type it once again!", "type the same thing again, thanks",
+])
+def test_type_reference_with_polite_words_is_not_fast_pathed(utterance):
+    d = fast_route(utterance)
+    assert d is None or d.tool != "type_text", d
+
+
+@pytest.mark.parametrize("utterance,text", [
+    ("type it is raining", "it is raining"),
+    ("type that's all folks", "that's all folks"),
+    ("type again and again", "again and again"),
+    ("type that one is mine", "that one is mine"),
+    ("type please call me", "please call me"),
+])
+def test_type_dictation_still_literal_after_reference_normalisation(utterance, text):
+    d = fast_route(utterance)
+    assert d is not None and d.tool == "type_text" and d.args == {"text": text}
