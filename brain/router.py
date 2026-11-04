@@ -487,9 +487,17 @@ CONTEXT_WORDS = {"next", "previous", "back", "again", "that", "it", "do it", "co
 SAFETY_RULES = ("stop", "resume", "dry_run_on", "dry_run_off", "automation_status")
 
 
+# "type it again", "type that", "type the same thing": a reference to earlier text, not dictation. Only the whole
+# text counts ("type it is raining" is typed); the intent step resolves the reference from history.
+_TYPE_REFERENCE = re.compile(
+    r"(?:(?:it|that|this|the same(?: thing| text| one)?|same(?: thing| text)?)(?: (?:again|once more|one more time))?"
+    r"|again|once more|one more time)[.!]*", re.I)
+
+
 def _raw_type_text(text: str) -> str:
     """Text after the leading "type" verb, from the raw utterance: casing, punctuation and polite words kept.
-    Only a wake word and polite prefix before the verb are removed. "" when it ends with "?" (a question)."""
+    Only a wake word and polite prefix before the verb are removed. "" when it ends with "?" (a question) or is a
+    reference to earlier text ("it again", "that", "the same thing")."""
     t = _WAKE.sub("", re.sub(r"\s+", " ", text.strip()))
     for _ in range(4):
         new = _POLITE_PREFIX.sub("", t)
@@ -500,7 +508,7 @@ def _raw_type_text(text: str) -> str:
     if not m:
         return ""
     raw = m.group(1).strip()
-    return "" if raw.endswith("?") else raw
+    return "" if raw.endswith("?") or _TYPE_REFERENCE.fullmatch(raw) else raw
 
 
 def fast_route(text: str, task_active: bool = False) -> Optional[RouteDecision]:
@@ -525,7 +533,7 @@ def fast_route(text: str, task_active: bool = False) -> Optional[RouteDecision]:
                 if name == "type_text":
                     raw = _raw_type_text(text)
                     if not raw:
-                        return None  # question-like ("...?") or nothing to type: let the intent step decide
+                        return None  # question-like ("...?"), a reference ("it again") or nothing to type: intent step
                     decision.args = {"text": raw}
                 return decision
     if not t or t.lower() == "type" or t.lower().startswith("type "):

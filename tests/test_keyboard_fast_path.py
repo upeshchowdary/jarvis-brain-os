@@ -317,3 +317,46 @@ def test_console_title_matches_the_page():
 
     html = (Path(__file__).resolve().parents[1] / "app" / "static" / "web" / "console.html").read_text(encoding="utf-8")
     assert f"<title>{kb.CONSOLE_TITLE}</title>" in html
+
+
+# ── P1 item 4: "type it again" is a reference to earlier text, not dictation ──
+
+@pytest.mark.parametrize("utterance", [
+    "type it again", "type that", "type it", "Type it again.", "jarvis type that again", "please type it again",
+    "type the same", "type the same thing", "type same thing", "type again", "type that one more time",
+])
+def test_type_reference_is_not_fast_pathed(utterance):
+    d = fast_route(utterance)
+    assert d is None or d.tool != "type_text", d
+
+
+@pytest.mark.parametrize("utterance,text", [
+    ("type it is raining", "it is raining"),
+    ("type that's all folks", "that's all folks"),
+    ("type again and again", "again and again"),
+])
+def test_type_text_starting_with_a_reference_word_is_still_typed(utterance, text):
+    d = fast_route(utterance)
+    assert d is not None and d.tool == "type_text" and d.args == {"text": text}
+
+
+async def test_type_it_again_goes_to_the_intent_step(monkeypatch, on_windows):
+    """The intent step resolves "it" from history; a quoted rewrite types the text without the quotes."""
+    from unittest.mock import AsyncMock
+
+    import brain.pipeline as pipeline
+    from brain.intent import Intent
+
+    analyze = AsyncMock(return_value=Intent(
+        request="Type 'hello from jarvis'", kind="action", continues_task=True, single_step=True,
+        tool_groups=["keyboard"], needs_screen=False, source="llm"))
+    monkeypatch.setattr(pipeline, "analyze", analyze)
+    try:
+        with patch("automation.ops.keyboard.send_keys") as sk:
+            res = await brain_handle("type it again", "kb-type-again")
+    finally:
+        gateway.cancel_session("kb-type-again")
+    analyze.assert_awaited_once()
+    assert res.route == "fast_path" and res.status == "needs_confirmation", res.response
+    assert res.tools[0]["arguments"] == {"text": "hello from jarvis"}
+    sk.assert_not_called()

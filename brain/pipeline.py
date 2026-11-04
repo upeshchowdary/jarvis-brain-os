@@ -102,6 +102,17 @@ def _action_notes(records: List[ToolCallRecord], limit: int = _NOTES_LIMIT) -> s
     return note if len(note) <= limit else note[: limit - 2] + "…]"
 
 
+_QUOTES = {"'": "'", '"': '"', "“": "”", "‘": "’"}
+
+
+def _unquote(text: str) -> str:
+    """``'hello'`` → ``hello``: one pair of matching quotes around the whole text is removed."""
+    t = text.strip()
+    if len(t) > 2 and _QUOTES.get(t[0]) == t[-1] and t[0] not in t[1:-1]:
+        return t[1:-1]
+    return text
+
+
 def _progress_text(message: str) -> str:
     """First sentence of a tool result, ≤ 60 chars (shown while a multi-step task runs)."""
     text = " ".join((message or "").split())
@@ -291,6 +302,8 @@ class Brain:
             hit = self._fast_hit(decision)
             if hit is not None and hit[0].side_effect and intent.kind != "action":
                 hit = None  # questions never act, even if their rewrite reads like a command
+            if hit is not None and hit[0].name == "type_text":  # the rewrite quotes the text: "Type 'hi there'"
+                hit = (hit[0], {**hit[1], "text": _unquote(hit[1].get("text", ""))})
             if hit is not None:
                 tool, args = hit
                 # The model's rewrite, not the user's own words: tools see origin "rewrite" (e.g. typing is MEDIUM).
