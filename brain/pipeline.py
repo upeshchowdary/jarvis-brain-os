@@ -105,8 +105,9 @@ def _action_notes(records: List[ToolCallRecord], limit: int = _NOTES_LIMIT) -> s
 def _typing_target(records: List[ToolCallRecord]) -> Optional[Dict[str, Any]]:
     """The window a ``type_text`` call should go to: where this turn's latest ``open_app`` ended up.
 
-    ``{"app", "first_input", ["hwnd", "title", "kind"]}`` (window fields only when open_app confirmed a window;
-    ``first_input`` is False once something was typed since). None when the turn opened no app, or a later
+    ``{"app", "first_input", "opened", ["hwnd", "title", "kind"]}`` (window fields only when open_app confirmed a
+    window: without them keyboard.type fails closed; ``first_input`` is False once something was typed since;
+    ``opened`` is whether open_app succeeded). None when the turn opened no app, or a later
     ``focus_window`` chose another window: typing then goes to the foreground window as before.
     """
     typed = False
@@ -119,7 +120,8 @@ def _typing_target(records: List[ToolCallRecord]) -> Optional[Dict[str, Any]]:
             steps = r.result.data.get("steps", []) if isinstance(r.result.data, dict) else []
             data = next((s.get("data") for s in steps if s.get("op") == "app.open"), None)
             data = data if isinstance(data, dict) else {}
-            target: Dict[str, Any] = {"app": data.get("app") or str(r.arguments.get("name", "")), "first_input": not typed}
+            target: Dict[str, Any] = {"app": data.get("app") or str(r.arguments.get("name", "")),
+                                      "first_input": not typed, "opened": bool(r.result.success)}
             window = data.get("window") if r.result.success else None
             if isinstance(window, dict) and isinstance(window.get("hwnd"), int):
                 target.update(hwnd=window["hwnd"], title=window.get("title", ""), kind=window.get("kind", ""))

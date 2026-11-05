@@ -30,6 +30,7 @@ _IS_WINDOWS = sys.platform == "win32"
 CONSOLE_TITLE = "JARVIS console"  # <title> of app/static/web/console.html
 _SWITCH_SETTLE_SECONDS = 0.15
 _FOCUS_SETTLE_SECONDS = 0.3
+_NEW_DOCUMENT_CHECKS = 4  # x _FOCUS_SETTLE_SECONDS: how long Ctrl+N gets to show a new document
 # Tab-model apps that reuse one window: when "open X and type …" only brought an existing window to the front,
 # a new document is made first (Ctrl+N). Deliberately narrow: other tab-model apps (Terminal, browsers, Explorer)
 # don't map Ctrl+N to "new empty document".
@@ -127,32 +128,41 @@ def _target_label(target: Dict[str, Any]) -> str:
     return str(target.get("title") or target.get("app") or "that window")
 
 
+def _is_clean_untitled(title: str) -> bool:
+    """"Untitled - Notepad": an empty, unmodified new document (a leading "*" marks unsaved changes)."""
+    return title.strip().lower().startswith("untitled")
+
+
 async def _go_to_target(target: Dict[str, Any]) -> Optional[str]:
-    """Bring ``target`` to the front (and a fresh Notepad document when needed). An error message, or None."""
+    """Bring ``target`` to the front (and a fresh Notepad document when needed). An error message, or None.
+
+    Fails closed: without a window open_app confirmed (hwnd + kind), nothing is typed, even when a window with
+    the app's name is in front: that may be the user's own (unsaved) document.
+    """
     hwnd = target.get("hwnd") if isinstance(target.get("hwnd"), int) else None
-    app = str(target.get("app") or "").strip()
+    app = str(target.get("app") or "").strip() or "the app"
+    if hwnd is None or not target.get("kind"):
+        if target.get("opened", True):
+            return f"I opened {app} but couldn't confirm its window, so I didn't type anything."
+        return f"{app} didn't open, so I didn't type anything."
 
-    def in_front(fg: Any) -> bool:
-        fg_hwnd, fg_title = fg
-        if hwnd is not None:
-            return fg_hwnd == hwnd
-        return bool(app) and app.lower() in (fg_title or "").lower()
-
-    if not in_front(await _run(impl.foreground_window)):
-        if hwnd is not None:
-            moved = await _run(impl.focus_hwnd, hwnd)
-        else:
-            moved = bool(app) and await _run(impl.window_action, app, "focus")
+    fg_hwnd, _ = await _run(impl.foreground_window)
+    if fg_hwnd != hwnd:
+        moved = await _run(impl.focus_hwnd, hwnd)
         if moved:
             await asyncio.sleep(_FOCUS_SETTLE_SECONDS)
-        if not moved or not in_front(await _run(impl.foreground_window)):
+        if not moved or (await _run(impl.foreground_window))[0] != hwnd:
             return f"I couldn't bring {_target_label(target)} to the front, so I didn't type anything."
     if (target.get("kind") == "existing" and target.get("first_input", True)
             and app.lower() in NEW_DOCUMENT_APPS):
+        old_title = str(target.get("title") or "")
         await _run(_send, "^n")  # a new tab: never type into the user's existing document
-        await asyncio.sleep(_FOCUS_SETTLE_SECONDS)
-        if not in_front(await _run(impl.foreground_window)):
-            return f"I couldn't open a new {app} document, so I didn't type anything."
+        for _ in range(_NEW_DOCUMENT_CHECKS):  # the new document must show in the title before anything is typed
+            await asyncio.sleep(_FOCUS_SETTLE_SECONDS)
+            fg_hwnd, fg_title = await _run(impl.foreground_window)
+            if fg_hwnd == hwnd and (fg_title != old_title or _is_clean_untitled(fg_title)):
+                return None
+        return f"I couldn't confirm a new {app} document, so I didn't type anything."
     return None
 
 
