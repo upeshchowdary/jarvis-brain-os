@@ -16,6 +16,7 @@ import os
 import shlex
 import subprocess
 import sys
+import threading
 import time
 from typing import Dict, List, Optional
 
@@ -36,6 +37,32 @@ except ImportError:
     HAS_PSUTIL = False
 
 
+_SCAN_MAX_DEPTH = 3
+_SKIP_EXE_WORDS = ("unins", "setup", "update", "crash", "helper")
+
+
+def _scan_exes(base_dir: str, max_depth: int = _SCAN_MAX_DEPTH) -> Dict[str, str]:
+    """``{name: path}`` of the .exe files at most ``max_depth`` folders below ``base_dir``.
+
+    The walk is pruned at ``max_depth``: walking the whole of Program Files (~110k folders) took 40-75 s.
+    """
+    found: Dict[str, str] = {}
+    try:
+        for root_dir, dirs, files in os.walk(base_dir):
+            depth = root_dir[len(base_dir):].count(os.sep)
+            if depth >= max_depth:
+                dirs[:] = []  # never descend further
+            if depth > max_depth:
+                continue
+            for f in files:
+                low = f.lower()
+                if low.endswith(".exe") and not any(x in low for x in _SKIP_EXE_WORDS):
+                    found.setdefault(low.replace(".exe", "").strip(), os.path.join(root_dir, f))
+    except Exception:
+        pass
+    return found
+
+
 class DynamicSystemAppManager:
     """Discovers, indexes, and resolves 100% of installed applications on this Windows PC."""
 
@@ -46,6 +73,7 @@ class DynamicSystemAppManager:
         self._apps_cache: Dict[str, Dict[str, str]] = {}
         self._last_index_time: float = 0.0
         self._loaded = False
+        self._refreshing = threading.Lock()
 
     @property
     def cache_file(self):
@@ -57,14 +85,31 @@ class DynamicSystemAppManager:
         self._loaded = True
         try:
             payload = json.loads(self.cache_file.read_text(encoding="utf-8"))
-            if time.time() - float(payload.get("indexed_at", 0)) < self.CACHE_MAX_AGE_SECONDS:
-                self._apps_cache = payload.get("apps", {})
+            apps = payload.get("apps", {})
+            if apps:
+                self._apps_cache = apps
                 self._last_index_time = float(payload["indexed_at"])
-                if self._apps_cache:
-                    return
+                if time.time() - self._last_index_time >= self.CACHE_MAX_AGE_SECONDS:
+                    # Stale: answer from the old index now, rescan in the background (a launch never waits on it).
+                    self._refresh_in_background()
+                return
         except (OSError, ValueError, KeyError):
             pass
         self.refresh_index()
+
+    def _refresh_in_background(self) -> None:
+        if not self._refreshing.acquire(blocking=False):
+            return  # one rescan at a time
+
+        def run() -> None:
+            try:
+                self.refresh_index()
+            except Exception as e:  # noqa: BLE001
+                log_action("app_discovery", "refresh", str(e), level="WARNING")
+            finally:
+                self._refreshing.release()
+
+        threading.Thread(target=run, name="app-index-refresh", daemon=True).start()
 
     def refresh_index(self) -> int:
         """Scan system and index desktop, Store, and UWP apps with verified executable paths."""
@@ -109,24 +154,14 @@ class DynamicSystemAppManager:
         for base_dir in common_scans:
             if not os.path.exists(base_dir):
                 continue
-            try:
-                for root_dir, _, files in os.walk(base_dir):
-                    depth = root_dir[len(base_dir):].count(os.sep)
-                    if depth > 3:
-                        continue
-                    for f in files:
-                        if f.lower().endswith(".exe") and not any(x in f.lower() for x in ("unins", "setup", "update", "crash", "helper")):
-                            clean_name = f.lower().replace(".exe", "").strip()
-                            if clean_name not in apps:
-                                full_p = os.path.join(root_dir, f)
-                                apps[clean_name] = {
-                                    "name": clean_name.title(),
-                                    "exe": full_p,
-                                    "type": "exe",
-                                    "launch_cmd": full_p,
-                                }
-            except Exception:
-                pass
+            for clean_name, full_p in _scan_exes(base_dir).items():
+                if clean_name not in apps:
+                    apps[clean_name] = {
+                        "name": clean_name.title(),
+                        "exe": full_p,
+                        "type": "exe",
+                        "launch_cmd": full_p,
+                    }
 
         # ── Priority 3: PowerShell Get-StartApps (Store / UWP Apps) ──────
         try:
@@ -261,6 +296,9 @@ class DynamicSystemAppManager:
 dynamic_app_manager = DynamicSystemAppManager()
 
 
+READY_TIMEOUT_SECONDS = 3.0  # after the launch command; the whole open_app stays well under ~5 s
+
+
 class ApplicationController:
     """Launch, detect, and control any application on the user's computer."""
 
@@ -293,13 +331,13 @@ class ApplicationController:
         if self.dry_run:
             return {"success": True, "dry_run": True, "action": "open_app", "app": app_name}
 
-        # 1. Dynamically locate the application on the system
-        app_info = self.app_manager.find_app(app_name)
+        # 1. Dynamically locate the application on the system (off the event loop: a cold index scans the disk)
+        app_info = await asyncio.to_thread(self.app_manager.find_app, app_name)
 
         if not app_info:
             # Refresh index once in case it was installed recently
-            self.app_manager.refresh_index()
-            app_info = self.app_manager.find_app(app_name)
+            await asyncio.to_thread(self.app_manager.refresh_index)
+            app_info = await asyncio.to_thread(self.app_manager.find_app, app_name)
 
         if not app_info:
             err = (
@@ -314,6 +352,10 @@ class ApplicationController:
         display_name = app_info["name"]
 
         try:
+            # What was on screen before the launch, so readiness can tell a new window from a reused one
+            before = await asyncio.to_thread(window_controller.window_snapshot)
+            before_fg = await asyncio.to_thread(window_controller.foreground_window)
+
             # ── Native Windows Shell Execution ─────────────────────────
             if app_type == "exe" and os.path.exists(launch_cmd):
                 # Direct binary execution via os.startfile (brings window to foreground)
@@ -357,22 +399,29 @@ class ApplicationController:
                     lambda: subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL),
                 )
 
-            # 2. Brief window confirmation (up to 1.5s non-blocking)
-            wait_res = await window_controller.wait_for_window(display_name, timeout=1.5)
+            # 2. Bounded readiness: the new window, the new tab, or the existing window brought to the front
+            wait_res = await window_controller.wait_for_app_window(
+                display_name, before, before_fg, timeout=READY_TIMEOUT_SECONDS)
             if wait_res.get("success"):
-                log_action("app", "open", display_name, result=f"READY: {wait_res.get('title')}")
+                window = {"hwnd": wait_res["hwnd"], "title": wait_res["title"], "kind": wait_res["kind"]}
+                log_action("app", "open", display_name, result=f"READY ({window['kind']}): {window['title']}")
                 return {
                     "success": True,
                     "action": "open_app",
                     "app": display_name,
-                    "window_title": wait_res.get("title"),
+                    "ready": True,
+                    "window_title": window["title"],
+                    "window": window,
                 }
 
-            log_action("app", "open", display_name, result="LAUNCHED")
+            note = f"Started {display_name}, but no window came to the front within {READY_TIMEOUT_SECONDS:g}s."
+            log_action("app", "open", display_name, result=f"LAUNCHED, NOT READY: {note}", level="WARNING")
             return {
                 "success": True,
                 "action": "open_app",
                 "app": display_name,
+                "ready": False,
+                "note": note,
             }
 
         except Exception as e:

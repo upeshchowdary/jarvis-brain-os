@@ -18,6 +18,8 @@ async def open_app(name: str, args: str = "") -> OpResult:
 
     res = await application_controller.open_app(name, args)
     if res.get("success"):
+        if res.get("ready") is False:
+            return OpResult.ok(res.get("note") or f"Started {res.get('app', name)}, but no window showed up.", data=res)
         return OpResult.ok(f"Opened {res.get('app', name)}.", data=res)
     return OpResult.fail(res.get("error") or f"Couldn't open {name}.", data=res)
 
