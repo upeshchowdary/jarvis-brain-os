@@ -98,7 +98,7 @@ mic button switches on the PC microphone instead.
 | **Conversation** | "explain recursion with an example", "compare Rust and Go" |
 | **Live info** | "what's the latest AI news", "research the best laptop for students" (multi-source, cited) |
 | **System control** | "volume 40", "mute", "brightness up", "lock the screen", "snap window left", "take a screenshot", "battery level" |
-| **Keyboard & tabs** (instant) | "scroll down", "next tab", "go to tab 3", "close tab", "reopen closed tab", "go back", "refresh", "press enter", "type hello world", "switch to chrome". They act on the window in front; typed in the console, they act on the window you were in before |
+| **Keyboard & tabs** (instant) | "scroll down", "next tab", "go to tab 3", "close tab", "reopen closed tab", "go back", "refresh", "press enter", "type hello world", "switch to chrome". They act on the window in front; typed in the console, they act on the window you were in before. "open notepad and type …" types into the window that open just brought up (a new Notepad tab if Notepad was already open), or says so and types nothing if that window can't be brought to the front |
 | **Power** (confirmed) | "restart my pc" → "yes" · "cancel shutdown" · "put the laptop to sleep" |
 | **Apps & web** | "open spotify", "close chrome", "open github.com", "play lofi beats on youtube", "google best pizza near me" |
 | **Processes** (confirmed) | "kill notepad.exe" — exact name only, never JARVIS or system processes |
