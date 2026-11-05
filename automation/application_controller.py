@@ -298,6 +298,28 @@ dynamic_app_manager = DynamicSystemAppManager()
 
 READY_TIMEOUT_SECONDS = 3.0  # after the launch command; the whole open_app stays well under ~5 s
 
+# Launchers whose windows belong to another process (Windows 11: console apps run inside Windows Terminal).
+_CONSOLE_HOSTS = {"conhost.exe", "openconsole.exe", "windowsterminal.exe"}
+_WINDOW_PROCESS_ALIASES = {
+    "wt.exe": {"windowsterminal.exe"},
+    "cmd.exe": _CONSOLE_HOSTS,
+    "powershell.exe": _CONSOLE_HOSTS,
+    "pwsh.exe": _CONSOLE_HOSTS,
+}
+
+
+def app_processes(app_info: Dict[str, str]) -> set:
+    """Lower-case exe names whose windows belong to this app; empty when the launch command doesn't say
+    (Store / shell:AppsFolder / protocol launches): readiness then falls back to a title hint."""
+    if app_info.get("type") != "exe":
+        return set()
+    exe = os.path.basename(str(app_info.get("launch_cmd") or "").strip().strip('"')).lower()
+    if not exe:
+        return set()
+    if not exe.endswith(".exe"):
+        exe += ".exe"
+    return {exe} | _WINDOW_PROCESS_ALIASES.get(exe, set())
+
 
 class ApplicationController:
     """Launch, detect, and control any application on the user's computer."""
@@ -401,7 +423,7 @@ class ApplicationController:
 
             # 2. Bounded readiness: the new window, the new tab, or the existing window brought to the front
             wait_res = await window_controller.wait_for_app_window(
-                display_name, before, before_fg, timeout=READY_TIMEOUT_SECONDS)
+                display_name, before, before_fg, timeout=READY_TIMEOUT_SECONDS, processes=app_processes(app_info))
             if wait_res.get("success"):
                 window = {"hwnd": wait_res["hwnd"], "title": wait_res["title"], "kind": wait_res["kind"]}
                 log_action("app", "open", display_name, result=f"READY ({window['kind']}): {window['title']}")

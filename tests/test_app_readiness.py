@@ -4,16 +4,15 @@ Root cause of the 45 s: a stale (> 24 h) app index was rebuilt synchronously on 
 ``find_app`` of the day, and that rebuild walked the whole of Program Files (the depth limit skipped files but
 never pruned the walk). Readiness then matched the user's existing Notepad window by title.
 
+Fix round 1: windows are identified by their owning process (title only as a hint for apps whose process isn't
+known), so a popup / Notepad++ / a browser tab is never taken for the app. Index tests: tests/test_app_index.py.
+
 Every window / launch helper is mocked here: no real desktop, no real Program Files scan.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
-import os
-import threading
-import time
 from unittest.mock import patch
 
 import pytest
@@ -23,7 +22,7 @@ import automation.window_controller as wc
 
 
 class FakeDesktop:
-    """Windows ({hwnd: title}) + the foreground window, changed by scheduled events on a fake clock."""
+    """Windows ({hwnd: (title, process)}) + the foreground window, changed by scheduled events on a fake clock."""
 
     def __init__(self, windows, foreground, events=()):
         self.windows = dict(windows)
@@ -41,13 +40,11 @@ class FakeDesktop:
 
     def foreground(self):
         self.tick()
-        return self.fg, self.windows.get(self.fg, "")
+        return self.fg, self.windows.get(self.fg, ("", ""))[0]
 
 
 @pytest.fixture
 def desktop(monkeypatch):
-    holder = {}
-
     def install(windows, foreground, events=()):
         d = FakeDesktop(windows, foreground, events)
 
@@ -58,19 +55,26 @@ def desktop(monkeypatch):
         monkeypatch.setattr(wc, "_sleep", fake_sleep)
         monkeypatch.setattr(wc.window_controller, "window_snapshot", d.snapshot)
         monkeypatch.setattr(wc.window_controller, "foreground_window", d.foreground)
-        holder["d"] = d
         return d
 
     return install
 
 
 NOTEPAD = {"name": "Notepad", "exe": "notepad.exe", "type": "exe", "launch_cmd": "notepad.exe"}
-JARVIS_CONSOLE = (1, "JARVIS console - Google Chrome")
+SPOTIFY_UWP = {"name": "Spotify", "exe": "SpotifyAB.SpotifyMusic_x!Spotify", "type": "uwp",
+               "launch_cmd": "shell:AppsFolder\\SpotifyAB.SpotifyMusic_x!Spotify"}
+CONSOLE = ("JARVIS console - Google Chrome", "chrome.exe")
+
+
+def np(title):
+    return title, "notepad.exe"
 
 
 @pytest.fixture
 def launch(monkeypatch):
-    monkeypatch.setattr(ac.dynamic_app_manager, "find_app", lambda q: dict(NOTEPAD) if "notepad" in q.lower() else None)
+    apps = {"notepad": NOTEPAD, "spotify": SPOTIFY_UWP}
+    monkeypatch.setattr(ac.dynamic_app_manager, "find_app",
+                        lambda q, *a, **kw: dict(apps[q.lower()]) if q.lower() in apps else None)
     monkeypatch.setattr(ac.dynamic_app_manager, "refresh_index", lambda: 0)
     with patch.object(ac.subprocess, "Popen") as popen, patch.object(ac.os, "startfile", create=True):
         yield popen
@@ -81,7 +85,7 @@ def launch(monkeypatch):
 async def test_existing_single_window_app_brought_to_front_is_ready_fast(desktop, launch):
     """Notepad already open with an unsaved document; the launch just brings that window to the front."""
     doc = "*YOUR TURN - Kaggle - Notepad"
-    d = desktop({1: JARVIS_CONSOLE[1], 42: doc}, 1, events=[(0.3, lambda d: setattr(d, "fg", 42))])
+    d = desktop({1: CONSOLE, 42: np(doc)}, 1, events=[(0.3, lambda d: setattr(d, "fg", 42))])
     res = await ac.application_controller.open_app("notepad")
     assert res["success"] and res["ready"] is True
     assert res["window"] == {"hwnd": 42, "title": doc, "kind": "existing"}
@@ -91,10 +95,10 @@ async def test_existing_single_window_app_brought_to_front_is_ready_fast(desktop
 async def test_existing_window_whose_title_changes_is_a_new_tab(desktop, launch):
     """Windows 11 Notepad opens a new tab in the existing window: same hwnd, new title."""
     def new_tab(d):
-        d.windows[42] = "Untitled - Notepad"
+        d.windows[42] = np("Untitled - Notepad")
         d.fg = 42
 
-    d = desktop({1: JARVIS_CONSOLE[1], 42: "*notes - Notepad"}, 1, events=[(0.4, new_tab)])
+    d = desktop({1: CONSOLE, 42: np("*notes - Notepad")}, 1, events=[(0.4, new_tab)])
     res = await ac.application_controller.open_app("notepad")
     assert res["ready"] is True and res["window"] == {"hwnd": 42, "title": "Untitled - Notepad", "kind": "new_tab"}
     assert d.now <= 3.0
@@ -102,10 +106,10 @@ async def test_existing_window_whose_title_changes_is_a_new_tab(desktop, launch)
 
 async def test_new_window_app_is_ready_when_its_window_appears(desktop, launch):
     def appear(d):
-        d.windows[77] = "Untitled - Notepad"
+        d.windows[77] = np("Untitled - Notepad")
         d.fg = 77
 
-    d = desktop({1: JARVIS_CONSOLE[1]}, 1, events=[(1.2, appear)])
+    d = desktop({1: CONSOLE}, 1, events=[(1.2, appear)])
     res = await ac.application_controller.open_app("notepad")
     assert res["ready"] is True and res["window"] == {"hwnd": 77, "title": "Untitled - Notepad", "kind": "new_window"}
     assert 1.2 <= d.now <= 3.0
@@ -113,24 +117,83 @@ async def test_new_window_app_is_ready_when_its_window_appears(desktop, launch):
 
 async def test_new_window_counts_even_when_another_app_window_was_in_front(desktop, launch):
     """An old Notepad window in front must not be mistaken for the new one when a new window appears."""
-    d = desktop({42: "*old - Notepad"}, 42, events=[(0.2, lambda d: d.windows.update({77: "Untitled - Notepad"}))])
+    d = desktop({42: np("*old - Notepad")}, 42,
+                events=[(0.2, lambda d: d.windows.update({77: np("Untitled - Notepad")}))])
     res = await ac.application_controller.open_app("notepad")
     assert res["window"]["hwnd"] == 77 and res["window"]["kind"] == "new_window"
 
 
-async def test_new_foreground_window_without_the_app_name_counts(desktop, launch):
-    """Some apps' titles don't contain their name (a document title); a brand-new foreground window is the app."""
+async def test_same_process_window_without_the_app_name_counts(desktop, launch):
+    """Identity is the owning process: a new notepad.exe window titled after its document is the app."""
     def appear(d):
-        d.windows[90] = "Shopping list"
+        d.windows[90] = np("Shopping list")
         d.fg = 90
 
-    desktop({1: JARVIS_CONSOLE[1]}, 1, events=[(0.5, appear)])
+    desktop({1: CONSOLE}, 1, events=[(0.5, appear)])
     res = await ac.application_controller.open_app("notepad")
     assert res["ready"] is True and res["window"] == {"hwnd": 90, "title": "Shopping list", "kind": "new_window"}
 
 
+@pytest.mark.parametrize("popup", [
+    ("New notification", "shellexperiencehost.exe"),
+    ("User Account Control", "consent.exe"),
+    ("Notepad - update available", "updater.exe"),  # even with the app's name in its title
+])
+async def test_foreign_process_popup_is_not_accepted(desktop, launch, popup):
+    def appear(d):
+        d.windows[66] = popup
+        d.fg = 66
+
+    d = desktop({1: CONSOLE}, 1, events=[(0.2, appear)])
+    res = await ac.application_controller.open_app("notepad")
+    assert res["ready"] is False and "window" not in res and d.now <= 5.0
+
+
+@pytest.mark.parametrize("lookalike", [
+    ("new 1 - Notepad++", "notepad++.exe"),
+    ("notepad tips - Google Chrome", "chrome.exe"),
+])
+async def test_title_lookalikes_from_other_apps_are_not_notepad(desktop, launch, lookalike):
+    """Process identity first: Notepad++ or a browser tab mentioning "notepad" is not Notepad."""
+    def appear(d):
+        d.windows[55] = lookalike
+        d.fg = 55
+
+    desktop({1: CONSOLE}, 1, events=[(0.2, appear)])
+    res = await ac.application_controller.open_app("notepad")
+    assert res["ready"] is False and "window" not in res
+
+
+async def test_lookalike_in_front_is_not_an_existing_notepad(desktop, launch):
+    desktop({55: ("notepad tips - Google Chrome", "chrome.exe")}, 55)
+    res = await ac.application_controller.open_app("notepad")
+    assert res["ready"] is False
+
+
+async def test_unknown_process_app_uses_its_title_as_a_hint_but_never_a_browser(desktop, launch):
+    """A Store app's process isn't known from its launch command: its title is the hint; browsers never count."""
+    def appear(d):
+        d.windows[30] = ("Spotify tips - Google Chrome", "chrome.exe")
+        d.windows[31] = ("Spotify Premium", "spotify.exe")
+        d.fg = 31
+
+    desktop({1: CONSOLE}, 1, events=[(0.3, appear)])
+    res = await ac.application_controller.open_app("spotify")
+    assert res["ready"] is True and res["window"]["hwnd"] == 31
+
+
+async def test_unknown_process_app_ignores_a_browser_tab_with_its_name(desktop, launch):
+    def appear(d):
+        d.windows[30] = ("Spotify tips - Google Chrome", "chrome.exe")
+        d.fg = 30
+
+    desktop({1: CONSOLE}, 1, events=[(0.3, appear)])
+    res = await ac.application_controller.open_app("spotify")
+    assert res["ready"] is False
+
+
 async def test_app_that_never_shows_fails_within_the_bound(desktop, launch):
-    d = desktop({1: JARVIS_CONSOLE[1]}, 1)
+    d = desktop({1: CONSOLE}, 1)
     res = await ac.application_controller.open_app("notepad")
     assert res["success"] is True and res["ready"] is False and "window" not in res
     assert d.now <= 5.0, d.now
@@ -139,7 +202,7 @@ async def test_app_that_never_shows_fails_within_the_bound(desktop, launch):
 
 async def test_existing_window_that_never_comes_to_front_is_not_ready(desktop, launch):
     """An old window that merely exists (behind the console) is not proof the launch worked."""
-    d = desktop({1: JARVIS_CONSOLE[1], 42: "*doc - Notepad"}, 1)
+    d = desktop({1: CONSOLE, 42: np("*doc - Notepad")}, 1)
     res = await ac.application_controller.open_app("notepad")
     assert res["ready"] is False and d.now <= 5.0
 
@@ -147,7 +210,7 @@ async def test_existing_window_that_never_comes_to_front_is_not_ready(desktop, l
 async def test_op_message_says_when_no_window_appeared(desktop, launch):
     from automation.gateway import ActionRequest, gateway
 
-    desktop({1: JARVIS_CONSOLE[1]}, 1)
+    desktop({1: CONSOLE}, 1)
     res = await gateway.execute(ActionRequest("app.open", {"name": "notepad"}), "p2-ready")
     assert res.status == "executed"
     assert "no window" in res.message.lower()
@@ -155,83 +218,23 @@ async def test_op_message_says_when_no_window_appeared(desktop, launch):
     assert data["ready"] is False
 
 
-# ── the app index never blocks a launch for long ─────────────────────────
-
-def _write_index(path, apps, age_seconds):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"indexed_at": time.time() - age_seconds, "apps": apps}), encoding="utf-8")
-
-
-def test_stale_index_is_used_at_once_and_refreshed_in_the_background(monkeypatch):
-    mgr = ac.DynamicSystemAppManager()
-    _write_index(mgr.cache_file, {"notepad": NOTEPAD}, age_seconds=3 * 24 * 3600)
-    started, release, done = threading.Event(), threading.Event(), threading.Event()
-
-    def slow_refresh():
-        started.set()
-        release.wait(5)
-        done.set()
-        return 1
-
-    monkeypatch.setattr(mgr, "refresh_index", slow_refresh)
-    t = time.perf_counter()
-    found = mgr.find_app("notepad")
-    elapsed = time.perf_counter() - t
-    assert found == NOTEPAD and elapsed < 0.5, elapsed
-    assert started.wait(2), "a background refresh should have started"
-    assert mgr.find_app("notepad") == NOTEPAD  # no second refresh while one runs
-    release.set()
-    assert done.wait(2)
+@pytest.mark.parametrize("launch_cmd,app_type,expected", [
+    ("notepad.exe", "exe", {"notepad.exe"}),
+    (r"C:\Program Files\Notepad++\notepad++.exe", "exe", {"notepad++.exe"}),
+    ("wt.exe", "exe", {"wt.exe", "windowsterminal.exe"}),
+    ("shell:AppsFolder\\X!App", "uwp", set()),
+    ("ms-settings:", "protocol", set()),
+])
+def test_app_processes_come_from_the_launch_command(launch_cmd, app_type, expected):
+    assert ac.app_processes({"launch_cmd": launch_cmd, "type": app_type}) == expected
 
 
-def test_fresh_index_starts_no_refresh(monkeypatch):
-    mgr = ac.DynamicSystemAppManager()
-    _write_index(mgr.cache_file, {"notepad": NOTEPAD}, age_seconds=60)
-    monkeypatch.setattr(mgr, "refresh_index", lambda: pytest.fail("fresh cache must not be rescanned"))
-    assert mgr.find_app("notepad") == NOTEPAD
+def test_window_snapshot_names_each_windows_process(monkeypatch):
+    class W:
+        def __init__(self, hwnd, title):
+            self._hWnd, self.title = hwnd, title
 
-
-def test_program_files_scan_is_pruned_below_the_depth_limit(tmp_path, monkeypatch):
-    deep = tmp_path / "a" / "b" / "c" / "d" / "e"
-    deep.mkdir(parents=True)
-    (tmp_path / "a" / "b" / "c" / "tool.exe").write_text("")
-    (deep / "deep.exe").write_text("")
-    visited = []
-    real_walk = os.walk
-
-    def recording_walk(top, *a, **kw):
-        for root, dirs, files in real_walk(top, *a, **kw):
-            visited.append(root)
-            yield root, dirs, files
-
-    monkeypatch.setattr(ac.os, "walk", recording_walk)
-    found = ac._scan_exes(str(tmp_path))
-    assert "tool" in found and "deep" not in found
-    assert not any(str(tmp_path / "a" / "b" / "c" / "d") in v for v in visited), visited
-
-
-async def test_open_app_looks_up_the_app_off_the_event_loop(monkeypatch, desktop):
-    """A cold (first-run) index scan must not freeze every other request while it runs."""
-    desktop({1: JARVIS_CONSOLE[1]}, 1, events=[(0.1, lambda d: (d.windows.update({77: "Untitled - Notepad"}),
-                                                                 setattr(d, "fg", 77)))])
-
-    def slow_find(q):
-        time.sleep(0.3)
-        return dict(NOTEPAD)
-
-    monkeypatch.setattr(ac.dynamic_app_manager, "find_app", slow_find)
-    ticks = 0
-
-    async def ticker():
-        nonlocal ticks
-        while True:
-            await asyncio.sleep(0.02)
-            ticks += 1
-
-    task = asyncio.create_task(ticker())
-    try:
-        with patch.object(ac.subprocess, "Popen"):
-            res = await ac.application_controller.open_app("notepad")
-    finally:
-        task.cancel()
-    assert res["success"] and ticks >= 5, ticks
+    monkeypatch.setattr(wc, "HAS_GW", True)
+    monkeypatch.setattr(wc.gw, "getAllWindows", lambda: [W(42, "Untitled - Notepad"), W(43, "  ")], raising=False)
+    monkeypatch.setattr(wc, "_process_name", lambda hwnd: {42: "notepad.exe"}.get(hwnd, ""))
+    assert wc.WindowController().window_snapshot() == {42: ("Untitled - Notepad", "notepad.exe")}
