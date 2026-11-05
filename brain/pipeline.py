@@ -102,6 +102,31 @@ def _action_notes(records: List[ToolCallRecord], limit: int = _NOTES_LIMIT) -> s
     return note if len(note) <= limit else note[: limit - 2] + "…]"
 
 
+def _typing_target(records: List[ToolCallRecord]) -> Optional[Dict[str, Any]]:
+    """The window a ``type_text`` call should go to: where this turn's latest ``open_app`` ended up.
+
+    ``{"app", "first_input", ["hwnd", "title", "kind"]}`` (window fields only when open_app confirmed a window;
+    ``first_input`` is False once something was typed since). None when the turn opened no app, or a later
+    ``focus_window`` chose another window: typing then goes to the foreground window as before.
+    """
+    typed = False
+    for r in reversed(records):
+        if r.name == "type_text" and r.result.success:
+            typed = True
+        elif r.name == "focus_window" and r.result.success:
+            return None
+        elif r.name == "open_app":
+            steps = r.result.data.get("steps", []) if isinstance(r.result.data, dict) else []
+            data = next((s.get("data") for s in steps if s.get("op") == "app.open"), None)
+            data = data if isinstance(data, dict) else {}
+            target: Dict[str, Any] = {"app": data.get("app") or str(r.arguments.get("name", "")), "first_input": not typed}
+            window = data.get("window") if r.result.success else None
+            if isinstance(window, dict) and isinstance(window.get("hwnd"), int):
+                target.update(hwnd=window["hwnd"], title=window.get("title", ""), kind=window.get("kind", ""))
+            return target
+    return None
+
+
 _QUOTES = {"'": "'", '"': '"', "“": "”", "‘": "’"}
 
 
@@ -538,7 +563,8 @@ class Brain:
                     logger.warning(f"[Brain] Refused tool call {call.name}: {reason}")
                     messages.append({"role": "tool", "tool_call_id": call.id, "content": f"Error: tool '{call.name}' is {reason}."})
                     continue
-                record = await self._run_tool(tool, call.arguments, ctx, origin="llm")
+                call_ctx = replace(ctx, target_window=_typing_target(records)) if tool.name == "type_text" else ctx
+                record = await self._run_tool(tool, call.arguments, call_ctx, origin="llm")
                 records.append(record)
                 round_records.append(record)
                 yield {"type": "tool", "name": tool.name, "result": record.to_dict()}

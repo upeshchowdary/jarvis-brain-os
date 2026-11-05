@@ -7,6 +7,11 @@ pywinauto syntax here. Unknown keys are rejected: arbitrary send_keys strings ne
 When JARVIS's own web console is the foreground window (the user typed "close tab" / "type hi" there), key
 presses and typing first switch back to the previous window with Alt+Tab, and refuse if there is none.
 
+Typing may name a ``target`` window (the agent passes the window the turn's ``open_app`` ended up in): it is
+brought to the front first, and nothing is typed when that can't be confirmed. Notepad (Windows 11) reuses one
+window with tabs, so when the launch only brought an existing Notepad window to the front, Ctrl+N opens a fresh
+document first: the text never lands in the user's own (maybe unsaved) document. See ``NEW_DOCUMENT_APPS``.
+
 Risk: key presses and typing are LOW only when they come from the user's own words (the fast path passes
 ``origin="fast"``); from the LLM agent or any other caller they are MEDIUM, like typing elsewhere.
 """
@@ -24,6 +29,11 @@ from automation.ops import system_impl as impl
 _IS_WINDOWS = sys.platform == "win32"
 CONSOLE_TITLE = "JARVIS console"  # <title> of app/static/web/console.html
 _SWITCH_SETTLE_SECONDS = 0.15
+_FOCUS_SETTLE_SECONDS = 0.3
+# Tab-model apps that reuse one window: when "open X and type …" only brought an existing window to the front,
+# a new document is made first (Ctrl+N). Deliberately narrow: other tab-model apps (Terminal, browsers, Explorer)
+# don't map Ctrl+N to "new empty document".
+NEW_DOCUMENT_APPS = {"notepad"}
 
 _MODIFIERS = {"ctrl": "^", "control": "^", "shift": "+", "alt": "%"}
 _NAMED = {
@@ -113,20 +123,55 @@ async def press(keys: str = "", origin: str = "") -> OpResult:
     return OpResult.ok(f"Pressed {keys}.")
 
 
+def _target_label(target: Dict[str, Any]) -> str:
+    return str(target.get("title") or target.get("app") or "that window")
+
+
+async def _go_to_target(target: Dict[str, Any]) -> Optional[str]:
+    """Bring ``target`` to the front (and a fresh Notepad document when needed). An error message, or None."""
+    hwnd = target.get("hwnd") if isinstance(target.get("hwnd"), int) else None
+    app = str(target.get("app") or "").strip()
+
+    def in_front(fg: Any) -> bool:
+        fg_hwnd, fg_title = fg
+        if hwnd is not None:
+            return fg_hwnd == hwnd
+        return bool(app) and app.lower() in (fg_title or "").lower()
+
+    if not in_front(await _run(impl.foreground_window)):
+        if hwnd is not None:
+            moved = await _run(impl.focus_hwnd, hwnd)
+        else:
+            moved = bool(app) and await _run(impl.window_action, app, "focus")
+        if moved:
+            await asyncio.sleep(_FOCUS_SETTLE_SECONDS)
+        if not moved or not in_front(await _run(impl.foreground_window)):
+            return f"I couldn't bring {_target_label(target)} to the front, so I didn't type anything."
+    if (target.get("kind") == "existing" and target.get("first_input", True)
+            and app.lower() in NEW_DOCUMENT_APPS):
+        await _run(_send, "^n")  # a new tab: never type into the user's existing document
+        await asyncio.sleep(_FOCUS_SETTLE_SECONDS)
+        if not in_front(await _run(impl.foreground_window)):
+            return f"I couldn't open a new {app} document, so I didn't type anything."
+    return None
+
+
 def _type_preview(args: Dict[str, Any]) -> Preview:
     text = str(args.get("text", ""))
     shown = text if len(text) <= 60 else text[:57] + "..."
-    return Preview(f'Type "{shown}" into the active window.', ok=bool(text))
+    target = args.get("target")
+    where = _target_label(target) if isinstance(target, dict) else "the active window"
+    return Preview(f'Type "{shown}" into {where}.', ok=bool(text))
 
 
 @gateway.operation("keyboard.type", _input_risk, "Type text into the active window", preview=_type_preview)
-async def type_text(text: str = "", origin: str = "") -> OpResult:
+async def type_text(text: str = "", origin: str = "", target: Optional[Dict[str, Any]] = None) -> OpResult:
     if not _IS_WINDOWS:
         return OpResult.fail("Keyboard control is only available on Windows.")
     if not text:
         return OpResult.fail("Nothing to type.")
     try:
-        problem = await _leave_console()
+        problem = await (_go_to_target(target) if isinstance(target, dict) else _leave_console())
         if problem:
             return OpResult.fail(problem)
         await _run(_send, escape_text(str(text)), with_spaces=True)

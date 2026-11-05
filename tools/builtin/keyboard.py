@@ -38,7 +38,10 @@ class TypeText(_KeyboardTool):
     parameters = obj({"text": {"type": "string"}}, ["text"])
 
     async def run(self, ctx: ToolContext, text: str = "", **_: Any) -> ToolResult:
-        return await via_gateway(ctx, ActionRequest("keyboard.type", {"text": text, "origin": ctx.origin}))
+        args = {"text": text, "origin": ctx.origin}
+        if ctx.target_window:  # "open X and type …": type into X's window, or fail clearly
+            args["target"] = dict(ctx.target_window)
+        return await via_gateway(ctx, ActionRequest("keyboard.type", args))
 
 
 @register

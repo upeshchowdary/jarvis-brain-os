@@ -22,6 +22,8 @@ class ToolContext:
     source: str = "chat"
     task_id: Optional[str] = None  # the task this turn began (task_plan only edits that one)
     origin: str = "llm"  # who chose this call: "fast" (router, the user's own words) | "rewrite" | "llm" (the agent)
+    # type_text only: the window this turn's open_app ended up in (see brain.pipeline._typing_target)
+    target_window: Optional[Dict[str, Any]] = None
 
 
 @dataclass
