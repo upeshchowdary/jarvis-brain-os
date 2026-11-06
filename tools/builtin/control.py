@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from automation.gateway import ActionRequest, Risk, gateway
+from automation.gateway import REMOTE_SOURCES, ActionRequest, Risk, gateway
 from core.config import settings
 from tools.base import Tool, ToolContext, ToolResult, obj, via_gateway
 from tools.registry import register
@@ -227,7 +227,8 @@ class ComputerTask(GatewayTool):
 class AutomationControl(Tool):
     """Emergency stop / resume / dry-run — controls the safety system itself (never needs confirmation).
 
-    Marked side_effect so content from web pages/files (taint) can never toggle it.
+    Marked side_effect so content from web pages/files (taint) can never toggle it. Remote agents (MCP) may stop
+    or switch dry-run on, but never resume after an emergency stop or switch dry-run off: only the user can.
     """
 
     name = "automation_control"
@@ -236,6 +237,9 @@ class AutomationControl(Tool):
     side_effect = True
 
     async def run(self, ctx: ToolContext, action: str = "status", **_: Any) -> ToolResult:
+        if ctx.source in REMOTE_SOURCES and action in ("resume", "dry_run_off"):
+            return ToolResult(False, "Only the user can resume automation or switch dry-run off, from JARVIS itself.",
+                              status="blocked")
         if action == "stop":
             gateway.emergency_stop(f"user ({ctx.channel})")
             return ToolResult.ok("🛑 Emergency stop: all automation halted and pending actions cancelled. Say 'resume automation' to continue.")
@@ -259,6 +263,7 @@ class AutomationStatus(Tool):
         return ToolResult.ok(
             f"Emergency stop: {'ACTIVE' if gateway.is_stopped else 'clear'}. Dry-run: {'on' if settings.DRY_RUN else 'off'}. "
             f"Medium-risk confirmation: {'on' if settings.CONFIRM_MEDIUM_RISK else 'off'}. "
+            f"High-risk confirmation: {'on' if settings.CONFIRM_HIGH_RISK else 'off'}. "
             f"Pending confirmation: {pending.preview if pending else 'none'}."
         )
 

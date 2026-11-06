@@ -16,20 +16,28 @@ For every request the gateway:
 2. **builds a preview** — exactly what will happen ("End 2 processes named notepad.exe: PID 412, PID 980");
    a preview can abort early (no matching process, invalid email, unsupported app);
 3. **enforces dry-run** — `settings.DRY_RUN` or a per-request override returns the plan and decisions only;
-4. **asks for confirmation** — HIGH always; MEDIUM unless `CONFIRM_MEDIUM_RISK=false`. The pending action is
-   stored per session for 60 s. "yes / confirm / do it / go ahead" runs it; anything else cancels it;
+4. **asks for confirmation** — HIGH unless `CONFIRM_HIGH_RISK=false`; MEDIUM unless `CONFIRM_MEDIUM_RISK=false`.
+   Requests from remote agents (source `mcp`) always ask for MEDIUM and HIGH, whatever those settings say. The
+   pending action is stored per session for 60 s. "yes / confirm / do it / go ahead" runs it; anything else cancels it;
 5. **checks the emergency stop** — "emergency stop" / the console's Stop everything button / voice "stop" blocks everything and
    clears pending actions until "resume";
 6. **audits** — append-only `data/audit.jsonl` (time, session, source, operation, target, risk, decision, result);
 7. **records undo** — file operations store their inverse so "undo that" works.
 
-Risk overrides (`data/risk_policy.json`, e.g. `{"ui.type": "low"}`) can relax MEDIUM operations, never HIGH ones.
+Risk overrides (`data/risk_policy.json`, e.g. `{"keyboard.type": "low"}`) can relax MEDIUM operations, never HIGH ones.
+
+**Full-control mode** — `CONFIRM_MEDIUM_RISK=false` and `CONFIRM_HIGH_RISK=false` (the owner's choice for their own
+PC) run every action, including shutdown, kill, delete, send and shell, *without asking*. A misheard voice command,
+a misunderstood follow-up or a model mistake then acts immediately; what remains is dry-run, the emergency stop,
+undo for file operations, the 30 s shutdown delay and the specific protections below. MCP requests for MEDIUM/HIGH
+actions and any key press or typing still wait for your approval. The defaults (both `true`) are what anyone else
+running JARVIS should keep.
 
 | Risk | Operations |
 |---|---|
 | HIGH | `system.power` (shutdown/restart/sleep/hibernate/logoff), `process.kill`, `system.empty_recycle_bin`, `network.*` off, `file.trash`, `file.move`, `files.organize`, `message.send`, `shell.run_named` (except read-only commands), `system.set_wallpaper`, unknown operations |
-| MEDIUM | `computer.run_plan` with clicks/typing, `app.close`, `file.create/append/rename/copy/mkdir`, `files.bulk_rename/zip/unzip`, `docs.*`, `email.compose`, `clipboard.set`, `browser.agent`, `mcp.call` (configurable) |
-| LOW | volume, brightness, media keys, window management, lock, screenshot, open app/website/search, cancel shutdown, read-only shell (ipconfig, ping, git status) |
+| MEDIUM | `keyboard.press` / `keyboard.type` chosen by the model (or rewritten by the intent step), `computer.run_plan` with clicks/typing, `app.close`, `file.create/append/rename/copy/mkdir`, `files.bulk_rename/zip/unzip`, `docs.*`, `email.compose`, `clipboard.set`, `browser.agent`, `mcp.call` (configurable) |
+| LOW | volume, brightness, media keys, window management, lock, screenshot, open app/website/search, cancel shutdown, read-only shell (ipconfig, ping, git status), `keyboard.press` / `keyboard.type` from your own instant commands ("close tab", "type hello") |
 
 ## 2. Specific protections
 
@@ -46,7 +54,20 @@ Risk overrides (`data/risk_policy.json`, e.g. `{"ui.type": "low"}`) can relax ME
   → paste and send → restore the clipboard. Discord/Slack say "not supported yet" and never fall back to WhatsApp.
   Email opens a Gmail draft that you send yourself.
 * **Browser agent** — never types into password fields (asks you to log in); stops before buy/pay/send/delete/post.
-* **Remote agents (MCP)** — can request actions but can never confirm them; approval happens in JARVIS.
+* **Remote agents (MCP)** — can request actions but can never confirm them; MEDIUM/HIGH actions wait for approval
+  in JARVIS, even in full-control mode. `keyboard.press` / `keyboard.type` from a remote source always wait too,
+  whatever risk they computed (their fast-path commands run with origin `remote`, never `fast`). LOW actions run.
+  MCP turns never enter the PC-wide recent-turns buffer or the current task, so a later "yes" or "continue" from you
+  can't be bent into an MCP request. They may trigger the emergency stop or dry-run, but never resume after a stop
+  or switch dry-run off.
+* **Remote agents and memory** — MCP clients can read your chat history (`chat_history`) and look up saved facts via
+  tools (`recall_memory` / `memory_recall`) — the owner chose to keep that read access. Your facts and recalled turns
+  are never put into their prompts automatically, they can't use `memory_remember` / `memory_forget`, and their turns
+  are logged (audit) but never indexed into vector memory, backfilled or mined for facts, so they can't plant text
+  that is later recalled into your prompts. `chat_history` hides MCP turns unless asked for `channel=mcp`.
+* **Keyboard commands from the console** — when the JARVIS console itself is the window in front, key presses and
+  typing first switch back to the previous window (Alt+Tab); if there is none, they fail with "Click the window you
+  want first." instead of acting on the console.
 
 ## 3. Understanding that doesn't misfire
 
@@ -65,6 +86,14 @@ Risk overrides (`data/risk_policy.json`, e.g. `{"ui.type": "low"}`) can relax ME
   model switching and the automation control switch) are withdrawn for the rest of that turn.
 * `PRIVACY_MODE=local`: as soon as file or screen content is in context, only local models (Ollama / LM Studio)
   are used; screen vision uses the local vision model.
+* `chat_history` output (past turns, which can quote web or file text) reaches the model inside an
+  `<untrusted_data>` block. It does not withdraw side-effect tools, so "send that message again" still works.
+* **The intent step** sends each message that isn't an instant command, the last few turns (`INTENT_HISTORY_TURNS`,
+  from every channel) and the current task to `INTENT_MODEL`'s provider (Groq by default, Google Gemini Flash as the
+  fallback). `PRIVACY_MODE=local` does not change that: use an Ollama `INTENT_MODEL`, or leave it empty to
+  switch the step off.
+* **Langfuse traces** are opt-in (`LANGFUSE_ENABLED=true`); when on, the query, reply and rewritten request are sent
+  to the Langfuse host.
 
 ## 5. API surface
 

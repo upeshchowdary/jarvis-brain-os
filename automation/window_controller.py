@@ -5,7 +5,9 @@ Falls back to graceful errors when windows are not found.
 """
 
 import asyncio
-from typing import List, Optional
+import re
+import time
+from typing import Dict, List, Optional, Set, Tuple
 
 from automation.automation_logger import log_action
 
@@ -14,6 +16,32 @@ try:
     HAS_GW = True
 except ImportError:
     HAS_GW = False
+
+# Module-level so tests can drive readiness on a fake clock.
+_clock = time.monotonic
+_sleep = asyncio.sleep
+
+# Never taken for another app's window by its title (a tab can be called anything).
+_BROWSER_PROCESSES = {"chrome.exe", "msedge.exe", "firefox.exe", "brave.exe", "opera.exe", "vivaldi.exe"}
+
+
+def _process_name(hwnd: int) -> str:
+    """Lower-case exe name of the process that owns ``hwnd`` ("" when unknown)."""
+    try:
+        import psutil  # type: ignore
+        import win32process  # type: ignore
+
+        _, pid = win32process.GetWindowThreadProcessId(hwnd)
+        return str(psutil.Process(int(pid)).name()).lower()
+    except Exception:
+        return ""
+
+
+def _title_names(title: str, name: str) -> bool:
+    """``name`` appears in ``title`` as a whole name: "Notes - Notepad" yes, "new 1 - Notepad++" no."""
+    if not name.strip():
+        return False
+    return re.search(rf"(?<![\w+]){re.escape(name.strip())}(?![\w+])", title, re.IGNORECASE) is not None
 
 # Reuse existing WindowInfo model from vision layer
 
@@ -83,6 +111,33 @@ class WindowController:
     def is_window_open(self, title_fragment: str) -> bool:
         """Check if a window containing title_fragment is currently open."""
         return self.find_window(title_fragment) is not None
+
+    def window_snapshot(self) -> Dict[int, Tuple[str, str]]:
+        """``{hwnd: (title, process exe name)}`` of every titled top-level window ({} when unknown)."""
+        if not HAS_GW:
+            return {}
+        try:
+            snap: Dict[int, Tuple[str, str]] = {}
+            for w in gw.getAllWindows():
+                hwnd = getattr(w, "_hWnd", None)
+                if isinstance(hwnd, int) and isinstance(w.title, str) and w.title.strip():
+                    snap[hwnd] = (w.title, _process_name(hwnd))
+            return snap
+        except Exception:
+            return {}
+
+    def foreground_window(self) -> Tuple[Optional[int], str]:
+        """``(hwnd, title)`` of the foreground window; ``(None, "")`` when unknown."""
+        try:
+            import win32gui  # type: ignore
+
+            hwnd = win32gui.GetForegroundWindow()
+            title = win32gui.GetWindowText(hwnd)
+            if isinstance(hwnd, int):
+                return hwnd, title if isinstance(title, str) else ""
+        except Exception:
+            pass
+        return None, ""
 
     # ── State Control ────────────────────────────────────────────────
 
@@ -169,6 +224,61 @@ class WindowController:
                 return {"success": True, "title": w.title if w else title_fragment}
             await asyncio.sleep(0.05)
         return {"success": False, "error": f"Window '{title_fragment}' did not appear within timeout."}
+
+    async def wait_for_app_window(
+        self,
+        name: str,
+        before: Dict[int, Tuple[str, str]],
+        before_foreground: Tuple[Optional[int], str],
+        timeout: float = 3.0,
+        settle: float = 0.75,
+        poll: float = 0.1,
+        processes: Optional[Set[str]] = None,
+    ) -> dict:
+        """After a launch, wait (bounded by ``timeout``) for the window the app ended up in.
+
+        ``before`` / ``before_foreground`` are the windows (``window_snapshot``) and the foreground window just
+        before the launch. A window is the app's when its owning process is one of ``processes`` (the launched
+        exe); only when that isn't known (Store / shell / protocol launches) is its title the hint: ``name`` as a
+        whole name, never a browser window. So a popup, a UAC prompt, Notepad++ or a browser tab mentioning
+        "notepad" is never taken for Notepad. Single-instance / tabbed apps (Windows 11 Notepad, Terminal,
+        browsers, Explorer) reuse a window, so a new window may never appear. Ready, with ``kind``:
+
+        - ``new_window``: an app window that didn't exist before;
+        - ``new_tab``: an existing app window is in front and its title changed (a new tab / document);
+        - ``existing``: an existing app window is in front, title unchanged for ``settle`` seconds
+          (the old window was just brought to the front: it may hold the user's own unsaved document).
+        """
+        procs = {p.lower() for p in (processes or ()) if p}
+
+        def is_app(title: str, proc: str) -> bool:
+            if procs:
+                return proc in procs
+            return _title_names(title, name) and proc not in _BROWSER_PROCESSES
+
+        deadline = _clock() + timeout
+        seen_existing: Optional[float] = None
+        while True:
+            now_windows = await asyncio.to_thread(self.window_snapshot)
+            fg_hwnd, fg_title = await asyncio.to_thread(self.foreground_window)
+            app_windows = {h: t for h, (t, proc) in now_windows.items() if is_app(t, proc)}
+            new = [h for h in app_windows if h not in before]
+            if new:
+                hwnd = fg_hwnd if fg_hwnd in new else new[0]
+                return {"success": True, "kind": "new_window", "hwnd": hwnd, "title": app_windows[hwnd]}
+            if fg_hwnd is not None and fg_hwnd in app_windows:
+                old_title = before[fg_hwnd][0] if fg_hwnd in before else None
+                if old_title is not None and fg_title != old_title:
+                    return {"success": True, "kind": "new_tab", "hwnd": fg_hwnd, "title": fg_title}
+                if seen_existing is None:
+                    seen_existing = _clock()
+                elif _clock() - seen_existing >= settle:
+                    return {"success": True, "kind": "existing", "hwnd": fg_hwnd, "title": fg_title}
+            else:
+                seen_existing = None
+            if _clock() >= deadline:
+                return {"success": False, "error": f"No window for '{name}' came to the front within {timeout:g}s."}
+            await _sleep(poll)
 
     async def switch_window(self, title_fragment: str) -> dict:
         """Focus and bring to front a specific window."""

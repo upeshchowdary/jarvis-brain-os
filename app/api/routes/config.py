@@ -28,6 +28,7 @@ async def get_configuration() -> Dict[str, Any]:
         "privacy_mode": settings.PRIVACY_MODE,
         "dry_run": settings.DRY_RUN,
         "confirm_medium_risk": settings.CONFIRM_MEDIUM_RISK,
+        "confirm_high_risk": settings.CONFIRM_HIGH_RISK,
         "ollama_base_url": settings.OLLAMA_BASE_URL,
         "lm_studio_base_url": settings.LM_STUDIO_BASE_URL,
         "log_level": settings.LOG_LEVEL,

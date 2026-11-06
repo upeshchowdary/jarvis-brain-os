@@ -103,6 +103,7 @@ async def get_status() -> Dict[str, Any]:
         "emergency_stopped": gateway.is_stopped,
         "dry_run": settings.DRY_RUN,
         "confirm_medium_risk": settings.CONFIRM_MEDIUM_RISK,
+        "confirm_high_risk": settings.CONFIRM_HIGH_RISK,
         "privacy_mode": settings.PRIVACY_MODE,
         "pending": [p.to_dict() for p in gateway.list_pending()],
         "is_recording": workflow_recorder.is_recording,

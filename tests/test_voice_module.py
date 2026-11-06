@@ -57,6 +57,39 @@ def test_rms_energy_calculation():
     assert math.isclose(ac.calculate_rms_energy(sound_pcm), 1000.0, rel_tol=1e-3)
 
 
+def test_read_chunk_returns_each_frame_once_in_order():
+    ac = AudioCaptureManager()
+    ac._push_frame(b"\x00" * 4)
+    # A new reader starts at live audio, not at what was buffered before it existed.
+    assert ac.read_chunk(timeout=0) is None
+    assert ac.read_chunk(timeout=0, reader="barge_in") is None
+    for n in (1, 2, 3):
+        ac._push_frame(bytes([n]) * 4)
+    assert [ac.read_chunk(timeout=0) for _ in range(4)] == [b"\x01" * 4, b"\x02" * 4, b"\x03" * 4, None]
+    ac._push_frame(b"\x04" * 4)
+    assert ac.read_chunk(timeout=0) == b"\x04" * 4
+    # Readers keep separate positions (voice loop vs barge-in monitor).
+    assert ac.read_chunk(timeout=0, reader="barge_in") == b"\x01" * 4
+
+
+def test_skip_to_live_drops_unread_frames():
+    ac = AudioCaptureManager()
+    assert ac.read_chunk(timeout=0) is None
+    ac._push_frame(b"\x01\x01")  # e.g. JARVIS's own voice while it was speaking
+    ac.skip_to_live()
+    assert ac.read_chunk(timeout=0) is None
+    ac._push_frame(b"\x02\x02")
+    assert ac.read_chunk(timeout=0) == b"\x02\x02"
+
+
+def test_read_chunk_skips_frames_dropped_from_ring_buffer():
+    ac = AudioCaptureManager()
+    assert ac.read_chunk(timeout=0) is None
+    for n in range(ac._ring_buffer.maxlen + 5):
+        ac._push_frame(n.to_bytes(2, "little"))
+    assert ac.read_chunk(timeout=0) == (5).to_bytes(2, "little")  # oldest frame still held
+
+
 def test_audio_device_listing():
     ac = AudioCaptureManager()
     devices = ac.list_input_devices()

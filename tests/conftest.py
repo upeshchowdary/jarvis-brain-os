@@ -18,9 +18,17 @@ os.environ["JARVIS_API_TOKEN"] = "test-token"
 os.environ["BACKGROUND_SERVICES"] = "false"
 os.environ["DRY_RUN"] = "false"
 os.environ["CONFIRM_MEDIUM_RISK"] = "true"
+os.environ["CONFIRM_HIGH_RISK"] = "true"
 os.environ["ROUTER_USE_LLM"] = "true"
+# Intent step off by default (no extra LLM call per turn); tests/test_intent.py enables it explicitly.
+os.environ["INTENT_MODEL"] = ""
+os.environ["INTENT_FALLBACK_MODEL"] = ""
+# A local Ollama / LM Studio may be running on the dev PC: point them at a closed port so a test that forgets
+# to mock the LLM fails fast instead of reaching a real local model.
+os.environ["OLLAMA_BASE_URL"] = "http://127.0.0.1:9"
+os.environ["LM_STUDIO_BASE_URL"] = "http://127.0.0.1:9/v1"
 # No real provider keys in tests: every LLM call is mocked.
-for _key in ("GROQ_API_KEY", "GEMINI_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
+for _key in ("GROQ_API_KEY", "GROQ_API_KEYS", "GEMINI_API_KEY", "GEMINI_API_KEYS", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
              "OPENROUTER_API_KEY", "DEEPSEEK_API_KEY"):
     os.environ[_key] = ""
 
@@ -49,10 +57,39 @@ dynamic_app_manager._apps_cache = {}
 AUTH = {"Authorization": "Bearer test-token"}
 
 
+def fake_embedding(texts):
+    """Deterministic 16-dim bag-of-hashed-words embedding: no model, no download."""
+    import hashlib
+    import math
+    import re
+
+    vectors = []
+    for text in texts:
+        vec = [0.0] * 16
+        for word in re.findall(r"\w+", text.lower()):
+            vec[int(hashlib.md5(word.encode()).hexdigest(), 16) % 16] += 1.0
+        norm = math.sqrt(sum(v * v for v in vec)) or 1.0
+        vectors.append([v / norm for v in vec] if any(vec) else [1.0] + [0.0] * 15)
+    return vectors
+
+
+@pytest.fixture(autouse=True)
+def fake_embeddings():
+    """Every test embeds with the fake: the real fastembed model is never downloaded or loaded."""
+    from memory.vector_memory import vector_memory
+
+    vector_memory.set_embedding_function(fake_embedding)
+    yield
+
+
 @pytest.fixture(autouse=True)
 async def init_test_database():
-    """Ensure database tables exist before running test cases."""
+    """Ensure database tables exist before running test cases; let post-turn persistence finish after."""
     await db_manager.init_db()
+    yield
+    from brain.pipeline import brain
+
+    await brain.flush_persistence()
 
 
 @pytest.fixture

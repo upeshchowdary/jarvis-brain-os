@@ -5,6 +5,8 @@ bearer token in .env (JARVIS_API_TOKEN, generated on first run), CORS is closed
 unless CORS_ORIGINS is set, and requests are rate limited per client.
 """
 
+import asyncio
+import sys
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
@@ -36,19 +38,41 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     ensure_api_token()
     await db_manager.init_db()
+    from brain.task_state import tasks
+
+    await tasks.load()
     await long_term_memory.init_db()
     await vector_memory.load_from_db()
+    memory_warm_up = vector_memory.start_warm_up()  # Chroma + embedding model load in the background
+    from automation.application_controller import dynamic_app_manager
+
+    dynamic_app_manager.prewarm()  # app index load / first scan in a background thread, never on a request
     if settings.BACKGROUND_SERVICES:
         connectivity.start_background_refresh()
         from services import start_background_services
 
         await start_background_services()
+        await llm.warm_up()
+        llm.start_keepwarm()
     logger.info(f"JARVIS ready on http://{settings.HOST}:{settings.PORT} (token in .env as JARVIS_API_TOKEN)")
     yield
+    # Shutdown: stop whatever can still start turns (voice, background services), then flush what those turns
+    # left (chat log / index, task state), then the keep-warm pings, and only then close the LLM client.
+    memory_warm_up.cancel()
+    voice_module = sys.modules.get("voice.voice_manager")  # only if voice was ever used (it is heavy to import)
+    if voice_module is not None and voice_module.voice_manager.is_running:
+        await voice_module.voice_manager.stop()
     if settings.BACKGROUND_SERVICES:
         from services import stop_background_services
 
         await stop_background_services()
+    from brain.pipeline import brain
+
+    await brain.flush_persistence()  # the last turn's log/index isn't lost on shutdown
+    await tasks.flush()
+    keepwarm = llm.stop_keepwarm()
+    if keepwarm is not None:
+        await asyncio.gather(keepwarm, return_exceptions=True)
     await llm.aclose()
     logger.info("JARVIS shut down.")
 

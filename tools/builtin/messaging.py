@@ -1,4 +1,4 @@
-"""Messaging tools — drafts are always previewed and confirmed by the gateway."""
+"""Messaging tools — drafts are previewed by the gateway and confirmed unless confirmations are off."""
 
 from __future__ import annotations
 
@@ -14,7 +14,8 @@ class SendMessage(Tool):
     name = "send_message"
     description = (
         "Send a chat message to a contact via WhatsApp or Telegram desktop. Write the final message text yourself "
-        "(polite and complete if the user asked you to compose it). The user sees a preview and must confirm. "
+        "(polite and complete if the user asked you to compose it). Unless the user turned confirmations off, they "
+        "see a preview and confirm before it is sent. "
         "Discord/Slack are not supported for sending."
     )
     parameters = obj({

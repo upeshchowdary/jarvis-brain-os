@@ -13,7 +13,10 @@ from tools.registry import register
 @register
 class Clarify(Tool):
     name = "clarify"
-    description = "Ask the user ONE short clarifying question when you are not sure whether they want an action performed or what exactly to do."
+    description = ("Last resort: ask the user ONE short question, only when a required value (e.g. the message text) "
+                   "cannot be inferred from the request, the conversation or the current task. Never ask for permission. "
+                   "Ends your turn; the user's answer comes as the next message.")
+    ends_turn = True
     parameters = obj({"question": {"type": "string"}}, ["question"])
 
     async def run(self, ctx: ToolContext, question: str = "", **_: Any) -> ToolResult:
@@ -21,9 +24,8 @@ class Clarify(Tool):
 
 
 MODEL_ALIASES = {
-    "gemini": "gemini/gemini-3.5-flash-lite",
-    "groq": "groq/llama-3.3-70b-versatile",
-    "llama": "groq/llama-3.3-70b-versatile",
+    "gemini": "gemini/gemini-3.5-flash",  # not flash-lite: unusably slow when measured on 2026-11-03
+    "groq": "groq/openai/gpt-oss-120b",
     "openai": "openai/gpt-4o-mini",
     "gpt": "openai/gpt-4o-mini",
     "claude": "anthropic/claude-sonnet-4-5",
@@ -34,6 +36,13 @@ MODEL_ALIASES = {
     "local": None,
     "lm studio": "lmstudio/local-model",
     "lmstudio": "lmstudio/local-model",
+}
+
+
+# Names people say that map to no model this setup can run: answered clearly instead of switching to a dead id.
+UNAVAILABLE_MODELS = {
+    "llama": "There's no Llama chat model available here (Groq no longer serves one for this key). "
+             "Try “switch to gemini”, “switch to groq” or “switch to ollama”.",
 }
 
 
@@ -61,6 +70,8 @@ class SwitchModel(Tool):
     side_effect = True  # changes session config; never triggered by untrusted content
 
     async def run(self, ctx: ToolContext, model: str = "", **_: Any) -> ToolResult:
+        if model.strip().lower() in UNAVAILABLE_MODELS:
+            return ToolResult.error(UNAVAILABLE_MODELS[model.strip().lower()])
         target = resolve_alias(model)
         state = sessions.get(ctx.session_id)
         if not target:

@@ -1,0 +1,227 @@
+# Replay eval set for the intent step (brain/intent.py).
+#
+# The first block is the user's real messages from the 2026-10-30 chats (verbatim), with the context they
+# were said in. The second block is unseen paraphrases of the same behaviours, so the score does not just
+# measure how closely a message matches a few-shot example in the prompt.
+#
+# Case format:
+#   id:       unique name
+#   turns:    recent conversation, oldest first: {user, assistant, channel (default text)}
+#             assistant turns end with "[did: …]" action notes like the real history does
+#   task:     current task: a goal string, or {goal, status, channel, plan: [{subgoal, status}],
+#             steps: [{tool, args, result, ok}]}; omit for no task
+#   message:  the new message
+#   expect:   checks (only the ones given are scored):
+#     kind:                action | question | chat (always given)
+#     continues_task:      true / false
+#     single_step:         true / false
+#     request_contains:    substrings that must all be in the rewritten request (case-insensitive);
+#                          an item that is a list means "any one of these"
+#     tool_groups_include: groups that must all be in tool_groups; a list item means "any one of these"
+
+# ── Real messages (2026-10-30) ──────────────────────────────────────────
+
+- id: next-do-whatsapp
+  source: real
+  turns:
+    - {channel: voice, user: "open whatsapp and msg nithesh say ee em chesadu", assistant: "Opened WhatsApp. [did: open_app(whatsapp) ✓]"}
+  task:
+    goal: "Send 'ee em chesadu' to Nithesh on WhatsApp desktop"
+    channel: voice
+    plan: [{subgoal: "Open WhatsApp", status: done}, {subgoal: "Send 'ee em chesadu' to Nithesh", status: todo}]
+    steps: [{tool: open_app, args: "name=whatsapp", result: "Opened WhatsApp", ok: true}]
+  message: "next do"
+  expect: {kind: action, continues_task: true, single_step: false, request_contains: ["Nithesh", "ee em chesadu"], tool_groups_include: [messaging]}
+
+- id: said-in-previous-message
+  source: real
+  turns:
+    - {user: "open youtube and search for mr beast", assistant: "I don't have a way to open YouTube from here. What would you like me to search for?"}
+  message: "i said in the previous message right"
+  expect: {kind: action, continues_task: true, request_contains: ["YouTube", [mr beast, mrbeast]], tool_groups_include: [web]}
+
+- id: not-windows-chrome-tabs
+  source: real
+  turns:
+    - {channel: voice, user: "switch to the youtube one in this browser", assistant: "Open windows: Google Chrome, WhatsApp, Visual Studio Code. [did: list_windows() ✓]"}
+  message: "not windows but in the chrome browser tabs"
+  expect: {kind: action, continues_task: true, request_contains: ["YouTube", "tab"], tool_groups_include: [[web, keyboard]]}
+
+- id: yes-open
+  source: real
+  turns:
+    - {user: "open chatgpt", assistant: "ChatGPT isn't installed as an app. Shall I open chatgpt.com in your browser?"}
+  message: "yes open"
+  expect: {kind: action, continues_task: true, request_contains: ["ChatGPT"], tool_groups_include: [web]}
+
+- id: yes-take-screenshots
+  source: real
+  turns:
+    - {user: "can you check what is on my screen right now", assistant: "I can take screenshots and describe what's on your screen. Shall I take screenshots?"}
+  message: "yes take screen shots"
+  expect: {kind: action, continues_task: true, request_contains: [[screenshot, screen shot]]}
+
+- id: not-chrome-desktop-app
+  source: real
+  turns:
+    - {channel: voice, user: "open whatsapp and msg nithesh say ee em chesadu", assistant: "Opened WhatsApp Web in Chrome. [did: open_website(https://web.whatsapp.com) ✓]"}
+  task:
+    goal: "Send 'ee em chesadu' to Nithesh on WhatsApp"
+    channel: voice
+    plan: [{subgoal: "Open WhatsApp", status: done}, {subgoal: "Send 'ee em chesadu' to Nithesh", status: todo}]
+    steps: [{tool: open_website, args: "url=https://web.whatsapp.com", result: "Opened web.whatsapp.com", ok: true}]
+  message: "not in the chrome , i have app in my system , open that and message nithesh"
+  expect: {kind: action, continues_task: true, single_step: false, request_contains: ["Nithesh", "ee em chesadu", [desktop, app]], tool_groups_include: [messaging]}
+
+- id: scroll-down-after-youtube
+  source: real
+  turns:
+    - {user: "open youtube for me and go to mr beast channel", assistant: "Opened MrBeast's YouTube channel in Chrome. [did: open_website(https://www.youtube.com/@MrBeast) ✓]"}
+  message: "scroll down"
+  expect: {kind: action, request_contains: ["scroll"]}
+
+- id: ok-good
+  source: real
+  turns:
+    - {user: "open youtube for me and go to mr beast channel", assistant: "Opened MrBeast's YouTube channel in Chrome. [did: open_website(https://www.youtube.com/@MrBeast) ✓]"}
+  message: "ok good"
+  expect: {kind: chat}
+
+- id: no-need-for-now
+  source: real
+  turns:
+    - {channel: voice, user: "open notepad", assistant: "Opened Notepad. Want me to type anything in it? [did: open_app(notepad) ✓]"}
+  message: "no need for now"
+  expect: {kind: chat}
+
+- id: router-howto
+  source: real
+  turns:
+    - {user: "open youtube for me and go to mr beast channel", assistant: "Opened MrBeast's YouTube channel in Chrome. [did: open_website(https://www.youtube.com/@MrBeast) ✓]"}
+  message: "how do I restart my router?"
+  expect: {kind: question, continues_task: false, request_contains: ["router"]}
+
+- id: recent-chats-today
+  source: real
+  turns: []
+  message: "look at the recent chats I had with you today"
+  expect: {kind: question, tool_groups_include: [history]}
+
+- id: youtube-mrbeast-multistep
+  source: real
+  turns: []
+  message: "open youtube for me and go to mr beast channel"
+  expect: {kind: action, single_step: false, request_contains: ["YouTube", [mr beast, mrbeast]], tool_groups_include: [web]}
+
+# ── Unseen paraphrases of the same behaviours ───────────────────────────
+
+- id: para-go-ahead-finish-telegram
+  source: paraphrase
+  turns:
+    - {user: "open telegram and tell ravi meeting at 5", assistant: "Telegram is open. [did: open_app(telegram) ✓]"}
+  task:
+    goal: "Open Telegram and send 'meeting at 5' to Ravi"
+    plan: [{subgoal: "Open Telegram", status: done}, {subgoal: "Send 'meeting at 5' to Ravi", status: todo}]
+    steps: [{tool: open_app, args: "name=telegram", result: "Opened Telegram", ok: true}]
+  message: "go ahead and finish it"
+  expect: {kind: action, continues_task: true, request_contains: ["Ravi", "meeting at 5"], tool_groups_include: [messaging]}
+
+- id: para-type-it-again-cross-channel
+  source: paraphrase
+  turns:
+    - {channel: voice, user: "open notepad and type hello from jarvis", assistant: "Opened Notepad and typed it. [did: open_app(notepad) ✓, type_text(hello from jarvis) ✓]"}
+  message: "type it again"
+  expect: {kind: action, continues_task: true, request_contains: ["hello from jarvis"]}
+
+- id: para-correction-not-spotify-youtube
+  source: paraphrase
+  turns:
+    - {user: "play believer by imagine dragons", assistant: "Playing Believer on Spotify. [did: media_control(play, Believer) ✓]"}
+  message: "not on spotify, play it on youtube"
+  expect: {kind: action, continues_task: true, request_contains: ["Believer", "YouTube"], tool_groups_include: [web]}
+
+- id: para-correction-wordpad
+  source: paraphrase
+  turns:
+    - {channel: voice, user: "open notepad and type shopping list", assistant: "Opened Notepad and typed 'shopping list'. [did: open_app(notepad) ✓, type_text(shopping list) ✓]"}
+  message: "no no not notepad, i meant wordpad"
+  expect: {kind: action, continues_task: true, single_step: false, request_contains: ["WordPad", "shopping list"]}
+
+- id: para-yeah-do-it-volume
+  source: paraphrase
+  turns:
+    - {channel: voice, user: "it's way too loud", assistant: "Shall I set the volume to 20%?"}
+  message: "yeah do it"
+  expect: {kind: action, continues_task: true, request_contains: ["volume", "20"], tool_groups_include: [system]}
+
+- id: para-sure-go-ahead-flights
+  source: paraphrase
+  turns:
+    - {user: "can you find flights to hyderabad for next friday", assistant: "Shall I search Google Flights for flights to Hyderabad next Friday in your browser?"}
+  message: "sure, go ahead"
+  expect: {kind: action, continues_task: true, request_contains: ["Hyderabad", "flight"], tool_groups_include: [web]}
+
+- id: para-thanks-perfect
+  source: paraphrase
+  turns:
+    - {user: "set brightness to 60", assistant: "Brightness set to 60%. [did: set_brightness(60) ✓]"}
+  message: "thanks jarvis, that's perfect"
+  expect: {kind: chat}
+
+- id: para-leave-it-for-now
+  source: paraphrase
+  turns:
+    - {user: "open my downloads folder", assistant: "Opened Downloads. Want me to sort the files by date too? [did: open_system_tool(downloads) ✓]"}
+  message: "nah leave it, not now"
+  expect: {kind: chat}
+
+- id: para-howto-task-manager
+  source: paraphrase
+  turns: []
+  message: "how can I open task manager with a keyboard shortcut?"
+  expect: {kind: question, continues_task: false, request_contains: ["task manager"]}
+
+- id: para-history-yesterday
+  source: paraphrase
+  turns: []
+  message: "what did I ask you yesterday evening?"
+  expect: {kind: question, tool_groups_include: [history]}
+
+- id: para-third-tab
+  source: paraphrase
+  turns:
+    - {user: "open gmail, youtube and amazon in chrome", assistant: "Opened Gmail, YouTube and Amazon in Chrome tabs. [did: open_website(https://mail.google.com) ✓, open_website(https://youtube.com) ✓, open_website(https://amazon.in) ✓]"}
+  message: "switch to the 3rd tab"
+  expect: {kind: action, request_contains: [[3rd, third, "3", amazon], "tab"], tool_groups_include: [[keyboard, web]]}
+
+- id: para-second-or-third-tab
+  source: paraphrase
+  turns:
+    - {channel: voice, user: "switch to the instagram tab", assistant: "I couldn't find an Instagram window. [did: focus_window(instagram) ✗]"}
+  message: "it's in chrome, the 2nd or 3rd tab"
+  expect: {kind: action, continues_task: true, request_contains: ["Instagram", [2nd, second], [3rd, third]]}
+
+- id: para-close-second-one
+  source: paraphrase
+  turns:
+    - {user: "which tabs are open in chrome", assistant: "Chrome tabs: 1. YouTube, 2. Gmail, 3. Amazon. [did: list_windows() ✓]"}
+  message: "close the 2nd one"
+  expect: {kind: action, continues_task: true, request_contains: [[2nd, second, gmail], "tab"]}
+
+- id: para-multistep-notepad-note
+  source: paraphrase
+  turns: []
+  message: "open notepad and write buy milk tomorrow in it"
+  expect: {kind: action, single_step: false, request_contains: ["Notepad", "buy milk tomorrow"]}
+
+- id: para-question-mid-task
+  source: paraphrase
+  turns:
+    - {channel: voice, user: "open whatsapp and msg nithesh say ee em chesadu", assistant: "Opened WhatsApp. [did: open_app(whatsapp) ✓]"}
+  task:
+    goal: "Send 'ee em chesadu' to Nithesh on WhatsApp desktop"
+    channel: voice
+    plan: [{subgoal: "Open WhatsApp", status: done}, {subgoal: "Send 'ee em chesadu' to Nithesh", status: todo}]
+    steps: [{tool: open_app, args: "name=whatsapp", result: "Opened WhatsApp", ok: true}]
+  message: "wait, what time is it?"
+  expect: {kind: question, continues_task: false, request_contains: ["time"]}

@@ -19,7 +19,8 @@ safety gateway that previews risky actions and asks before doing them.
 ## Quick start (≈10 minutes)
 
 **You need:** Windows 10/11, Python 3.12+ ([python.org](https://www.python.org/downloads/)), and either one free API
-key (e.g. [Gemini](https://aistudio.google.com/app/apikey) or [Groq](https://console.groq.com/keys)) **or**
+key — [Gemini](https://aistudio.google.com/app/apikey) (Gemini Flash answers chat and actions) and
+[Groq](https://console.groq.com/keys) (gpt-oss-120b understands each message first) are the defaults — **or**
 [Ollama](https://ollama.com) for fully offline use (`ollama pull qwen3.5`).
 
 ```bash
@@ -66,6 +67,8 @@ Optional extras:
 | Browser agent | `playwright install chromium` |
 | Terminal chat | `python chat.py` (streams tokens) |
 | Use JARVIS from Claude Desktop / Cursor | see [MCP](#mcp) |
+| Semantic memory search | part of `[all]` (the `[memory]` extra: chromadb + fastembed). The first start downloads the embedding model (`EMBEDDING_MODEL`, a few hundred MB) into `data/models/` and then indexes up to 5000 past turns in the background; without it, memory search is keyword-only |
+| Traces of every turn in Langfuse | `pip install -e ".[tracing]"`, set `LANGFUSE_ENABLED=true` and the keys. Opt-in: your query, the reply and the rewritten request are sent to the Langfuse host |
 
 ---
 
@@ -95,6 +98,7 @@ mic button switches on the PC microphone instead.
 | **Conversation** | "explain recursion with an example", "compare Rust and Go" |
 | **Live info** | "what's the latest AI news", "research the best laptop for students" (multi-source, cited) |
 | **System control** | "volume 40", "mute", "brightness up", "lock the screen", "snap window left", "take a screenshot", "battery level" |
+| **Keyboard & tabs** (instant) | "scroll down", "next tab", "go to tab 3", "close tab", "reopen closed tab", "go back", "refresh", "press enter", "type hello world", "switch to chrome". They act on the window in front; typed in the console, they act on the window you were in before. "open notepad and type …" types into the window that open just brought up (a new Notepad tab if Notepad was already open), or says so and types nothing if that window can't be brought to the front |
 | **Power** (confirmed) | "restart my pc" → "yes" · "cancel shutdown" · "put the laptop to sleep" |
 | **Apps & web** | "open spotify", "close chrome", "open github.com", "play lofi beats on youtube", "google best pizza near me" |
 | **Processes** (confirmed) | "kill notepad.exe" — exact name only, never JARVIS or system processes |
@@ -104,6 +108,7 @@ mic button switches on the PC microphone instead.
 | **Documents** | "summarize ~/Documents/syllabus.pdf", "according to my notes folder, when is the physics exam?", "extract the tables from results.docx to excel" |
 | **Productivity** | "add buy milk to my to-do list", "take a note wifi password is on the router", "paste what I copied 3 items ago", "give me my briefing", "what's the weather" |
 | **Memory** | "remember that my exam is on Friday", "what do you know about me", "forget my exam" |
+| **Chat history** | "what did I ask you today?", "what did we do about WhatsApp yesterday?" |
 | **Messaging** (preview + confirm) | "tell Rahul on WhatsApp I'll be 10 minutes late", "email hr@company.com asking for the offer letter, formally" |
 | **Screen** | "what's this error on my screen?", "read the text on screen" |
 | **Computer use** | "open chrome, search for python jobs in Hyderabad and open the first result" (plan shown first) |
@@ -156,14 +161,27 @@ More: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · [docs/SAFETY.md](docs/SAFE
 
 | Risk | Examples | Behaviour |
 |---|---|---|
-| LOW | open app/website, volume, brightness, windows, lock, screenshot, read-only lookups | runs immediately |
-| MEDIUM | clicking/typing in apps, writing/renaming files, email drafts, browser agent | asks first (`CONFIRM_MEDIUM_RISK=false` to relax) |
-| HIGH | shutdown/restart/sleep, kill process, delete (Recycle Bin), move files, send messages, shell, wifi off | **always** asks |
+| LOW | open app/website, volume, brightness, windows, lock, screenshot, read-only lookups, your own keyboard commands ("close tab", "type hello") | runs immediately |
+| MEDIUM | clicking/typing in apps, key presses and typing the model decides on, writing/renaming files, email drafts, browser agent | asks first (`CONFIRM_MEDIUM_RISK=false` to relax) |
+| HIGH | shutdown/restart/sleep, kill process, delete (Recycle Bin), move files, send messages, shell, wifi off | asks first (`CONFIRM_HIGH_RISK=false` turns this off, see below) |
+
+**Full-control mode** (`CONFIRM_MEDIUM_RISK=false` and `CONFIRM_HIGH_RISK=false`): JARVIS shuts down, kills
+processes, deletes, sends messages and runs shell commands **without asking**. A misheard voice command or a
+model mistake then acts at once; only dry-run, the emergency stop, undo for file operations and the 30 s
+shutdown delay remain. Use it only on your own PC. MCP clients (other programs) still need your approval for
+every MEDIUM or HIGH action in this mode, and for any key press or typing; their LOW actions (open an app or a
+website, set the volume) run at once.
 
 Everything is logged to `data/audit.jsonl` and visible in the console's activity log. Dry-run (`DRY_RUN=true` or "enable dry run")
 simulates everything. Web pages, files and screen text are treated as untrusted data and can't trigger actions.
 `PRIVACY_MODE=local` keeps file and screen content on your machine (Ollama / LM Studio only). The API listens on
 127.0.0.1 only and requires the token.
+
+**What leaves your PC:** every message that isn't an instant command goes through the *intent step*, which sends
+it with the last few turns (`INTENT_HISTORY_TURNS`, from voice, console and API) and the current task to
+`INTENT_MODEL`'s provider (Groq by default; Google Gemini when Groq fails). `PRIVACY_MODE=local` does not
+change that: set `INTENT_MODEL` to an Ollama model, or empty to switch the step off. Replies use `DEFAULT_MODEL` /
+`ACTION_MODEL` (Gemini Flash by default).
 
 ---
 
@@ -173,14 +191,34 @@ All settings live in `.env` (see [.env.example](.env.example)). The important on
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `DEFAULT_MODEL` | `gemini/gemini-3.5-flash-lite` | `provider/model` used for chat |
-| `LLM_FALLBACKS` | groq → openai → ollama | tried in order if the default fails |
+| `DEFAULT_MODEL` | `gemini/gemini-3.5-flash` | `provider/model` used for chat (flash-lite is not the default: unusably slow when measured on 2026-11-03) |
+| `ACTION_MODEL` | `gemini/gemini-3.5-flash` | model for turns that act on the PC |
+| `LLM_FALLBACKS` | `groq/openai/gpt-oss-120b` | tried in order if the default fails |
+| `INTENT_MODEL` / `INTENT_FALLBACK_MODEL` | `groq/openai/gpt-oss-120b` / `gemini/gemini-3.5-flash` | rewrites each message into a complete request ("next do" → "send Nithesh 'hi' on WhatsApp"); empty = off |
+| `INTENT_HISTORY_TURNS` | `4` | recent turns (any channel) the intent step sees |
+| `GEMINI_API_KEYS` | empty | extra Gemini keys, comma separated: on a 429 / rejected key JARVIS moves to the next one |
+| `GROQ_API_KEYS` | empty | extra Groq keys, comma separated, rotated the same way (limits are per Groq organisation) |
+| `LLM_KEEPWARM` | `true` | keep provider connections warm (lists models, no tokens) for 15 min after a request |
+| `LLM_HEDGE_AFTER_SECONDS` | `3.0` | a cloud call with no answer after this long gets one duplicate request on the provider's second key (or the next fallback provider); the first answer wins. Doubles requests only for slow calls; never for local models or the intent step; `0` = off |
 | `PRIVACY_MODE` | `cloud` | `local` = files/screens only go to local models |
 | `CONFIRM_MEDIUM_RISK` | `true` | ask before medium-risk actions |
+| `CONFIRM_HIGH_RISK` | `true` | ask before high-risk actions; `false` = full control (see Safety) |
 | `DRY_RUN` | `false` | simulate every action |
+| `EMBEDDING_MODEL` | `BAAI/bge-base-en-v1.5` | local model for semantic memory search |
+| `LANGFUSE_ENABLED` | `false` | send turn traces to Langfuse (opt-in) |
+| `SILENCE_TIMEOUT_MS` | `600` | pause that ends a spoken command |
 | `HOST` / `PORT` | `127.0.0.1` / `8000` | API bind address |
 | `STT_ENGINE` / `WHISPER_MODEL` | `auto` / `base.en` | speech-to-text engine and model size |
 | `TTS_ENGINE` | `auto` | `kokoro` (if model files present) or `pyttsx3` |
+
+**Free-tier quota:** the intent step runs on Groq (gpt-oss-120b, ~0.5–0.7 s) and chat and actions on Gemini Flash.
+Groq's free tier allows 8,000 tokens per minute and 1,000 requests per day **per Groq organisation**, which is only
+a few intent turns per minute. Put keys from *separate* organisations in `GROQ_API_KEYS`: JARVIS moves to the next
+key when one answers 429, so each extra organisation adds capacity (keys from the same account share one limit).
+Only when every Groq key is exhausted does JARVIS skip Groq until its reset time and use Gemini Flash for the
+intent step. Gemini's free limits are **per Google Cloud project**, so only `GEMINI_API_KEYS` from different
+projects add quota. `gemini-3.5-flash-lite` is no longer a default: when measured on 2026-11-03 it took 18 s for
+a one-token reply.
 
 ---
 
@@ -194,7 +232,13 @@ JARVIS speaks the [Model Context Protocol](https://modelcontextprotocol.io):
                              "args": ["-m", "integrations.mcp_server"],
                              "cwd": "C:/path/to/jarvis-brain-os"}}}
   ```
-  MCP clients can never approve their own risky actions — you approve them in JARVIS.
+  MCP clients can never approve their own MEDIUM/HIGH actions or any key press / typing — you approve them in
+  JARVIS, even in full-control mode. Their LOW actions (open an app or a website, volume, system status) run
+  directly. MCP clients **can read your chat history** (`chat_history`) and look up your saved facts with a tool
+  (`recall_memory` / `memory_recall`), but your facts and past turns are not put into their prompts automatically,
+  they don't see your recent conversation or current task, and they can't save or delete memories. Their own turns
+  are kept in the chat log (audit) but never recalled into your conversations; `chat_history` lists them only when
+  asked for `channel=mcp`.
 * **As a client** — list servers (GitHub, filesystem, Google Calendar/Gmail …) in `data/mcp_servers.json`; see
   [integrations/mcp_servers.example.json](integrations/mcp_servers.example.json). Their write tools go through the gateway.
 

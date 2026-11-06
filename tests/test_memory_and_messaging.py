@@ -86,3 +86,18 @@ async def test_email_requires_valid_address_and_confirmation():
     good = await gateway.execute(ActionRequest("email.compose", {"to": "a@b.com", "subject": "Hi", "body": "Hello"}), "mail")
     assert good.status == "needs_confirmation" and "a@b.com" in good.preview
     gateway.cancel(good.pending_id)
+
+
+async def test_background_fact_extraction_is_never_hedged(monkeypatch):
+    """P1: fact extraction runs after the turn, off the user's critical path: no duplicate (hedge) request."""
+    from core.llm import LLMResponse, llm
+
+    seen = {}
+
+    async def fake_chat(messages, **kw):
+        seen.update(kw)
+        return LLMResponse('{"facts": []}', "fake", "fake-1")
+
+    monkeypatch.setattr(llm, "chat", fake_chat)
+    await long_term_memory.llm_extract_facts("I study computer science at IIT Madras")
+    assert seen.get("hedge") is False

@@ -39,6 +39,8 @@ class AudioCaptureManager:
         # Ring buffer for continuous audio frames (keeps last ~1.5 seconds)
         max_buffer_frames = int((self.sample_rate / self.chunk_size) * 2.0)
         self._ring_buffer: collections.deque = collections.deque(maxlen=max_buffer_frames)
+        self._frame_count = 0  # frames ever captured; frame i is in the buffer while i >= count - len
+        self._read_pos: Dict[str, int] = {}  # reader name -> index of its next unread frame
 
         # Dynamic energy calibration
         self.energy_threshold = float(voice_config.ENERGY_THRESHOLD)
@@ -174,15 +176,33 @@ class AudioCaptureManager:
         time.sleep(0.1)
         return self.start_stream()
 
-    def read_chunk(self, timeout: float = 0.5) -> Optional[bytes]:
-        """Reads latest audio chunk from ring buffer."""
-        start = time.perf_counter()
-        while time.perf_counter() - start < timeout:
+    def read_chunk(self, timeout: float = 0.5, reader: str = "default") -> Optional[bytes]:
+        """Return the reader's next unread frame, waiting up to ``timeout`` seconds (0 = don't wait).
+
+        Each reader (voice loop, barge-in monitor) sees every frame once, in order, starting
+        from live audio. A reader that fell behind the ring buffer resumes at its oldest frame.
+        """
+        deadline = time.perf_counter() + timeout
+        while True:
             with self._lock:
-                if self._ring_buffer:
-                    return self._ring_buffer[-1]
+                oldest = self._frame_count - len(self._ring_buffer)
+                pos = max(self._read_pos.setdefault(reader, self._frame_count), oldest)
+                if pos < self._frame_count:
+                    self._read_pos[reader] = pos + 1
+                    return self._ring_buffer[pos - oldest]
+            if time.perf_counter() >= deadline:
+                return None
             time.sleep(0.01)
-        return None
+
+    def skip_to_live(self, reader: str = "default") -> None:
+        """Mark everything captured so far as read (e.g. JARVIS's own voice during TTS)."""
+        with self._lock:
+            self._read_pos[reader] = self._frame_count
+
+    def _push_frame(self, raw_bytes: bytes) -> None:
+        with self._lock:
+            self._ring_buffer.append(raw_bytes)
+            self._frame_count += 1
 
     def get_buffered_audio(self, duration_sec: float) -> bytes:
         """Get the last N seconds of raw audio bytes from the circular buffer."""
@@ -213,8 +233,7 @@ class AudioCaptureManager:
                     energy = self.calculate_rms_energy(raw_bytes)
                     self.current_energy = energy
 
-                    with self._lock:
-                        self._ring_buffer.append(raw_bytes)
+                    self._push_frame(raw_bytes)
 
         except Exception as e:
             logger.warning(f"[AudioCapture] sounddevice error: {e}. Trying pyaudio fallback.")
@@ -239,8 +258,7 @@ class AudioCaptureManager:
                 energy = self.calculate_rms_energy(data)
                 self.current_energy = energy
 
-                with self._lock:
-                    self._ring_buffer.append(data)
+                self._push_frame(data)
 
             stream.stop_stream()
             stream.close()

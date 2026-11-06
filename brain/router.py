@@ -147,7 +147,7 @@ def _is_known_app(name: str) -> bool:
     try:
         from automation.application_controller import dynamic_app_manager
 
-        dynamic_app_manager._ensure_index()
+        dynamic_app_manager._ensure_index(scan=False)  # on the event loop: use what is loaded, never scan here
         return n in dynamic_app_manager._apps_cache
     except Exception:
         return False
@@ -228,6 +228,79 @@ rule(r"(?:next|skip)(?: the)?(?: track| song)?|skip (?:this )?(?:track|song)|pla
     lambda m: RouteDecision("media_control", {"action": "next"}))
 rule(r"previous(?: track| song)?|(?:play )?(?:the )?(?:previous|last) (?:track|song)|go back a (?:track|song)", "media_prev")(
     lambda m: RouteDecision("media_control", {"action": "previous"}))
+
+# Keyboard fast path: acts on the foreground window (or, when that is the JARVIS console, the previous one: see
+# automation/ops/keyboard.py), no LLM. Registered before model switching / app opening so
+# "switch to tab 3" and "switch to chrome" are caught here (model names fall through to switch_model).
+# Bare context words ("next", "back", "again") are deliberately NOT rules — see CONTEXT_WORDS.
+def _keys(keys: str) -> Callable[[re.Match], RouteDecision]:
+    return lambda m: RouteDecision("press_keys", {"keys": keys})
+
+
+for _pat, _keys_, _nm in (
+    (r"scroll down|page down|pagedown", "pagedown", "scroll_down"),
+    (r"scroll up|page up|pageup", "pageup", "scroll_up"),
+    (r"(?:go|jump|scroll) to (?:the )?top(?: of the page)?", "ctrl+home", "go_top"),
+    (r"(?:go|jump|scroll) to (?:the )?bottom(?: of the page)?", "ctrl+end", "go_bottom"),
+    (r"next tab|tab right", "ctrl+tab", "next_tab"),
+    (r"(?:previous|prev) tab|tab left", "ctrl+shift+tab", "prev_tab"),
+    (r"(?:last|final) tab|go to (?:the )?last tab", "ctrl+9", "last_tab"),
+    (r"new tab|open (?:a )?new tab", "ctrl+t", "new_tab"),
+    (r"close (?:this |the |current )?tab", "ctrl+w", "close_tab"),
+    (r"reopen (?:the )?(?:last )?(?:closed )?tab|restore (?:the )?(?:closed|last) tab", "ctrl+shift+t", "reopen_tab"),
+    (r"go back|navigate back|back a page", "alt+left", "go_back"),
+    (r"go forward|navigate forward|forward a page", "alt+right", "go_forward"),
+    (r"refresh|reload|refresh (?:the |this )?page|reload (?:the |this )?page", "f5", "refresh"),
+    (r"select all", "ctrl+a", "select_all"),
+    (r"copy|copy (?:this|selection|the selection)", "ctrl+c", "copy"),
+    (r"paste|paste (?:it|this|here)", "ctrl+v", "paste"),
+    # Bare "undo" stays the JARVIS action-undo rule below; this is the in-app edit undo.
+    (r"undo (?:typing|the typing|text|the text|edit|the edit|in the app)", "ctrl+z", "undo_edit"),
+    (r"redo|redo (?:that|it|typing)", "ctrl+y", "redo"),
+):
+    rule(_pat, _nm)(_keys(_keys_))
+
+
+@rule(r"(?:go to|switch to|open) tab (?P<n>[1-8]|last)", "goto_tab")
+def _goto_tab(m: re.Match) -> RouteDecision:
+    n = m.group("n").lower()
+    return RouteDecision("press_keys", {"keys": f"ctrl+{9 if n == 'last' else n}"})
+
+
+_PRESS_KEYS = {
+    "enter": "enter", "return": "enter", "escape": "escape", "esc": "escape", "tab": "tab", "space": "space",
+    "spacebar": "space", "backspace": "backspace", "delete": "delete", "up": "up", "down": "down", "left": "left",
+    "right": "right", "home": "home", "end": "end", **{f"f{i}": f"f{i}" for i in range(1, 13)},
+}
+
+
+@rule(r"press (?:the )?(?P<k>[a-z0-9]{1,9})(?: key| button)?", "press_key")
+def _press_key(m: re.Match) -> Optional[RouteDecision]:
+    key = _PRESS_KEYS.get(m.group("k").lower())
+    return RouteDecision("press_keys", {"keys": key}) if key else None
+
+
+@rule(r"type (?P<t>.+)", "type_text")
+def _type_text(m: re.Match) -> Optional[RouteDecision]:
+    text = m.group("t")  # fast_route replaces this with the raw (un-normalised) text
+    if re.match(r"(?:of\b|\d)", text.strip(), re.I):  # "type of file...", "type 2 diabetes" are not dictation
+        return None
+    return RouteDecision("type_text", {"text": text}) if text.strip() else None
+
+
+_MODEL_WORDS = {"gemini", "groq", "llama", "openai", "gpt", "claude", "anthropic", "deepseek", "openrouter", "ollama",
+                "local", "offline", "vision", "default", "reset", "lm studio", "lmstudio"}
+
+
+@rule(r"(?:switch|change) to (?:the )?(?P<x>[\w .+&'-]{2,40}?)(?: app| application| window)?", "focus_window")
+def _focus_window(m: re.Match) -> Optional[RouteDecision]:
+    x = m.group("x").strip().lower()
+    if x in _MODEL_WORDS or x.startswith(("model", "gpt", "gemini", "claude", "llama")) or x.endswith(" mode"):
+        return None  # model switching / routine modes handle these
+    if x in ("tab", "desktop", "window", "windows") or x.startswith("tab "):
+        return None
+    return RouteDecision("focus_window", {"name": x}) if _is_known_app(x) else None
+
 
 # Windows.
 rule(r"(?P<a>minimi[sz]e|maximi[sz]e|restore|close) (?:this |the |current |active |that )?window|(?P<a2>minimi[sz]e|maximi[sz]e) (?:it|this|that)", "window_active")(
@@ -407,16 +480,76 @@ def _close(m: re.Match) -> Optional[RouteDecision]:
     return RouteDecision("close_app", {"name": x}) if _is_known_app(x) else None
 
 
-def fast_route(text: str) -> Optional[RouteDecision]:
-    """Match the whole utterance against the command grammar. None → use the LLM."""
+# Bare follow-up words: while a task is active they refer to it ("next" = the next step, not the next song),
+# so they go to the intent step instead of the fast path.
+CONTEXT_WORDS = {"next", "previous", "back", "again", "that", "it", "do it", "continue", "this", "same", "more", "go on"}
+# Emergency stop / resume / dry run / status always match first, whatever the task state.
+SAFETY_RULES = ("stop", "resume", "dry_run_on", "dry_run_off", "automation_status")
+
+
+# "type it again", "type that", "type the same thing": a reference to earlier text, not dictation. Only the whole
+# text counts ("type it is raining" is typed); the intent step resolves the reference from history.
+_TYPE_REFERENCE = re.compile(
+    r"(?:(?:it|that(?: one)?|this(?: one)?|the same(?: thing| text| one)?|same(?: thing| text)?)"
+    r"(?: (?:again|once again|once more|one more time))?|again|once again|once more|one more time)", re.I)
+# Trailing courtesy / address around a reference: "it again please", "it again, jarvis", "that, thanks".
+_TYPE_REFERENCE_TAIL = re.compile(r"(?:[\s,.!]+(?:please|pls|thanks|thank you|jarvis|now))+[\s,.!]*$|[\s,.!]+$", re.I)
+
+
+def _is_type_reference(raw: str) -> bool:
+    core = raw.strip()
+    for _ in range(4):
+        new = _TYPE_REFERENCE_TAIL.sub("", core)
+        if new == core:
+            break
+        core = new
+    return bool(_TYPE_REFERENCE.fullmatch(core.replace(",", " ").strip()))
+
+
+def _raw_type_text(text: str) -> str:
+    """Text after the leading "type" verb, from the raw utterance: casing, punctuation and polite words kept.
+    Only a wake word and polite prefix before the verb are removed. "" when it ends with "?" (a question) or is a
+    reference to earlier text ("it again", "that", "the same thing")."""
+    t = _WAKE.sub("", re.sub(r"\s+", " ", text.strip()))
+    for _ in range(4):
+        new = _POLITE_PREFIX.sub("", t)
+        if new == t:
+            break
+        t = new
+    m = re.match(r"type\s+(.+)$", t.strip(), re.I | re.S)
+    if not m:
+        return ""
+    raw = m.group(1).strip()
+    return "" if raw.endswith("?") or _is_type_reference(raw) else raw
+
+
+def fast_route(text: str, task_active: bool = False) -> Optional[RouteDecision]:
+    """Match the whole utterance against the command grammar. None → use the LLM.
+
+    ``task_active``: a task is in progress, so a bare context word ("next", "again", …) is not a command.
+    Safety rules are tried before that check and therefore always win.
+    """
     t, _ = normalize(text)
     if not t or len(t) > 160:
         return None
-    for rx, fn, name in _RULES:
+    safety = [r for r in _RULES if r[2] in SAFETY_RULES]
+    rest = [r for r in _RULES if r[2] not in SAFETY_RULES]
+    if task_active and t.lower() in CONTEXT_WORDS:
+        rest = []
+    for rx, fn, name in safety + rest:
         m = rx.match(t)
         if m:
             decision = fn(m)
             if decision is not None:
                 decision.rule = name
+                if name == "type_text":
+                    raw = _raw_type_text(text)
+                    if not raw:
+                        return None  # question-like ("...?"), a reference ("it again") or nothing to type: intent step
+                    decision.args = {"text": raw}
                 return decision
+    if not t or t.lower() == "type" or t.lower().startswith("type "):
+        raw = _raw_type_text(text)  # normalisation can eat polite words that are part of the text ("type thanks")
+        if raw and len(raw) <= 160 and not re.match(r"(?:of\b|\d)", raw, re.I):
+            return RouteDecision("type_text", {"text": raw}, rule="type_text")
     return None

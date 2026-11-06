@@ -39,12 +39,12 @@ def _get_client(timeout: float = 6.0) -> httpx.AsyncClient:
 
 
 class GeminiVisionProvider(BaseVisionProvider):
-    """Adapter for Google Gemini Vision Models (gemini-3.5-flash-lite / gemini-flash-latest)."""
+    """Adapter for Google Gemini Vision Models (gemini-3.5-flash / gemini-flash-latest)."""
 
     def __init__(
         self,
         api_key: str,
-        model_name: str = "gemini-3.5-flash-lite",
+        model_name: str = "gemini-3.5-flash",
         timeout: float = 6.0,
         **kwargs: Any,
     ) -> None:

@@ -150,10 +150,22 @@ def test_questions_are_not_imperative(query):
 
 
 def test_model_aliases():
-    assert resolve_alias("groq") == "groq/llama-3.3-70b-versatile"
+    assert resolve_alias("groq") == "groq/openai/gpt-oss-120b"
     assert resolve_alias("ollama vision").startswith("ollama/")
     assert resolve_alias("qwen 2b").startswith("ollama/")
     assert resolve_alias("gpt-4o") == "openai/gpt-4o"
+
+
+async def test_switch_to_llama_does_not_select_a_dead_model():
+    """M7: this Groq key serves no Llama chat model (llama-3.3-70b-versatile → 404): say so, change nothing."""
+    from brain.pipeline import brain
+    from core.session import sessions
+
+    assert "llama-3.3-70b-versatile" not in resolve_alias("llama")
+    res = await brain.handle("switch to llama", "llama-switch")
+    assert res.route == "fast_path" and res.intent == "switch_model"
+    assert "no llama" in res.response.lower()
+    assert sessions.get("llama-switch").model_override is None
 
 
 @pytest.mark.parametrize("query,url_part", [
@@ -174,3 +186,17 @@ def test_planner_drops_shell_steps():
         {"action": "open_app", "target": "notepad"},
     ])
     assert [s["action"] for s in steps] == ["open_app"]
+
+
+def test_gemini_alias_and_defaults_use_gemini_flash():
+    """G3: flash-lite was unusably slow (2026-11-03); "switch to gemini" and the Gemini defaults use Flash."""
+    import inspect
+
+    from core.config import Settings
+    from tools.builtin.meta import UNAVAILABLE_MODELS
+    from vision.providers.gemini import GeminiVisionProvider
+
+    assert resolve_alias("gemini") == "gemini/gemini-3.5-flash"
+    assert Settings.model_fields["GEMINI_MODEL"].default == "gemini-3.5-flash"
+    assert inspect.signature(GeminiVisionProvider.__init__).parameters["model_name"].default == "gemini-3.5-flash"
+    assert "switch to gemini" in UNAVAILABLE_MODELS["llama"]  # still a sensible suggestion

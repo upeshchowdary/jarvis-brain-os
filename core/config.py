@@ -10,7 +10,7 @@ import os
 import secrets
 from enum import Enum
 from pathlib import Path
-from typing import Annotated, Any, List, Optional
+from typing import Annotated, Any, Dict, List, Optional
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
@@ -66,12 +66,30 @@ class Settings(BaseSettings):
 
     # ── LLM ─────────────────────────────────────────────────────────────
     # Models are written "provider/model". A bare name is mapped to a provider by prefix.
-    DEFAULT_MODEL: str = "gemini/gemini-3.5-flash-lite"
-    FAST_MODEL: str = "gemini/gemini-3.5-flash-lite"
-    LLM_FALLBACKS: StrList = Field(
-        default_factory=lambda: ["groq/llama-3.3-70b-versatile", "openai/gpt-4o-mini", "ollama/qwen3.5:latest"]
-    )
-    GEMINI_MODEL: str = "gemini-3.5-flash-lite"
+    # Gemini Flash for chat and actions; flash-lite is not the default (unusably slow when measured 2026-11-03).
+    DEFAULT_MODEL: str = "gemini/gemini-3.5-flash"
+    FAST_MODEL: str = "gemini/gemini-3.5-flash"
+    LLM_FALLBACKS: StrList = Field(default_factory=lambda: ["groq/openai/gpt-oss-120b"])
+    # Intent step (empty INTENT_MODEL disables it): Groq gpt-oss (fast, key rotation), Gemini Flash behind it.
+    INTENT_MODEL: str = "groq/openai/gpt-oss-120b"
+    INTENT_FALLBACK_MODEL: str = "gemini/gemini-3.5-flash"
+    ACTION_MODEL: str = "gemini/gemini-3.5-flash"
+    # reasoning_effort per model name (as sent to the provider); JSON object in the environment.
+    REASONING_EFFORT: Annotated[Dict[str, str], NoDecode] = Field(default_factory=lambda: {
+        "gemini-3.5-flash-lite": "minimal", "gemini-3.5-flash": "minimal", "openai/gpt-oss-120b": "low",
+    })
+    LLM_KEEPWARM: bool = True  # ping the cloud providers while idle so the first real call isn't cold
+    # Tail latency: a cloud call with no answer (or, streaming, no output) after this many seconds gets ONE duplicate
+    # request on the provider's next key (or the next fallback provider); the first to succeed wins. 0 = off.
+    LLM_HEDGE_AFTER_SECONDS: float = Field(default=3.0, ge=0.0)
+    LANGFUSE_ENABLED: bool = False  # optional tracing (pip install .[tracing]); off = langfuse is never imported
+    LANGFUSE_PUBLIC_KEY: str = ""
+    LANGFUSE_SECRET_KEY: str = ""
+    LANGFUSE_HOST: str = ""
+    TASK_IDLE_SECONDS: int = Field(default=900, ge=1)  # a task idle this long is shelved
+    INTENT_HISTORY_TURNS: int = Field(default=4, ge=0)  # recent cross-channel turns shown to the intent step
+    INTENT_HISTORY_WINDOW_SECONDS: int = Field(default=1800, ge=1)
+    GEMINI_MODEL: str = "gemini-3.5-flash"  # screen-vision model; flash-lite was unusably slow on 2026-11-03
     TEMPERATURE: float = Field(default=0.2, ge=0.0, le=2.0)
     MAX_TOKENS: int = Field(default=1024, ge=1)
     TIMEOUT_SECONDS: float = Field(default=30.0, ge=1.0)
@@ -79,7 +97,12 @@ class Settings(BaseSettings):
     MAX_RETRIES: int = Field(default=2, ge=0)
 
     GROQ_API_KEY: Optional[str] = None
+    # Extra Groq keys (comma separated), rotated like GEMINI_API_KEYS. Limits are per Groq organisation.
+    GROQ_API_KEYS: StrList = Field(default_factory=list)
     GEMINI_API_KEY: Optional[str] = None
+    # Extra Gemini keys (comma separated). The gateway rotates to the next one when a key
+    # hits its quota (429) or is rejected (401/403).
+    GEMINI_API_KEYS: StrList = Field(default_factory=list)
     OPENAI_API_KEY: Optional[str] = None
     ANTHROPIC_API_KEY: Optional[str] = None
     OPENROUTER_API_KEY: Optional[str] = None
@@ -98,6 +121,9 @@ class Settings(BaseSettings):
     # ── Safety ──────────────────────────────────────────────────────────
     DRY_RUN: bool = False
     CONFIRM_MEDIUM_RISK: bool = True
+    # false = high-risk actions (shutdown, kill, delete, send, shell…) run without asking.
+    # Emergency stop, dry run, the audit log, undo and the shutdown countdown still apply.
+    CONFIRM_HIGH_RISK: bool = True
     CONFIRMATION_TTL_SECONDS: float = Field(default=60.0, ge=5.0)
     POWER_ACTION_DELAY_SECONDS: int = Field(default=30, ge=5)
     PROTECTED_PROCESSES: StrList = Field(default_factory=lambda: [
@@ -108,11 +134,15 @@ class Settings(BaseSettings):
 
     # ── Router / agent ──────────────────────────────────────────────────
     ROUTER_USE_LLM: bool = True
-    AGENT_MAX_STEPS: int = Field(default=5, ge=1, le=15)
+    AGENT_MAX_STEPS: int = Field(default=5, ge=1, le=15)  # questions / chat
+    AGENT_MAX_STEPS_ACTION: int = Field(default=15, ge=1, le=50)  # action turns (multi-step tasks)
     MAX_HISTORY_MESSAGES: int = 20
     MAX_CONVERSATION_TOKENS: int = 4096
     MAX_FACTS_PER_TURN: int = 12
-    MEMORY_RECALL_MIN_SCORE: float = 0.35
+    # Cosine similarity a past turn/fact needs to be recalled into the prompt. Calibrated for bge-base-en-v1.5:
+    # unrelated queries peak around 0.53 against real turns, related ones start around 0.65.
+    MEMORY_RECALL_MIN_SCORE: float = Field(default=0.6, ge=0.0, le=1.0)
+    EMBEDDING_MODEL: str = "BAAI/bge-base-en-v1.5"  # local fastembed (ONNX, CPU) model for semantic memory
     SESSION_TTL_SECONDS: float = 6 * 3600
     MAX_SESSIONS: int = 200
     DEFAULT_PERSONALITY: PersonalityType = PersonalityType.ASSISTANT
@@ -146,7 +176,8 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
     LOG_FILE_PATH: str = "logs/jarvis.log"
 
-    @field_validator("CORS_ORIGINS", "LLM_FALLBACKS", "PROTECTED_PROCESSES", mode="before")
+    @field_validator("CORS_ORIGINS", "LLM_FALLBACKS", "PROTECTED_PROCESSES", "GEMINI_API_KEYS", "GROQ_API_KEYS",
+                     mode="before")
     @classmethod
     def _split_list(cls, v: Any) -> Any:
         if isinstance(v, str):
@@ -155,6 +186,14 @@ class Settings(BaseSettings):
                 import json
                 return json.loads(v)
             return [item.strip() for item in v.split(",") if item.strip()]
+        return v
+
+    @field_validator("REASONING_EFFORT", mode="before")
+    @classmethod
+    def _parse_json_dict(cls, v: Any) -> Any:
+        if isinstance(v, str):
+            import json
+            return json.loads(v) if v.strip() else {}
         return v
 
     @field_validator("PRIVACY_MODE")
@@ -182,6 +221,18 @@ class Settings(BaseSettings):
             "openrouter": self.OPENROUTER_API_KEY,
             "deepseek": self.DEEPSEEK_API_KEY,
         }.get(provider)
+
+    def api_keys_for(self, provider: str) -> List[str]:
+        """Every key for a provider, primary first, without duplicates."""
+        keys = [self.api_key_for(provider)]
+        extra = {"gemini": self.GEMINI_API_KEYS, "groq": self.GROQ_API_KEYS}.get(provider)
+        if extra:
+            keys += extra
+        out: List[str] = []
+        for key in keys:
+            if key and key not in out:
+                out.append(key)
+        return out
 
     def get_api_key_for_provider(self, provider: LLMProviderType | str) -> Optional[str]:
         return self.api_key_for(provider.value if isinstance(provider, LLMProviderType) else provider)

@@ -51,8 +51,8 @@ async def test_vector_memory_persistence(tmp_path):
 
     # Load from DB manually for test DB
     docs = await db_mgr.get_all_vector_documents()
-    for rec in docs:
-        vm2.add_document(rec["doc_id"], rec["content"], rec["metadata"])
+    for rec in docs:  # awaited, so no background SQLite write outlives the test's event loop
+        await vm2.add_document_async(rec["doc_id"], rec["content"], rec["metadata"])
 
     results = vm2.search_similar("Machine Learning", top_k=1)
     assert len(results) == 1

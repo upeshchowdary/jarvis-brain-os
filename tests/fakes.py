@@ -11,8 +11,14 @@ def text(content: str) -> LLMResponse:
     return LLMResponse(content=content, provider="fake", model="fake-1")
 
 
-def call(name: str, **arguments: Any) -> LLMResponse:
+def call(name: str, /, **arguments: Any) -> LLMResponse:
     return LLMResponse(content="", provider="fake", model="fake-1", tool_calls=[ToolCall(f"call_{name}", name, arguments)])
+
+
+def calls(*specs: tuple) -> LLMResponse:
+    """Several tool calls in one response (parallel calls): ``calls(("open_app", {"name": "x"}), ...)``."""
+    return LLMResponse(content="", provider="fake", model="fake-1",
+                       tool_calls=[ToolCall(f"call_{i}_{name}", name, dict(args)) for i, (name, args) in enumerate(specs)])
 
 
 class FakeLLM:
@@ -31,7 +37,7 @@ class FakeLLM:
 
     async def chat(self, messages, *, model=None, tools=None, local_only=False, **kw) -> LLMResponse:
         self.calls.append({"messages": [dict(m) for m in messages], "tools": [t["function"]["name"] for t in (tools or [])],
-                           "model": model, "local_only": local_only})
+                           "model": model, "local_only": local_only, "kwargs": dict(kw)})
         return self._next(messages, tools)
 
     async def stream_events(self, messages, *, model=None, tools=None, local_only=False, **kw):

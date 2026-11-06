@@ -7,8 +7,9 @@ as an *operation* with a risk level and executed only via ``gateway.execute``.
 The gateway:
   * classifies risk (LOW / MEDIUM / HIGH, configurable),
   * enforces dry-run (global ``settings.DRY_RUN`` or a per-request override),
-  * requires confirmation (HIGH always, MEDIUM unless relaxed) and stores the
-    pending action per session with a TTL,
+  * requires confirmation (HIGH and MEDIUM by default, see CONFIRM_*; requests
+    from remote agents such as MCP clients always) and stores the pending action
+    per session with a TTL,
   * writes an append-only audit log (``data/audit.jsonl``),
   * honours the emergency stop,
   * records undo information so the last file operation can be reverted.
@@ -175,6 +176,14 @@ def _short(value: Any, limit: int = 200) -> Any:
     return value
 
 
+# Sources that are other programs, not the user: their MEDIUM/HIGH actions always wait for a human,
+# whatever CONFIRM_MEDIUM_RISK / CONFIRM_HIGH_RISK say (full-control mode is for the owner only).
+REMOTE_SOURCES = frozenset({"mcp"})
+# Input into whatever window is in front (a terminal, a chat box…): from a remote source always confirmed,
+# whatever risk the operation computed for itself.
+REMOTE_ALWAYS_CONFIRM = frozenset({"keyboard.press", "keyboard.type"})
+
+
 class ActionGateway:
     """Classifies, confirms, executes and audits every side-effectful action."""
 
@@ -239,12 +248,19 @@ class ActionGateway:
         return risk
 
     @staticmethod
-    def needs_confirmation(risk: Risk) -> bool:
-        if risk >= Risk.HIGH:
+    def needs_confirmation(risk: Risk, source: str = "chat") -> bool:
+        if source in REMOTE_SOURCES and risk >= Risk.MEDIUM:
             return True
+        if risk >= Risk.HIGH:
+            return settings.CONFIRM_HIGH_RISK
         if risk == Risk.MEDIUM:
             return settings.CONFIRM_MEDIUM_RISK
         return False
+
+    def _must_confirm(self, actions: Sequence[ActionRequest], risk: Risk, source: str) -> bool:
+        if source in REMOTE_SOURCES and any(a.op in REMOTE_ALWAYS_CONFIRM for a in actions):
+            return True
+        return self.needs_confirmation(risk, source)
 
     # ── Emergency stop ──────────────────────────────────────────────────
     def emergency_stop(self, reason: str = "user request") -> None:
@@ -338,7 +354,7 @@ class ActionGateway:
         if is_dry:
             for a in actions:
                 self._audit(session_id, a.op, a.args, risk.label, "dry_run", True, "", source)
-            note = " (would ask for confirmation)" if self.needs_confirmation(risk) else ""
+            note = " (would ask for confirmation)" if self._must_confirm(actions, risk, source) else ""
             return GatewayResult(
                 "dry_run",
                 f"[DRY RUN] Nothing was executed{note}. Plan:\n{preview}",
@@ -347,7 +363,7 @@ class ActionGateway:
                 steps=[{**a.to_dict(), "risk": self.classify(a).label} for a in actions],
             )
 
-        if self.needs_confirmation(risk) and not confirmed:
+        if self._must_confirm(actions, risk, source) and not confirmed:
             return self._stash(actions, session_id, risk, preview, source)
 
         return await self._run(actions, session_id, risk, source, decision="confirmed" if confirmed else "executed")
@@ -527,6 +543,7 @@ __all__ = [
     "Operation",
     "PendingAction",
     "Preview",
+    "REMOTE_SOURCES",
     "Risk",
     "gateway",
 ]

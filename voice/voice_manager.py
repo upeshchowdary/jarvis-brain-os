@@ -9,7 +9,8 @@ Latency features:
 Safety: commands go through the same pipeline + ActionGateway as text. When an action
 needs confirmation, JARVIS reads the preview aloud and the next "yes" (within the
 follow-up window, no wake word needed) confirms it; "stop" interrupts speech and
-triggers the emergency stop.
+triggers the emergency stop. A command runs as its own task while the loop keeps listening, so "stop"
+also ends a multi-step task that is still working (other speech during a command is ignored).
 """
 
 from __future__ import annotations
@@ -29,6 +30,13 @@ from voice.vad import vad_detector
 from voice.voice_config import voice_config
 from voice.wake_word import acoustic_wake_word, wake_word_detector
 
+_PROGRESS_MAX_WORDS = 6  # spoken progress lines stay short (spec 4.5)
+# Whole utterances (after the wake word / "please" / "now" are stripped) that mean "stop what you're doing".
+# Deliberately not first/last-word matches: "pause the music", "cancel shutdown" and "wait" are not a stop.
+_STOP_PHRASES = {
+    "stop", "stop it", "stop that", "stop this", "stop everything", "stop all", "stop stop", "emergency stop",
+    "cancel", "cancel it", "cancel that", "cancel this", "abort", "abort it", "abort that", "halt",
+}
 _SENTENCE_END = re.compile(r"([.!?])(\s+|$)")
 
 
@@ -66,6 +74,7 @@ class VoiceManager:
         self._loop_task: Optional[asyncio.Task] = None
         self._on_command_callbacks: list[Callable[[str], None]] = []
         self._awaiting_command = False
+        self._command_task: Optional[asyncio.Task] = None  # the spoken command being handled, if any
 
     @property
     def is_running(self) -> bool:
@@ -93,12 +102,13 @@ class VoiceManager:
         if not self._is_running:
             return
         self._is_running = False
-        if self._loop_task:
-            self._loop_task.cancel()
-            try:
-                await self._loop_task
-            except asyncio.CancelledError:
-                pass
+        for task in (self._loop_task, self._command_task):
+            if task:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
         barge_in_monitor.stop_monitoring()
         tts_engine.stop()
         audio_capture.stop_stream()
@@ -129,7 +139,7 @@ class VoiceManager:
             wake_word_detector.record_interaction()
             return {"success": True, "action": "wake_acknowledgment"}
 
-        if barge_in_monitor.is_interrupt_command(command):
+        if self.is_stop_command(command):
             barge_in_monitor.trigger_interruption("User voice stop command")
             tts_engine.speak("Stopped.", priority=True)
             return {"success": True, "action": "interrupted"}
@@ -148,12 +158,34 @@ class VoiceManager:
         voice_state_manager.transition_to(VoiceState.UNDERSTANDING, f"Understanding: '{command}'")
         tts_engine.stop()
         buffer, spoken_any, result = "", False, None
+        heard: set = set()  # normalised progress lines already spoken this turn (never repeat them)
+
+        def norm(t: str) -> str:
+            return re.sub(r"\W+", " ", t).strip().lower()
+
+        def speak_unheard(text: str, **kw) -> None:
+            """Speak a final text sentence by sentence, skipping sentences already heard this turn."""
+            sentences, rest = split_sentences(text)
+            for sentence in sentences + ([rest] if rest.strip() else []):
+                line = speakable(sentence)
+                if line and norm(line) not in heard:
+                    heard.add(norm(line))
+                    tts_engine.speak(line, **kw)
+
         async for event in brain.stream(command, self.session_id, channel="voice", stream_tokens=voice_config.STREAM_TTS):
-            if event["type"] == "text":
+            if event["type"] == "progress":
+                line = speakable(event.get("text", ""))
+                if line and len(line.split()) <= _PROGRESS_MAX_WORDS and norm(line) not in heard:
+                    heard.add(norm(line))
+                    tts_engine.speak(line, concise=False)  # queued, does not block the stream
+            elif event["type"] == "text":
                 buffer += event["delta"]
                 sentences, buffer = split_sentences(buffer)
                 for sentence in sentences:
-                    tts_engine.speak(speakable(sentence), concise=False)
+                    line = speakable(sentence)
+                    if norm(line) not in heard:
+                        heard.add(norm(line))
+                        tts_engine.speak(line, concise=False)
                     spoken_any = True
             elif event["type"] == "tool":
                 voice_state_manager.transition_to(VoiceState.EXECUTING, event["name"])
@@ -165,20 +197,63 @@ class VoiceManager:
         if result["status"] == "needs_confirmation":
             tts_engine.speak(confirmation_speech(result), priority=True, concise=False)
         elif buffer.strip() and spoken_any:
-            tts_engine.speak(speakable(buffer), concise=False)
+            speak_unheard(buffer, concise=False)
         elif not spoken_any:
-            tts_engine.speak(speakable(result["response"]) or "Done.")
+            final = speakable(result["response"])
+            if not final:
+                tts_engine.speak("Done.")
+            else:
+                speak_unheard(final)
         return {"success": True, "command": command, "intent": result["intent"]["intent"],
                 "response": result["response"], "status": result["status"], "metadata": result["metadata"]}
+
+    @staticmethod
+    def is_stop_command(text: str) -> bool:
+        """An explicit stop phrase ("stop", "stop it", "cancel that", "jarvis stop", "emergency stop"…) or one of
+        the router's emergency-stop phrases. Anything else ("pause the music", "cancel shutdown") is a command."""
+        from brain import router
+
+        phrase, _ = router.normalize(text)
+        if phrase.lower() in _STOP_PHRASES:
+            return True
+        decision = router.fast_route(text)
+        return decision is not None and decision.rule == "stop"
+
+    def _busy(self) -> bool:
+        return self._command_task is not None and not self._command_task.done()
+
+    async def _run_command(self, raw_audio: bytes, wake_already_detected: bool) -> None:
+        try:
+            await self.process_spoken_command(raw_audio, wake_already_detected=wake_already_detected)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(f"[VoiceManager] Command failed: {e}")
+        finally:
+            audio_capture.skip_to_live()  # audio captured during the turn is not replayed into the VAD
+            vad_detector.reset()
+
+    async def _stop_if_asked(self, raw_audio: bytes) -> None:
+        """While a command runs, only a spoken stop is acted on (it ends the running task); the rest is ignored."""
+        stt_result = await stt_engine.transcribe(raw_audio)
+        text = (stt_result.get("text") or "").strip() if stt_result.get("success") else ""
+        command = wake_word_detector.strip_wake_word(text) if text else ""
+        if command and self.is_stop_command(command):
+            barge_in_monitor.trigger_interruption("User voice stop command")  # emergency stop
+            tts_engine.speak("Stopped.", priority=True)
+        elif text:
+            logger.info(f"[VoiceManager] Busy with a command; ignored: '{text}'")
 
     async def _voice_loop(self) -> None:
         acoustic = self._use_acoustic_wake()
         while self._is_running:
             try:
                 if tts_engine.is_speaking:
+                    audio_capture.skip_to_live()  # never feed JARVIS's own voice into the VAD
                     await asyncio.sleep(0.05)
                     continue
-                chunk = audio_capture.read_chunk(timeout=0.1)
+                # Never block here: this loop shares the event loop with the API server.
+                chunk = audio_capture.read_chunk(timeout=0)
                 if chunk is None:
                     await asyncio.sleep(0.02)
                     continue
@@ -197,7 +272,11 @@ class VoiceManager:
                 if is_complete and audio_data:
                     woke = self._awaiting_command or in_followup
                     self._awaiting_command = False
-                    await self.process_spoken_command(audio_data, wake_already_detected=acoustic and woke)
+                    if self._busy():
+                        await self._stop_if_asked(audio_data)
+                    else:  # keep listening while it runs, so "stop" can end a long task
+                        self._command_task = asyncio.create_task(
+                            self._run_command(audio_data, acoustic and woke))
             except asyncio.CancelledError:
                 break
             except Exception as e:

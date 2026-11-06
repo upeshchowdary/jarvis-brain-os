@@ -8,7 +8,7 @@ keywords appear in the request (or recent conversation).
 from __future__ import annotations
 
 import re
-from typing import Dict, Iterable, List, Sequence
+from typing import Dict, Iterable, List, Optional, Sequence
 
 from tools.base import Tool
 
@@ -26,6 +26,11 @@ GROUPS: Dict[str, Dict[str, Sequence[str]]] = {
                      "minimi", "maximi", "snap", "lock", "shut", "restart", "reboot", "sleep", "hibernate", "wifi", "wi-fi",
                      "bluetooth", "process", "kill", "task", "screenshot", "app", "apps", "close", "quit", "recycle", "settings",
                      "battery", "cpu", "ram", "memory usage", "running", "installed", "stop", "dry run", "program"],
+    },
+    "keyboard": {
+        "tools": ["press_keys", "type_text", "focus_window"],
+        "keywords": ["tab", "scroll", "type", "press", "paste", "copy", "select all", "refresh", "go back", "switch to",
+                     "enter", "escape"],
     },
     "files": {
         "tools": ["files_list", "files_size", "files_info", "files_read", "file_create", "file_append", "folder_create",
@@ -72,6 +77,11 @@ GROUPS: Dict[str, Dict[str, Sequence[str]]] = {
                   "list_routines"],
         "keywords": ["record", "replay", "workflow", "routine", "mode", "automate", "repeat", "macro"],
     },
+    "history": {
+        "tools": ["chat_history"],
+        "keywords": ["chat", "chats", "asked you", "earlier", "yesterday", "conversation", "we did", "history", "last time",
+                     "before"],
+    },
     "memory": {
         "tools": ["memory_forget", "switch_model"],
         "keywords": ["forget", "about me", "remember", "model", "switch", "gemini", "groq", "ollama", "openai", "claude", "gpt"],
@@ -80,14 +90,38 @@ GROUPS: Dict[str, Dict[str, Sequence[str]]] = {
 
 MAX_TOOLS = 28
 
+# With intent-chosen groups only this slim core is always offered (launch things, the generic GUI fallback,
+# web facts, the time, remember/recall — the intent prompt doesn't describe a "memory" group — and clarify);
+# the rest of CORE comes with the group that needs it (CORE_BY_GROUP). Fewer tool schemas = a smaller, faster
+# agent request.
+GROUP_CORE = ("clarify", "open_app", "open_website", "computer_task", "web_search", "get_time_date",
+              "memory_recall", "memory_remember")
+CORE_BY_GROUP: Dict[str, Sequence[str]] = {
+    "system": ("system_status", "automation_status"),
+    "web": ("search_in_browser",),
+}
 
-def select_tools(query: str, available: Iterable[Tool], context: str = "") -> List[Tool]:
+
+def select_tools(query: str, available: Iterable[Tool], context: str = "",
+                 groups: Optional[List[str]] = None, include: Sequence[str] = ()) -> List[Tool]:
+    """CORE + matching groups. ``groups`` (from the intent step) replaces keyword matching:
+    :data:`GROUP_CORE` + those groups' tools (with their :data:`CORE_BY_GROUP` part of CORE).
+    ``None`` → full CORE + keyword matching on query + context.
+    ``include``: names that must be offered (if available); like the core they come first, so the MAX_TOOLS
+    cut never drops them (e.g. ``task_plan`` for multi-step actions)."""
     pool = {t.name: t for t in available}
     text = f" {query.lower()} {context.lower()} "
-    wanted: List[str] = [n for n in CORE if n in pool]
-    for group in GROUPS.values():
-        if any(k in text for k in group["keywords"]):
-            wanted += [n for n in group["tools"] if n in pool]
+    wanted: List[str] = [n for n in (GROUP_CORE if groups is not None else CORE) if n in pool]
+    wanted += [n for n in include if n in pool]
+    if groups is not None:
+        # Smallest group first: if the MAX_TOOLS cut bites, it trims the tail of the biggest group, not a whole one.
+        for g in sorted(groups, key=lambda g: len(GROUPS.get(g, {}).get("tools", ()))):
+            wanted += [n for n in CORE_BY_GROUP.get(g, ()) if n in pool]
+            wanted += [n for n in GROUPS.get(g, {}).get("tools", []) if n in pool]
+    else:
+        for group in GROUPS.values():
+            if any(k in text for k in group["keywords"]):
+                wanted += [n for n in group["tools"] if n in pool]
     # External MCP tools: include when their server is mentioned, or all if there are only a few.
     mcp = [n for n in pool if n.startswith("mcp_")]
     if len(mcp) <= 8:
@@ -102,5 +136,7 @@ def select_tools(query: str, available: Iterable[Tool], context: str = "") -> Li
     # Anything not covered by groups (e.g. future tools) is still reachable when few tools were chosen.
     if len(ordered) < 14:
         grouped = set(CORE) | {n for g in GROUPS.values() for n in g["tools"]}
+        if groups is not None:
+            grouped |= {"task_plan"}  # offered only via ``include`` (multi-step actions)
         ordered += [t for n, t in pool.items() if n not in grouped and n not in seen and not n.startswith("mcp_")]
     return ordered[:MAX_TOOLS]

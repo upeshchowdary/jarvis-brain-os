@@ -74,7 +74,7 @@ class BargeInMonitor:
 
         while not self._stop_event.is_set():
             if tts_engine.is_speaking:
-                chunk = audio_capture.read_chunk(timeout=0.05)
+                chunk = audio_capture.read_chunk(timeout=0.05, reader="barge_in")
                 if chunk:
                     # Require slightly higher energy threshold during TTS to avoid echo
                     barge_threshold = audio_capture.energy_threshold * 1.8
@@ -88,6 +88,7 @@ class BargeInMonitor:
                         speech_frame_count = max(0, speech_frame_count - 1)
             else:
                 speech_frame_count = 0
+                audio_capture.skip_to_live("barge_in")  # only listen to audio from while TTS speaks
                 time.sleep(0.05)
 
 

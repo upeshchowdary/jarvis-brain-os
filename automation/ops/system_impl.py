@@ -195,6 +195,45 @@ def window_action(title_fragment: str, action: str) -> bool:
         return False
 
 
+def foreground_title() -> str:
+    """Title of the foreground window ("" when unknown)."""
+    try:
+        import win32gui
+        title = win32gui.GetWindowText(win32gui.GetForegroundWindow())
+        return title if isinstance(title, str) else ""
+    except Exception:
+        return ""
+
+
+def foreground_window() -> Tuple[Optional[int], str]:
+    """``(hwnd, title)`` of the foreground window; ``(None, "")`` when unknown."""
+    try:
+        import win32gui
+        hwnd = win32gui.GetForegroundWindow()
+        title = win32gui.GetWindowText(hwnd)
+        if isinstance(hwnd, int):
+            return hwnd, title if isinstance(title, str) else ""
+    except Exception:
+        pass
+    return None, ""
+
+
+def focus_hwnd(hwnd: int) -> bool:
+    """Bring the window ``hwnd`` to the front (restoring it if minimized). False when it no longer exists."""
+    try:
+        import win32gui
+        import win32con
+        if not win32gui.IsWindow(hwnd):
+            return False
+        if win32gui.IsIconic(hwnd):
+            win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+        win32gui.SetForegroundWindow(hwnd)
+        return True
+    except Exception as e:
+        automation_logger.warning(f"[SystemController] Focus window {hwnd} error: {e}")
+        return False
+
+
 def minimize_active_window() -> bool:
     """Minimize the currently active/focused window."""
     try:

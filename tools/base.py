@@ -20,6 +20,10 @@ class ToolContext:
     channel: str = "text"  # text | voice | api
     dry_run: Optional[bool] = None
     source: str = "chat"
+    task_id: Optional[str] = None  # the task this turn began (task_plan only edits that one)
+    origin: str = "llm"  # who chose this call: "fast" (router, the user's own words) | "rewrite" | "llm" (the agent)
+    # type_text only: the window this turn's open_app ended up in (see brain.pipeline._typing_target)
+    target_window: Optional[Dict[str, Any]] = None
 
 
 @dataclass
@@ -55,6 +59,7 @@ class Tool:
     sensitive_output: bool = False
     # The result message is a complete answer; no LLM synthesis step is needed.
     final: bool = True
+    ends_turn: bool = False  # e.g. clarify: its result is the reply and the turn ends (always, not only single-step)
 
     async def run(self, ctx: ToolContext, **kwargs: Any) -> ToolResult:  # pragma: no cover - interface
         raise NotImplementedError

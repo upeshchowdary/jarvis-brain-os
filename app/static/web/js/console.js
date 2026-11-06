@@ -825,7 +825,7 @@ function renderLog() {
 // ── System ───────────────────────────────────────────────────────────────
 const STAGES = {
   router: "Matching commands", "turn.fast_path": "Turn without a model", "turn.agent": "Turn with a model",
-  "turn.confirmation": "Answering a yes or no", "turn.error": "Turn that failed", stt: "Speech to text", tts: "Text to speech",
+  "turn.confirmation": "Answering a yes or no", "turn.error": "Turn that failed", "turn.intent": "Understanding the request", stt: "Speech to text", tts: "Text to speech",
 };
 function stageName(key) {
   if (STAGES[key]) return STAGES[key];
@@ -840,7 +840,7 @@ function facts(dl, pairs) {
 async function loadSystem() {
   const [m, s, c] = await Promise.all([api("/metrics"), api("/status"), api("/config")]);
   const lat = m.latency || {};
-  const turns = Object.entries(lat).filter(([k]) => k.startsWith("turn.")).reduce((n, [, v]) => n + v.count, 0);
+  const turns = Object.entries(lat).filter(([k]) => k.startsWith("turn.") && k !== "turn.intent").reduce((n, [, v]) => n + v.count, 0);
   const fast = (lat["turn.fast_path"]?.count || 0) + (lat["turn.confirmation"]?.count || 0);
   $("kUptime").textContent = fmtDuration(m.uptime_s);
   $("kTurns").textContent = String(turns);
@@ -850,6 +850,7 @@ async function loadSystem() {
   const box = $("latency");
   box.replaceChildren();
   const rows = Object.entries(lat).sort((a, b) => b[1].p50_ms - a[1].p50_ms).slice(0, 10);
+  if (lat["turn.intent"] && !rows.some(([k]) => k === "turn.intent")) rows.push(["turn.intent", lat["turn.intent"]]);  // the understanding step is always shown
   const max = Math.max(1, ...rows.map(([, v]) => v.p95_ms));
   for (const [key, v] of rows) {
     const row = el("div", "lat-row");
@@ -880,7 +881,8 @@ async function loadSystem() {
   state.serverDryRun = Boolean(c.dry_run);
   facts($("safetyFacts"), [
     ["Dry run for everything", c.dry_run ? "On" : "Off"],
-    ["Ask before medium risk", c.confirm_medium_risk ? "Yes" : "No, only high risk asks"],
+    ["Ask before medium risk", c.confirm_medium_risk ? "Yes" : "No"],
+    ["Ask before high risk", c.confirm_high_risk === false ? "No: actions run without asking" : "Yes"],
     ["Private mode", c.privacy_mode === "local" ? "On: files and screen go to local models only" : "Off"],
     ["Emergency stop", state.stopped ? "Active" : "Clear"],
   ]);

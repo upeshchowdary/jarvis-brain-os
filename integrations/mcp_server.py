@@ -4,7 +4,10 @@ Run:  python -m integrations.mcp_server            (stdio, for Claude Desktop / 
 
 Safety: MCP clients are other programs/agents, so they get the same gateway as
 everyone else *and* can never confirm a pending action — MEDIUM/HIGH actions they
-request wait for the human to approve them in the dashboard, chat or API.
+request wait for the human to approve them in the dashboard, chat or API. This holds
+even in full-control mode (CONFIRM_MEDIUM_RISK / CONFIRM_HIGH_RISK = false): the gateway
+always asks for source "mcp". MCP turns also stay out of the PC-wide turn buffer and the
+user's current task.
 """
 
 from __future__ import annotations
@@ -44,7 +47,7 @@ def build_server():
 
     @server.tool(description="Ask JARVIS anything or give it a command in plain language.")
     async def jarvis(message: str) -> str:
-        result = await brain.handle(message, SESSION, channel="api", allow_confirm=False)
+        result = await brain.handle(message, SESSION, channel="mcp", allow_confirm=False)
         return result.response
 
     @server.tool(description="Current CPU, RAM, disk, battery and temperature of the PC.")
