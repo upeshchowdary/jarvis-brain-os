@@ -147,7 +147,7 @@ def _is_known_app(name: str) -> bool:
     try:
         from automation.application_controller import dynamic_app_manager
 
-        dynamic_app_manager._ensure_index()
+        dynamic_app_manager._ensure_index(scan=False)  # on the event loop: use what is loaded, never scan here
         return n in dynamic_app_manager._apps_cache
     except Exception:
         return False

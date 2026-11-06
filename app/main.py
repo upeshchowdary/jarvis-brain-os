@@ -44,6 +44,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     await long_term_memory.init_db()
     await vector_memory.load_from_db()
     memory_warm_up = vector_memory.start_warm_up()  # Chroma + embedding model load in the background
+    from automation.application_controller import dynamic_app_manager
+
+    dynamic_app_manager.prewarm()  # app index load / first scan in a background thread, never on a request
     if settings.BACKGROUND_SERVICES:
         connectivity.start_background_refresh()
         from services import start_background_services

@@ -72,53 +72,109 @@ class DynamicSystemAppManager:
         # Discovery is lazy: nothing is scanned at import time.
         self._apps_cache: Dict[str, Dict[str, str]] = {}
         self._last_index_time: float = 0.0
-        self._loaded = False
-        self._refreshing = threading.Lock()
+        self._loaded = False  # True once _apps_cache holds a loaded or scanned index
+        self._load_lock = threading.Lock()  # loading app_index.json
+        self._bg_lock = threading.Lock()  # guards _bg_running
+        self._refresh_lock = threading.Lock()  # single-flight: one scan at a time
+        self._index_gen = 0  # bumped by every finished scan
+        self._bg_running = False
 
     @property
     def cache_file(self):
         return data_path("app_index.json")
 
-    def _ensure_index(self) -> None:
+    def prewarm(self) -> None:
+        """Load (or build) the index in a background thread at startup: no request waits on the first scan."""
         if self._loaded:
             return
-        self._loaded = True
+        threading.Thread(target=self._safe, args=(self._ensure_index,), name="app-index-prewarm", daemon=True).start()
+
+    @staticmethod
+    def _safe(func) -> None:
+        try:
+            func()
+        except Exception as e:  # noqa: BLE001
+            log_action("app_discovery", "index", str(e), level="WARNING")
+
+    def _load_cache(self) -> bool:
+        """Use app_index.json when it holds apps (a stale one too, refreshed in the background)."""
         try:
             payload = json.loads(self.cache_file.read_text(encoding="utf-8"))
             apps = payload.get("apps", {})
-            if apps:
-                self._apps_cache = apps
-                self._last_index_time = float(payload["indexed_at"])
-                if time.time() - self._last_index_time >= self.CACHE_MAX_AGE_SECONDS:
-                    # Stale: answer from the old index now, rescan in the background (a launch never waits on it).
-                    self._refresh_in_background()
-                return
-        except (OSError, ValueError, KeyError):
-            pass
-        self.refresh_index()
+            if not apps:
+                return False
+            self._apps_cache = apps
+            self._last_index_time = float(payload["indexed_at"])
+        except (OSError, ValueError, KeyError, TypeError):
+            return False
+        if time.time() - self._last_index_time >= self.CACHE_MAX_AGE_SECONDS:
+            # Stale: answer from the old index now, rescan in the background (a launch never waits on it).
+            self._refresh_in_background()
+        return True
+
+    def _ensure_index(self, scan: bool = True) -> None:
+        """Make sure an index is loaded. ``scan=False`` (callers on the event loop) never scans here: without a
+        saved index the scan starts in the background and the caller uses what is loaded (maybe nothing)."""
+        if self._loaded:
+            return
+        with self._load_lock:
+            if not self._loaded and self._load_cache():
+                self._loaded = True
+        if self._loaded:
+            return
+        if not scan:
+            self._refresh_in_background()
+            return
+        with self._refresh_lock:
+            if not self._loaded:  # a scan that finished while this caller waited counts
+                self._store(self._scan_system())
 
     def _refresh_in_background(self) -> None:
-        if not self._refreshing.acquire(blocking=False):
-            return  # one rescan at a time
+        with self._bg_lock:
+            if self._bg_running:
+                return  # one background rescan at a time
+            self._bg_running = True
 
         def run() -> None:
             try:
-                self.refresh_index()
-            except Exception as e:  # noqa: BLE001
-                log_action("app_discovery", "refresh", str(e), level="WARNING")
+                self._safe(self.refresh_index)
             finally:
-                self._refreshing.release()
+                self._bg_running = False
 
         threading.Thread(target=run, name="app-index-refresh", daemon=True).start()
 
     def refresh_index(self) -> int:
-        """Scan system and index desktop, Store, and UWP apps with verified executable paths."""
+        """Rescan the system. Single-flight: a caller that waited on a running scan uses its result."""
+        gen = self._index_gen
+        with self._refresh_lock:
+            if self._index_gen == gen:
+                self._store(self._scan_system())
+            return len(self._apps_cache)
+
+    def _store(self, apps: Dict[str, Dict[str, str]]) -> None:
+        self._apps_cache = apps
+        self._last_index_time = time.time()
+        self._index_gen += 1
         self._loaded = True
+        self._write_cache(apps)
+
+    def _write_cache(self, apps: Dict[str, Dict[str, str]]) -> None:
+        """Atomically: a crash or a concurrent reader never sees a half-written app_index.json."""
+        tmp = self.cache_file.with_name(self.cache_file.name + ".tmp")
+        try:
+            tmp.write_text(json.dumps({"indexed_at": self._last_index_time, "apps": apps}), encoding="utf-8")
+            os.replace(tmp, self.cache_file)
+        except OSError:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+
+    def _scan_system(self) -> Dict[str, Dict[str, str]]:
+        """Scan system and index desktop, Store, and UWP apps with verified executable paths."""
         apps: Dict[str, Dict[str, str]] = {}
         if sys.platform != "win32":
-            self._apps_cache = apps
-            self._last_index_time = time.time()
-            return 0
+            return apps
 
         # ── Priority 1: Windows Registry "App Paths" (HKCU & HKLM) ───────
         # These are 100% genuine executable binary paths registered in Windows
@@ -248,20 +304,13 @@ class DynamicSystemAppManager:
             apps["whats app"] = apps["whatsapp"]
         if "calculator" in apps:
             apps["calc"] = apps["calculator"]
+        return apps
 
-        self._apps_cache = apps
-        self._last_index_time = time.time()
-        try:
-            self.cache_file.write_text(
-                json.dumps({"indexed_at": self._last_index_time, "apps": apps}), encoding="utf-8"
-            )
-        except OSError:
-            pass
-        return len(apps)
+    def find_app(self, query: str, scan: bool = True) -> Optional[Dict[str, str]]:
+        """Find an installed app by exact name, alias, prefix, substring, or fuzzy match.
 
-    def find_app(self, query: str) -> Optional[Dict[str, str]]:
-        """Find an installed app by exact name, alias, prefix, substring, or fuzzy match."""
-        self._ensure_index()
+        ``scan=False`` for callers on the event loop: never blocks on a disk scan (see ``_ensure_index``)."""
+        self._ensure_index(scan=scan)
         q = query.lower().strip().replace(".exe", "")
         if not q:
             return None
@@ -456,7 +505,7 @@ class ApplicationController:
         if self.dry_run:
             return {"success": True, "dry_run": True, "action": "close_app", "app": name}
 
-        app_info = self.app_manager.find_app(name)
+        app_info = await asyncio.to_thread(self.app_manager.find_app, name)  # off the loop: may load the index
         display_name = app_info["name"] if app_info else name
 
         # 1. Try closing window gracefully
